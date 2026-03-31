@@ -6,8 +6,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { fetchEbayComps, buildKeyword } from '@/lib/ebay/findingApi'
 
-const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000
-const CACHE_TTL_MS   = 24 * 60 * 60 * 1000  // 24 hours
+const NINETY_DAYS_MS    = 90 * 24 * 60 * 60 * 1000
+const CACHE_TTL_MS      = 24 * 60 * 60 * 1000  // 24h for real data
+const CACHE_EMPTY_MS    =  2 * 60 * 60 * 1000  //  2h for rate-limited / empty
 
 const GRADED_RE = /\b(PSA|BGS|SGC|CGC|GRADED|SLAB)\b/i
 const GRADE_RE  = /\b(PSA|BGS|CGC|SGC)\s+(\d+(?:\.\d)?)\b/i
@@ -60,17 +61,23 @@ export async function GET(request: NextRequest) {
   if (card && !force) {
     const cacheKey = lang === 'en' ? 'ebay_en_cache' : 'ebay_jp_cache'
     const meta     = card.metadata_json as Record<string, unknown> | null
-    const cached   = meta?.[cacheKey] as { points: SalePoint[]; fetched_at: string } | undefined
+    const cached   = meta?.[cacheKey] as {
+      points: SalePoint[]
+      fetched_at: string
+      empty_until?: string   // set when eBay was rate-limited; retry after this time
+    } | undefined
+
     if (cached?.fetched_at) {
-      const age = Date.now() - new Date(cached.fetched_at).getTime()
-      if (age < CACHE_TTL_MS) {
-        return NextResponse.json({
-          points:  cached.points,
-          keyword,
-          lang,
-          total:   cached.points.length,
-          fromCache: true,
-        })
+      // Rate-limited response cached with short TTL — don't retry until window expires
+      if (cached.empty_until && Date.now() < new Date(cached.empty_until).getTime()) {
+        return NextResponse.json({ points: [], keyword, lang, total: 0, fromCache: true, rateLimited: true })
+      }
+      // Successful cache hit — return if still fresh
+      if (cached.points.length > 0) {
+        const age = Date.now() - new Date(cached.fetched_at).getTime()
+        if (age < CACHE_TTL_MS) {
+          return NextResponse.json({ points: cached.points, keyword, lang, total: cached.points.length, fromCache: true })
+        }
       }
     }
   }
@@ -95,25 +102,40 @@ export async function GET(request: NextRequest) {
     })
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
-  // ── Write back to DB cache ─────────────────────────────────────────────────
-  if (card && catalogIdStr && rawComps.length > 0) {
+  // ── Write back to DB cache — ALWAYS, even on empty/rate-limited ───────────
+  // Empty results get a 2h retry window; successful results last 24h.
+  if (card && catalogIdStr) {
     try {
-      const svcClient = createServiceClient()
-      const cacheKey  = lang === 'en' ? 'ebay_en_cache' : 'ebay_jp_cache'
+      const svcClient    = createServiceClient()
+      const cacheKey     = lang === 'en' ? 'ebay_en_cache' : 'ebay_jp_cache'
       const existingMeta = (card.metadata_json as Record<string, unknown>) ?? {}
+      const now          = new Date()
+      const cachePayload =
+        points.length === 0
+          ? {
+              points:      [],
+              fetched_at:  now.toISOString(),
+              empty_until: new Date(Date.now() + CACHE_EMPTY_MS).toISOString(),
+            }
+          : {
+              points,
+              fetched_at: now.toISOString(),
+            }
+
       await svcClient
         .from('card_catalog_items')
-        .update({
-          metadata_json: {
-            ...existingMeta,
-            [cacheKey]: { points, fetched_at: new Date().toISOString() },
-          },
-        })
+        .update({ metadata_json: { ...existingMeta, [cacheKey]: cachePayload } })
         .eq('catalog_id', catalogIdStr)
     } catch (err) {
       console.error('[sold-history] Cache write error:', err)
     }
   }
 
-  return NextResponse.json({ points, keyword, lang, total: rawComps.length })
+  return NextResponse.json({
+    points,
+    keyword,
+    lang,
+    total:       rawComps.length,
+    rateLimited: rawComps.length === 0 && !!card,
+  })
 }
