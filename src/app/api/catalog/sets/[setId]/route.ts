@@ -28,14 +28,23 @@ function getHeaders(): Record<string, string> {
 }
 
 async function fetchSetCardsFromApi(setId: string): Promise<PokemonTcgCard[]> {
-  const params = new URLSearchParams({ q: `set.id:${setId}`, pageSize: '250', orderBy: 'number' })
-  const res = await fetch(`${BASE_URL}/cards?${params}`, {
-    headers: getHeaders(),
-    next: { revalidate: 3600 },
-  })
-  if (!res.ok) return []
-  const json = await res.json()
-  return (json.data ?? []) as PokemonTcgCard[]
+  const all: PokemonTcgCard[] = []
+  let page = 1
+  while (true) {
+    const params = new URLSearchParams({ q: `set.id:${setId}`, pageSize: '250', page: String(page), orderBy: 'number' })
+    const res = await fetch(`${BASE_URL}/cards?${params}`, {
+      headers: getHeaders(),
+      next: { revalidate: 3600 },
+    })
+    if (!res.ok) break
+    const json = await res.json()
+    const batch = (json.data ?? []) as PokemonTcgCard[]
+    all.push(...batch)
+    // If we got a full page, there may be more
+    if (batch.length < 250) break
+    page++
+  }
+  return all
 }
 
 async function fetchSetMeta(setId: string) {
