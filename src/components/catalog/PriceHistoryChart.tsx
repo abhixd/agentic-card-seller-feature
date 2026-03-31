@@ -396,7 +396,7 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
         <div>
           <p className="text-sm font-semibold text-white/70">eBay data temporarily unavailable</p>
           <p className="text-xs text-white/35 mt-1 max-w-xs">
-            eBay's API rate limit has been reached for today. Sales data will automatically refresh within a few hours — check back soon.
+            eBay&apos;s API rate limit has been reached for today. Sales data will automatically refresh within a few hours — check back soon.
           </p>
         </div>
         <a
