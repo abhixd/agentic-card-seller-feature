@@ -49,38 +49,39 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  /* Deep navy theme — #0f1729 base */
+  --background: oklch(0.13 0.04 258);
+  --foreground: oklch(0.93 0 0);
+  --card: oklch(0.18 0.04 258);
+  --card-foreground: oklch(0.93 0 0);
+  --popover: oklch(0.18 0.04 258);
+  --popover-foreground: oklch(0.93 0 0);
+  --primary: oklch(0.62 0.2 250);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.23 0.04 258);
+  --secondary-foreground: oklch(0.93 0 0);
+  --muted: oklch(0.23 0.04 258);
+  --muted-foreground: oklch(0.60 0.02 258);
+  --accent: oklch(0.23 0.04 258);
+  --accent-foreground: oklch(0.93 0 0);
+  --destructive: oklch(0.65 0.22 25);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.62 0.2 250);
+  --chart-1: oklch(0.62 0.2 250);
+  --chart-2: oklch(0.70 0.15 195);
+  --chart-3: oklch(0.75 0.18 145);
+  --chart-4: oklch(0.72 0.18 55);
+  --chart-5: oklch(0.65 0.22 25);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar: oklch(0.15 0.05 258);
+  --sidebar-foreground: oklch(0.93 0 0);
+  --sidebar-primary: oklch(0.62 0.2 250);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
+  --sidebar-accent: oklch(0.23 0.04 258);
+  --sidebar-accent-foreground: oklch(0.93 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.62 0.2 250);
 }
 
 .dark {
@@ -127,4 +128,81 @@
   html {
     @apply font-sans;
   }
+}
+
+/* ── Typography ──────────────────────────────────────────────────────────── */
+@layer base {
+  body {
+    font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.2);
+    color: inherit;
+  }
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
+}
+
+/* ── Global interaction transitions ──────────────────────────────────────── */
+button, a[href], [role="button"] {
+  transition:
+    background-color 0.13s ease,
+    border-color 0.13s ease,
+    color 0.13s ease,
+    box-shadow 0.13s ease,
+    transform 0.1s ease,
+    opacity 0.13s ease;
+}
+
+button:active:not(:disabled),
+[role="button"]:active {
+  transform: scale(0.97);
+}
+
+/* ── Card hover lift (add class "card-lift" to any card container) ─────── */
+.card-lift {
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.card-lift:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 8px 28px -4px hsl(var(--primary) / 0.10),
+    0 2px 8px -2px hsl(var(--primary) / 0.07);
+  border-color: hsl(var(--primary) / 0.22) !important;
+}
+
+/* ── Glow focus ring for inputs ───────────────────────────────────────────── */
+input:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px hsl(var(--primary) / 0.35);
+  border-color: hsl(var(--primary) / 0.6) !important;
+}
+
+/* ── Primary button glow ─────────────────────────────────────────────────── */
+.btn-primary-glow:hover:not(:disabled) {
+  box-shadow: 0 0 20px -4px hsl(var(--primary) / 0.5);
+}
+
+/* ── Segmented control active indicator ──────────────────────────────────── */
+.seg-control-active {
+  box-shadow: 0 1px 4px hsl(0 0% 0% / 0.3);
 }
