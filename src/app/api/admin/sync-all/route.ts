@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/server'
 import { bulkSyncAllCards } from '@/lib/pokemon/bulkSync'
 
 // Allow up to 5 minutes for large batch syncs
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     // No body or invalid JSON — use defaults
   }
 
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   const stream = new ReadableStream({
     async start(controller) {

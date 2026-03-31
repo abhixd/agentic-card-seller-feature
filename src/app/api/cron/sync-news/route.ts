@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/server'
 import { fetchAllFeeds } from '@/lib/news/rssParser'
 import { generateNewsArticle } from '@/lib/news/newsGenerator'
 
@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
     const items = await fetchAllFeeds()
     const limited = items.slice(0, 10)
     let processed = 0

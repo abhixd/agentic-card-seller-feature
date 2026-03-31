@@ -1,6 +1,8 @@
 import { NextRequest } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/server'
 import { bulkSyncAllCards } from '@/lib/pokemon/bulkSync'
+
+export const maxDuration = 300
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization')
@@ -14,7 +16,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const supabase = await createClient()
+    const supabase = createServiceClient()
     const stats = await bulkSyncAllCards(supabase)
     return Response.json({ ok: true, stats })
   } catch (err) {

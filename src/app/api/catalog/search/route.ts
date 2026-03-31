@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { searchCatalog } from '@/lib/catalog/searchService'
 import { searchPokemonCards } from '@/lib/pokemon/pokemonTcgApi'
 import { syncPokemonCards } from '@/lib/pokemon/pokemonTcgSync'
@@ -20,7 +20,9 @@ export async function GET(request: NextRequest) {
   const q     = searchParams.get('q') ?? ''
   const limit = Number(searchParams.get('limit') ?? '36')
 
-  const supabase = await createClient()
+  // anon client for reads, service client for writes (bypasses RLS insert policy)
+  const supabase      = await createClient()
+  const writeSupabase = createServiceClient()
 
   // 1. Always search local catalog first
   const { results: localResults, error } = await searchCatalog(supabase, { q, limit })
@@ -46,7 +48,7 @@ export async function GET(request: NextRequest) {
     try {
       const apiCards = await searchPokemonCards(q)
       if (apiCards.length > 0) {
-        await syncPokemonCards(supabase, apiCards)
+        await syncPokemonCards(writeSupabase, apiCards)
         // Re-fetch so all results include fresh metadata + prices
         const { results: refreshed } = await searchCatalog(supabase, { q, limit })
         results = refreshed ?? localResults

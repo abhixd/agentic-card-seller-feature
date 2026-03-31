@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { syncPokemonCards } from '@/lib/pokemon/pokemonTcgSync'
 import type { PokemonTcgCard } from '@/lib/pokemon/pokemonTcgApi'
 import type { CardSearchResult } from '@/types/catalog'
@@ -33,10 +33,11 @@ export async function GET(
   { params }: { params: Promise<{ setId: string }> }
 ) {
   const { setId } = await params
-  const supabase = await createClient()
+  const readClient  = await createClient()        // anon — for reads (respects RLS)
+  const writeClient = createServiceClient()       // service role — for sync writes
 
   // Query our catalog for cards in this set
-  const { data: rows } = await supabase
+  const { data: rows } = await readClient
     .from('card_catalog_items')
     .select(
       'catalog_id, category, franchise_or_brand, set_name, year, card_name, card_number, variant, canonical_image_url, metadata_json'
@@ -52,11 +53,11 @@ export async function GET(
     try {
       const apiCards = await fetchSetCardsFromApi(setId)
       if (apiCards.length > 0) {
-        await syncPokemonCards(supabase, apiCards)
+        await syncPokemonCards(writeClient, apiCards)
       }
 
       // Re-query after sync
-      const { data: refreshed } = await supabase
+      const { data: refreshed } = await readClient
         .from('card_catalog_items')
         .select(
           'catalog_id, category, franchise_or_brand, set_name, year, card_name, card_number, variant, canonical_image_url, metadata_json'
