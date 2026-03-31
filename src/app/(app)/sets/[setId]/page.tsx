@@ -33,18 +33,17 @@ interface SealedProductDef {
   type: string
   packCount?: number
   icon: string
-  iconBg: string
-  iconGlow: string
+  gradient: string
 }
 
 const SEALED_PRODUCTS: SealedProductDef[] = [
-  { type: 'Booster Box',           packCount: 36, icon: '📦', iconBg: 'rgba(251,191,36,0.15)',  iconGlow: 'rgba(251,191,36,0.4)' },
-  { type: 'Elite Trainer Box',     packCount: 9,  icon: '🎁', iconBg: 'rgba(167,139,250,0.15)', iconGlow: 'rgba(167,139,250,0.4)' },
-  { type: 'Booster Bundle',        packCount: 6,  icon: '🗂️', iconBg: 'rgba(96,165,250,0.15)',  iconGlow: 'rgba(96,165,250,0.4)' },
-  { type: 'Blister Pack',          packCount: 3,  icon: '🫧', iconBg: 'rgba(52,211,153,0.15)',  iconGlow: 'rgba(52,211,153,0.4)' },
-  { type: 'Tin',                                  icon: '🥫', iconBg: 'rgba(148,163,184,0.15)', iconGlow: 'rgba(148,163,184,0.4)' },
-  { type: 'Collection Box',                       icon: '🗃️', iconBg: 'rgba(249,115,22,0.15)',  iconGlow: 'rgba(249,115,22,0.4)' },
-  { type: 'Illustration Collection',              icon: '🎨', iconBg: 'rgba(232,121,249,0.15)', iconGlow: 'rgba(232,121,249,0.4)' },
+  { type: 'Booster Box',           packCount: 36, icon: '📦', gradient: 'linear-gradient(135deg, #92400e 0%, #d97706 50%, #fbbf24 100%)' },
+  { type: 'Elite Trainer Box',     packCount: 9,  icon: '🎁', gradient: 'linear-gradient(135deg, #4c1d95 0%, #7c3aed 50%, #a78bfa 100%)' },
+  { type: 'Booster Bundle',        packCount: 6,  icon: '🗂️', gradient: 'linear-gradient(135deg, #1e3a5f 0%, #1d4ed8 50%, #60a5fa 100%)' },
+  { type: 'Blister Pack',          packCount: 3,  icon: '🫧', gradient: 'linear-gradient(135deg, #064e3b 0%, #059669 50%, #34d399 100%)' },
+  { type: 'Tin',                                  icon: '🥫', gradient: 'linear-gradient(135deg, #1e293b 0%, #475569 50%, #94a3b8 100%)' },
+  { type: 'Collection Box',                       icon: '🗃️', gradient: 'linear-gradient(135deg, #7c2d12 0%, #ea580c 50%, #fb923c 100%)' },
+  { type: 'Illustration Collection',              icon: '🎨', gradient: 'linear-gradient(135deg, #500724 0%, #be185d 50%, #f472b6 100%)' },
 ]
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -240,7 +239,7 @@ interface SealedPriceData {
   keyword: string
 }
 
-function SealedProductCard({ product, setName }: { product: SealedProductDef; setName: string }) {
+function SealedProductCard({ product, setName, setLogo }: { product: SealedProductDef; setName: string; setLogo?: string }) {
   const [data,    setData]    = useState<SealedPriceData | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -276,26 +275,62 @@ function SealedProductCard({ product, setName }: { product: SealedProductDef; se
         backdropFilter: 'blur(12px)',
       }}
     >
-      <div className="p-4 flex items-start gap-3">
-        {/* Icon badge */}
+      {/* Visual product art header */}
+      <div
+        className="relative h-32 w-full overflow-hidden flex flex-col items-center justify-center gap-1"
+        style={{ background: product.gradient }}
+      >
+        {/* Diagonal stripe overlay */}
         <div
-          className="flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center text-lg"
+          aria-hidden
+          className="pointer-events-none absolute inset-0 opacity-10"
           style={{
-            background: product.iconBg,
-            boxShadow: `0 0 12px ${product.iconGlow}`,
-            border: `1px solid ${product.iconGlow}`,
+            backgroundImage: 'repeating-linear-gradient(45deg, rgba(255,255,255,0.6) 0px, rgba(255,255,255,0.6) 1px, transparent 1px, transparent 12px)',
           }}
-        >
-          {product.icon}
-        </div>
+        />
 
-        {/* Product info */}
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-white/90">{product.type}</p>
-          {product.packCount != null && (
-            <p className="text-[11px] text-white/35 mt-0.5">{product.packCount} packs</p>
-          )}
-        </div>
+        {/* Pack count badge — top right */}
+        {product.packCount != null && (
+          <div
+            className="absolute top-2 right-2 text-[9px] font-bold px-1.5 py-0.5 rounded-full"
+            style={{ background: 'rgba(0,0,0,0.4)', color: 'rgba(255,255,255,0.85)', border: '1px solid rgba(255,255,255,0.2)' }}
+          >
+            {product.packCount} packs
+          </div>
+        )}
+
+        {/* Set logo */}
+        {setLogo ? (
+          <div className="relative z-10 flex items-center justify-center" style={{ width: '40%', maxHeight: '48px' }}>
+            <Image
+              src={setLogo}
+              alt={setName}
+              width={120}
+              height={48}
+              className="object-contain drop-shadow-lg"
+              style={{ filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.5)) brightness(1.1)' }}
+              unoptimized
+            />
+          </div>
+        ) : (
+          <span className="relative z-10 text-3xl drop-shadow-lg">{product.icon}</span>
+        )}
+
+        {/* Product type label */}
+        <p
+          className="relative z-10 text-[10px] font-black uppercase tracking-widest"
+          style={{ color: 'rgba(255,255,255,0.75)', textShadow: '0 1px 4px rgba(0,0,0,0.6)' }}
+        >
+          {product.type}
+        </p>
+      </div>
+
+      {/* Product info row */}
+      <div className="px-4 pt-3 pb-1 flex items-center justify-between">
+        <p className="text-xs font-semibold text-white/70">{product.type}</p>
+        {product.packCount != null && (
+          <p className="text-[10px] text-white/35">{product.packCount} packs</p>
+        )}
       </div>
 
       {/* eBay price section */}
@@ -349,7 +384,7 @@ function SealedProductCard({ product, setName }: { product: SealedProductDef; se
 
 // ── Sealed Panel ───────────────────────────────────────────────────────────────
 
-function SealedPanel({ setName }: { setName: string }) {
+function SealedPanel({ setName, setLogo }: { setName: string; setLogo?: string }) {
   return (
     <div>
       <div className="mb-5">
@@ -359,7 +394,7 @@ function SealedPanel({ setName }: { setName: string }) {
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
         {SEALED_PRODUCTS.map(p => (
-          <SealedProductCard key={p.type} product={p} setName={setName} />
+          <SealedProductCard key={p.type} product={p} setName={setName} setLogo={setLogo} />
         ))}
       </div>
     </div>
@@ -514,7 +549,7 @@ export default function SetDetailPage() {
 
         {/* Sealed products panel */}
         {!loading && viewMode === 'sealed' && (
-          <SealedPanel setName={setName} />
+          <SealedPanel setName={setName} setLogo={setMeta?.logo} />
         )}
 
         {/* Cards grid */}

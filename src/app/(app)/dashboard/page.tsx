@@ -5,14 +5,14 @@ import Link from 'next/link'
 // ── Ticker data ──────────────────────────────────────────────────────────────
 
 const tickerItems = [
-  { name: 'Charizard ex',        price: '$145.00', dir: 'up'   },
-  { name: 'Pikachu VMAX',        price:  '$89.00', dir: 'flat' },
-  { name: 'Mewtwo V-UNION',      price:  '$62.50', dir: 'up'   },
-  { name: 'Rayquaza VMAX',       price: '$110.00', dir: 'up'   },
-  { name: 'Umbreon VMAX Alt',    price: '$225.00', dir: 'down' },
-  { name: 'Lugia VStar',         price:  '$74.00', dir: 'flat' },
-  { name: 'Giratina VStar',      price:  '$58.00', dir: 'up'   },
-  { name: 'Mew VMAX Alt',        price: '$195.00', dir: 'down' },
+  { name: 'Charizard ex',        price: '$145.00', dir: 'up',   change: '+12.5%' },
+  { name: 'Pikachu VMAX',        price:  '$89.00', dir: 'flat', change:  '+0.3%' },
+  { name: 'Mewtwo V-UNION',      price:  '$62.50', dir: 'up',   change:  '+8.1%' },
+  { name: 'Rayquaza VMAX',       price: '$110.00', dir: 'up',   change: '+15.2%' },
+  { name: 'Umbreon VMAX Alt',    price: '$225.00', dir: 'down', change:  '-4.7%' },
+  { name: 'Lugia VStar',         price:  '$74.00', dir: 'flat', change:  '-0.8%' },
+  { name: 'Giratina VStar',      price:  '$58.00', dir: 'up',   change:  '+6.3%' },
+  { name: 'Mew VMAX Alt',        price: '$195.00', dir: 'down', change:  '-7.1%' },
 ]
 
 // ── Quick actions ─────────────────────────────────────────────────────────────
@@ -143,7 +143,7 @@ export default async function DashboardPage() {
       <section className="overflow-hidden rounded-xl" style={{ background: '#080c10', border: '1px solid rgba(255,255,255,0.06)' }}>
         <div className="flex items-center gap-3 border-b border-white/[0.06] px-4 py-2">
           <span className="flex h-1.5 w-1.5 rounded-full bg-green-400 shadow-[0_0_6px_#4ade80]" />
-          <span className="text-[10px] font-bold uppercase tracking-widest text-white/30">Live Market</span>
+          <span className="text-[10px] font-bold uppercase tracking-widest text-white/30">Live · 24h Market</span>
         </div>
         {/* Marquee track */}
         <div className="relative flex overflow-hidden py-3" aria-label="Market ticker">
@@ -153,11 +153,30 @@ export default async function DashboardPage() {
           >
             {tickerLoop.map((item, i) => {
               const { symbol, color } = dirMeta(item.dir)
+              const changeBg =
+                item.dir === 'up'   ? 'rgba(34,197,94,0.15)'  :
+                item.dir === 'down' ? 'rgba(239,68,68,0.15)'  :
+                                     'rgba(148,163,184,0.12)'
+              const changeColor =
+                item.dir === 'up'   ? '#4ade80' :
+                item.dir === 'down' ? '#f87171' :
+                                     '#94a3b8'
+              const changeBorder =
+                item.dir === 'up'   ? 'rgba(74,222,128,0.25)'  :
+                item.dir === 'down' ? 'rgba(248,113,113,0.25)' :
+                                     'rgba(148,163,184,0.2)'
               return (
                 <span key={i} className="flex items-center gap-1.5 text-sm">
                   <span className="font-semibold text-white/80">{item.name}</span>
                   <span className="font-mono font-bold text-white">{item.price}</span>
                   <span className="font-bold" style={{ color }}>{symbol}</span>
+                  <span
+                    className="rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums"
+                    style={{ background: changeBg, color: changeColor, border: `1px solid ${changeBorder}` }}
+                  >
+                    {item.change}
+                  </span>
+                  <span className="text-[9px] text-white/20">24h</span>
                   <span className="mx-2 text-white/10">|</span>
                 </span>
               )
