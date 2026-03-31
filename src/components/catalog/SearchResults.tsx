@@ -7,6 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { PriceHistoryChart } from '@/components/catalog/PriceHistoryChart'
 import type { CardSearchResult } from '@/types/catalog'
 import { ChevronRight, ChevronDown } from 'lucide-react'
+import { AddToInventoryButton } from '@/components/catalog/AddToInventoryButton'
 
 export type SortKey = 'price_desc' | 'price_asc' | 'name_asc' | 'year_desc' | 'year_asc'
 
@@ -568,6 +569,7 @@ function CardResultRow({ card, searchQuery }: { card: CardSearchResult; searchQu
           ) : (
             <span className="text-xs text-muted-foreground w-12 text-right">—</span>
           )}
+          <AddToInventoryButton catalogId={card.catalog_id} cardName={card.card_name} price={price} />
           <button onClick={() => setExpanded((v) => !v)}
             className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded-md hover:bg-muted/30"
             aria-label={expanded ? 'Collapse' : 'Expand'}>

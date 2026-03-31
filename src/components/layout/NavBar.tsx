@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { LayoutDashboard, ScanLine, Archive, MessageSquare, LogOut, Layers, BookOpen, Newspaper } from 'lucide-react'
+import { LayoutDashboard, ScanLine, Archive, MessageSquare, LogOut, Layers, BookOpen, Newspaper, Users } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import { signOut } from '@/lib/auth/authService'
@@ -36,6 +36,13 @@ const navItems = [
     icon: MessageSquare,
     activeColor: 'text-sky-400',
     activeGlow: 'shadow-sky-500/20',
+  },
+  {
+    href: '/community',
+    label: 'Community',
+    icon: Users,
+    activeColor: 'text-violet-400',
+    activeGlow: 'shadow-violet-500/20',
   },
   {
     href: '/sets',
