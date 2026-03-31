@@ -4,18 +4,15 @@ import { useState, useEffect, useMemo } from 'react'
 import {
   ResponsiveContainer,
   ComposedChart,
-  BarChart,
-  Bar,
   Area,
   Line,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
-  Cell,
 } from 'recharts'
 import { Skeleton } from '@/components/ui/skeleton'
-import { RefreshCw, AlertTriangle, TrendingUp, Award } from 'lucide-react'
+import { RefreshCw, AlertTriangle, TrendingUp } from 'lucide-react'
 import type { SalePoint } from '@/app/api/cards/sold-history/route'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -48,6 +45,23 @@ interface GradeStat {
   color:    string
 }
 
+// ── Grade definitions (always shown even with no eBay data) ─────────────────
+
+const PSA_GRADES = [10, 9, 8, 7, 6, 5, 4, 3, 2, 1] as const
+
+const PSA_COLORS: Record<number, string> = {
+  10: '#34d399',  // emerald
+  9:  '#60a5fa',  // blue
+  8:  '#818cf8',  // indigo
+  7:  '#c084fc',  // purple
+  6:  '#f472b6',  // pink
+  5:  '#fb923c',  // orange
+  4:  '#fbbf24',  // amber
+  3:  '#a78bfa',  // violet
+  2:  '#94a3b8',  // slate
+  1:  '#64748b',  // slate-dim
+}
+
 // ── Palette ───────────────────────────────────────────────────────────────────
 
 const PALETTE = {
@@ -55,11 +69,17 @@ const PALETTE = {
   jp:     '#fb7185',
   graded: '#fbbf24',
   grades: {
-    'PSA 10':  '#34d399',
+    'PSA 10':  PSA_COLORS[10],
     'PSA 9.5': '#818cf8',
-    'PSA 9':   '#60a5fa',
-    'PSA 8':   '#c084fc',
-    'PSA 7':   '#94a3b8',
+    'PSA 9':   PSA_COLORS[9],
+    'PSA 8':   PSA_COLORS[8],
+    'PSA 7':   PSA_COLORS[7],
+    'PSA 6':   PSA_COLORS[6],
+    'PSA 5':   PSA_COLORS[5],
+    'PSA 4':   PSA_COLORS[4],
+    'PSA 3':   PSA_COLORS[3],
+    'PSA 2':   PSA_COLORS[2],
+    'PSA 1':   PSA_COLORS[1],
     'BGS 10':  '#fde68a',
     'BGS 9.5': '#34d399',
     'BGS 9':   '#60a5fa',
@@ -160,7 +180,7 @@ function collectGrades(points: SalePoint[]): string[] {
     .map(([k]) => k)
 }
 
-function buildGradeStats(points: SalePoint[]): GradeStat[] {
+function buildGradeStats(points: SalePoint[]): Map<string, GradeStat> {
   const map = new Map<string, number[]>()
   for (const p of points) {
     if (!p.grader || p.grade == null) continue
@@ -169,20 +189,18 @@ function buildGradeStats(points: SalePoint[]): GradeStat[] {
     map.get(key)!.push(p.price)
   }
 
-  return [...map.entries()]
-    .map(([label, prices]) => ({
+  const result = new Map<string, GradeStat>()
+  for (const [label, prices] of map.entries()) {
+    result.set(label, {
       label,
       count:    prices.length,
       avgPrice: Math.round(prices.reduce((s, p) => s + p, 0) / prices.length * 100) / 100,
       maxPrice: Math.max(...prices),
       minPrice: Math.min(...prices),
       color:    gradeColor(label),
-    }))
-    .sort((a, b) => {
-      const [ag, an] = a.label.split(' '), [bg, bn] = b.label.split(' ')
-      if (ag !== bg) return ag.localeCompare(bg)
-      return parseFloat(bn) - parseFloat(an)
     })
+  }
+  return result
 }
 
 // ── Tooltips ───────────────────────────────────────────────────────────────────
@@ -214,30 +232,6 @@ function ChartTooltip({ active, payload, label, color }: any) {
   )
 }
 
-function GradeBarTooltip({ active, payload }: any) {
-  if (!active || !payload?.length) return null
-  const d = payload[0]?.payload as GradeStat
-  return (
-    <div className="rounded-xl border border-white/10 bg-black/75 backdrop-blur-md px-3 py-2.5 text-xs shadow-2xl min-w-[130px]">
-      <p className="font-bold mb-1.5" style={{ color: d.color }}>{d.label}</p>
-      <div className="space-y-0.5">
-        <div className="flex justify-between gap-4">
-          <span className="text-white/40">Sales (90d)</span>
-          <span className="tabular-nums text-white/80 font-semibold">{d.count}</span>
-        </div>
-        <div className="flex justify-between gap-4">
-          <span className="text-white/40">Avg price</span>
-          <span className="tabular-nums text-white/80 font-semibold">${d.avgPrice.toFixed(2)}</span>
-        </div>
-        <div className="flex justify-between gap-4">
-          <span className="text-white/40">Range</span>
-          <span className="tabular-nums text-white/60">${d.minPrice.toFixed(2)} – ${d.maxPrice.toFixed(2)}</span>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // ── Pill button ────────────────────────────────────────────────────────────────
 
 function Pill({ active, onClick, children, color }: {
@@ -257,64 +251,124 @@ function Pill({ active, onClick, children, color }: {
   )
 }
 
-// ── Grade distribution panel ──────────────────────────────────────────────────
+// ── PSA Grade Panel — always visible on Graded tab ────────────────────────────
 
-function GradeDistributionPanel({ gradeStats }: { gradeStats: GradeStat[] }) {
-  if (!gradeStats.length) return null
-  const maxCount = Math.max(...gradeStats.map(g => g.count))
+function GradePanel({
+  gradeStats,
+  rateLimited,
+  catalogId,
+}: {
+  gradeStats: Map<string, GradeStat>
+  rateLimited: boolean
+  catalogId:   string
+}) {
+  const topGrade = PSA_GRADES.find((g) => gradeStats.get(`PSA ${g}`)?.count ?? 0 > 0) ?? 10
+  const maxCount = Math.max(1, ...PSA_GRADES.map((g) => gradeStats.get(`PSA ${g}`)?.count ?? 0))
 
   return (
-    <div className="mt-4 rounded-2xl border border-white/8 bg-white/[0.02] p-4 space-y-3">
-      <div className="flex items-center gap-2">
-        <Award className="h-3.5 w-3.5 text-amber-400" />
-        <span className="text-[11px] font-semibold text-white/60 uppercase tracking-wider">
-          Graded Sales Distribution (90d)
-        </span>
-        <span className="ml-auto text-[10px] text-white/25">from eBay sold listings</span>
+    <div className="rounded-2xl border border-white/8 bg-white/[0.02] overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-semibold text-white/50 uppercase tracking-wider">
+            PSA Grade Prices
+          </span>
+          <span className="text-[10px] text-white/20 font-normal">90-day eBay sales</span>
+        </div>
+        {rateLimited && (
+          <a
+            href={`/api/cards/sold-history?catalogId=${catalogId}&lang=en&force=1`}
+            className="flex items-center gap-1 text-[10px] text-amber-400/60 hover:text-amber-400 transition-colors"
+            target="_blank" rel="noreferrer"
+          >
+            <AlertTriangle className="h-3 w-3" />
+            Refresh eBay data
+          </a>
+        )}
       </div>
 
-      {/* Bar chart */}
-      <div className="h-28">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={gradeStats} margin={{ top: 4, right: 4, bottom: 0, left: 0 }} barSize={20}>
-            <XAxis
-              dataKey="label"
-              tick={{ fontSize: 9, fill: 'rgba(255,255,255,0.3)' }}
-              tickLine={false}
-              axisLine={false}
-            />
-            <YAxis hide />
-            <Tooltip content={<GradeBarTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
-            <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-              {gradeStats.map((g) => (
-                <Cell key={g.label} fill={g.color} fillOpacity={0.75} />
-              ))}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      {/* Rate limited banner */}
+      {rateLimited && (
+        <div className="flex items-center gap-2 px-4 py-2.5 bg-amber-500/8 border-b border-amber-500/15">
+          <AlertTriangle className="h-3.5 w-3.5 text-amber-400/60 shrink-0" />
+          <p className="text-[11px] text-amber-300/60">
+            eBay price data temporarily unavailable — showing last known prices where cached
+          </p>
+        </div>
+      )}
 
-      {/* Table */}
-      <div className="space-y-1">
-        {gradeStats.map((g) => (
-          <div key={g.label} className="flex items-center gap-2 text-[11px]">
-            <span className="w-16 font-semibold" style={{ color: g.color }}>{g.label}</span>
-            {/* population bar */}
-            <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
-              <div
-                className="h-full rounded-full transition-all"
-                style={{ width: `${(g.count / maxCount) * 100}%`, backgroundColor: g.color, opacity: 0.6 }}
-              />
+      {/* Grade rows */}
+      <div className="divide-y divide-white/[0.04]">
+        {PSA_GRADES.map((num) => {
+          const key  = `PSA ${num}`
+          const stat = gradeStats.get(key)
+          const col  = PSA_COLORS[num]
+          const isTop = num === topGrade && !!stat
+
+          return (
+            <div
+              key={num}
+              className={[
+                'flex items-center gap-3 px-4 py-2.5 transition-colors',
+                isTop ? 'bg-white/[0.025]' : 'hover:bg-white/[0.015]',
+              ].join(' ')}
+            >
+              {/* Color dot + label */}
+              <div className="flex items-center gap-2 w-[56px] shrink-0">
+                <span
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: col }}
+                />
+                <span className="text-[12px] font-semibold tabular-nums" style={{ color: col }}>
+                  {key}
+                </span>
+              </div>
+
+              {/* Population bar */}
+              <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                {stat ? (
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${(stat.count / maxCount) * 100}%`,
+                      backgroundColor: col,
+                      opacity: 0.5,
+                    }}
+                  />
+                ) : (
+                  <div className="h-full w-0" />
+                )}
+              </div>
+
+              {/* Sales count */}
+              <span className="w-10 text-right text-[11px] tabular-nums text-white/35 shrink-0">
+                {stat ? `${stat.count} sold` : <span className="text-white/15">—</span>}
+              </span>
+
+              {/* Avg price — main emphasis */}
+              <span className={[
+                'w-20 text-right tabular-nums font-semibold text-[13px] shrink-0',
+                stat ? 'text-white/85' : 'text-white/15',
+              ].join(' ')}>
+                {stat ? `$${stat.avgPrice.toFixed(2)}` : '—'}
+              </span>
+
+              {/* Range — subtle */}
+              <span className="w-28 text-right text-[10px] tabular-nums text-white/25 shrink-0 hidden sm:block">
+                {stat && stat.count > 1
+                  ? `$${stat.minPrice.toFixed(0)} – $${stat.maxPrice.toFixed(0)}`
+                  : ''}
+              </span>
             </div>
-            <span className="w-8 text-right tabular-nums text-white/50">{g.count}</span>
-            <span className="w-20 text-right tabular-nums text-white/70 font-medium">${g.avgPrice.toFixed(2)} avg</span>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
-      <p className="text-[9px] text-white/20 leading-relaxed">
-        Population based on eBay completed sales. For official PSA/BGS graded population reports, visit psacard.com.
-      </p>
+      <div className="px-4 py-2.5 border-t border-white/5">
+        <p className="text-[9px] text-white/20">
+          Based on completed eBay sales. For official PSA graded population counts visit psacard.com.
+        </p>
+      </div>
     </div>
   )
 }
@@ -329,7 +383,6 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
   const [tab,         setTab]         = useState<MarketTab>('raw')
   const [rangeDays,   setRangeDays]   = useState(90)
   const [grade,       setGrade]       = useState<GradeFilter>('all')
-  const [showPop,     setShowPop]     = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -388,28 +441,6 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
 
   if (loading) return <Skeleton className="h-64 w-full rounded-2xl" />
 
-  // ── Rate limited state ────────────────────────────────────────────────────
-  if (rateLimited && !enPoints.length && !jpPoints.length) {
-    return (
-      <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-5 flex flex-col items-center gap-3 text-center">
-        <AlertTriangle className="h-5 w-5 text-amber-400/70" />
-        <div>
-          <p className="text-sm font-semibold text-white/70">eBay data temporarily unavailable</p>
-          <p className="text-xs text-white/35 mt-1 max-w-xs">
-            eBay&apos;s API rate limit has been reached for today. Sales data will automatically refresh within a few hours — check back soon.
-          </p>
-        </div>
-        <a
-          href={`/api/cards/sold-history?catalogId=${catalogId}&lang=en&force=1`}
-          className="text-[11px] text-amber-400/60 hover:text-amber-400 flex items-center gap-1 transition-colors"
-          target="_blank" rel="noreferrer"
-        >
-          <RefreshCw className="h-3 w-3" /> Try force refresh
-        </a>
-      </div>
-    )
-  }
-
   return (
     <div className="space-y-4">
 
@@ -464,29 +495,43 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
               {Math.abs(trendDelta) < 0.5 ? '→ Flat' : trendUp ? `↑ +$${trendDelta.toFixed(2)}` : `↓ −$${Math.abs(trendDelta).toFixed(2)}`}
             </span>
           )}
-          {/* Graded pop toggle */}
-          {tab === 'graded' && gradeStats.length > 0 && (
-            <button
-              onClick={() => setShowPop(s => !s)}
-              className={[
-                'text-[11px] px-2.5 py-1 rounded-lg font-medium transition-all flex items-center gap-1',
-                showPop ? 'bg-amber-400/20 text-amber-300' : 'bg-white/5 text-white/35 hover:text-white/60',
-              ].join(' ')}
-            >
-              <Award className="h-3 w-3" />
-              Pop
-            </button>
-          )}
         </div>
       </div>
 
-      {/* ── Grade pills ── */}
-      {tab === 'graded' && availGrades.length > 0 && (
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <Pill active={grade === 'all'} onClick={() => setGrade('all')} color={PALETTE.graded}>All Grades</Pill>
-          {availGrades.map((g) => (
-            <Pill key={g} active={grade === g} onClick={() => setGrade(g)} color={gradeColor(g)}>{g}</Pill>
-          ))}
+      {/* ── Graded tab: grade pills + always-visible PSA panel ── */}
+      {tab === 'graded' && (
+        <>
+          {/* Grade pills (only when eBay data exists) */}
+          {availGrades.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <Pill active={grade === 'all'} onClick={() => setGrade('all')} color={PALETTE.graded}>All Grades</Pill>
+              {availGrades.map((g) => (
+                <Pill key={g} active={grade === g} onClick={() => setGrade(g)} color={gradeColor(g)}>{g}</Pill>
+              ))}
+            </div>
+          )}
+
+          {/* PSA Grade Panel — always rendered regardless of eBay data */}
+          <GradePanel
+            gradeStats={gradeStats}
+            rateLimited={rateLimited}
+            catalogId={catalogId}
+          />
+        </>
+      )}
+
+      {/* ── Non-graded rate limited notice ── */}
+      {tab !== 'graded' && rateLimited && (
+        <div className="flex items-center gap-2 rounded-xl border border-amber-500/15 bg-amber-500/5 px-3.5 py-2.5">
+          <AlertTriangle className="h-3.5 w-3.5 text-amber-400/60 shrink-0" />
+          <p className="text-[11px] text-amber-300/60 flex-1">eBay price data temporarily unavailable — check back in a few hours</p>
+          <a
+            href={`/api/cards/sold-history?catalogId=${catalogId}&lang=en&force=1`}
+            className="shrink-0 flex items-center gap-1 text-[11px] text-amber-400/60 hover:text-amber-400 transition-colors"
+            target="_blank" rel="noreferrer"
+          >
+            <RefreshCw className="h-3 w-3" /> Refresh
+          </a>
         </div>
       )}
 
@@ -519,80 +564,72 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
         </div>
       )}
 
-      {/* ── Empty/no-data state ── */}
-      {chartData.length === 0 ? (
-        <div className="h-24 flex flex-col items-center justify-center rounded-2xl bg-white/[0.02] border border-white/5 gap-1.5">
-          <TrendingUp className="h-4 w-4 text-white/15" />
-          <span className="text-xs text-white/30">No sales data for this period</span>
-          {tab === 'graded' && grade !== 'all' && (
-            <button onClick={() => setGrade('all')} className="text-[11px] text-white/20 hover:text-white/50 underline underline-offset-2">
-              Show all grades
-            </button>
-          )}
-        </div>
-      ) : (
-        <div className="rounded-2xl overflow-hidden bg-white/[0.02] border border-white/5 p-3 pb-2">
-          <ResponsiveContainer width="100%" height={200}>
-            <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-              <defs>
-                <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%"   stopColor={chartColor} stopOpacity={0.22} />
-                  <stop offset="100%" stopColor={chartColor} stopOpacity={0}    />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} strokeDasharray="0" />
-              <XAxis
-                dataKey="label"
-                tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.25)', fontFamily: 'ui-monospace,monospace' }}
-                tickLine={false} axisLine={false} interval="preserveStartEnd" dy={4}
-              />
-              <YAxis
-                domain={[yMin, yMax]}
-                tickFormatter={(v) => `$${v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v}`}
-                tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.25)', fontFamily: 'ui-monospace,monospace' }}
-                tickLine={false} axisLine={false} width={46} dx={-4}
-              />
-              <Tooltip content={(props: any) => <ChartTooltip {...props} color={chartColor} />} />
-
-              <Area type="monotone" dataKey="high" stroke="none" fill={`url(#${gradId})`}
-                legendType="none" activeDot={false} isAnimationActive={false} />
-              <Area type="monotone" dataKey="low"  stroke="none" fill="transparent"
-                legendType="none" activeDot={false} isAnimationActive={false} />
-
-              <Line type="monotoneX" dataKey="avg" stroke={chartColor} strokeWidth={2.5} dot={false}
-                activeDot={{ r: 5, fill: chartColor, stroke: 'rgba(0,0,0,0.4)', strokeWidth: 2 }}
-                isAnimationActive animationDuration={700} />
-
-              {hasTrend && (
-                <Line type="linear" dataKey="trend" stroke="rgba(255,255,255,0.15)"
-                  strokeWidth={1.5} strokeDasharray="5 4" dot={false} activeDot={false}
-                  isAnimationActive={false} />
-              )}
-            </ComposedChart>
-          </ResponsiveContainer>
-
-          <div className="flex items-center gap-4 px-1 mt-1.5 text-[10px] text-white/25">
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: chartColor }} />
-              Daily avg
-            </span>
-            {hasTrend && (
-              <span className="flex items-center gap-1.5">
-                <span className="inline-block w-5 border-t border-dashed border-white/20" />
-                Trend
-              </span>
-            )}
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block w-3 h-3 rounded-sm" style={{ backgroundColor: chartColor + '30' }} />
-              Hi / Lo range
-            </span>
+      {/* ── Chart (hidden on graded tab when no data) ── */}
+      {!(tab === 'graded' && chartData.length === 0) && (
+        chartData.length === 0 ? (
+          <div className="h-24 flex flex-col items-center justify-center rounded-2xl bg-white/[0.02] border border-white/5 gap-1.5">
+            <TrendingUp className="h-4 w-4 text-white/15" />
+            <span className="text-xs text-white/30">No sales data for this period</span>
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="rounded-2xl overflow-hidden bg-white/[0.02] border border-white/5 p-3 pb-2">
+            <ResponsiveContainer width="100%" height={200}>
+              <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                <defs>
+                  <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%"   stopColor={chartColor} stopOpacity={0.22} />
+                    <stop offset="100%" stopColor={chartColor} stopOpacity={0}    />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} strokeDasharray="0" />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.25)', fontFamily: 'ui-monospace,monospace' }}
+                  tickLine={false} axisLine={false} interval="preserveStartEnd" dy={4}
+                />
+                <YAxis
+                  domain={[yMin, yMax]}
+                  tickFormatter={(v) => `$${v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v}`}
+                  tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.25)', fontFamily: 'ui-monospace,monospace' }}
+                  tickLine={false} axisLine={false} width={46} dx={-4}
+                />
+                <Tooltip content={(props: any) => <ChartTooltip {...props} color={chartColor} />} />
 
-      {/* ── Grade distribution panel ── */}
-      {tab === 'graded' && showPop && gradeStats.length > 0 && (
-        <GradeDistributionPanel gradeStats={gradeStats} />
+                <Area type="monotone" dataKey="high" stroke="none" fill={`url(#${gradId})`}
+                  legendType="none" activeDot={false} isAnimationActive={false} />
+                <Area type="monotone" dataKey="low"  stroke="none" fill="transparent"
+                  legendType="none" activeDot={false} isAnimationActive={false} />
+
+                <Line type="monotoneX" dataKey="avg" stroke={chartColor} strokeWidth={2.5} dot={false}
+                  activeDot={{ r: 5, fill: chartColor, stroke: 'rgba(0,0,0,0.4)', strokeWidth: 2 }}
+                  isAnimationActive animationDuration={700} />
+
+                {hasTrend && (
+                  <Line type="linear" dataKey="trend" stroke="rgba(255,255,255,0.15)"
+                    strokeWidth={1.5} strokeDasharray="5 4" dot={false} activeDot={false}
+                    isAnimationActive={false} />
+                )}
+              </ComposedChart>
+            </ResponsiveContainer>
+
+            <div className="flex items-center gap-4 px-1 mt-1.5 text-[10px] text-white/25">
+              <span className="flex items-center gap-1.5">
+                <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: chartColor }} />
+                Daily avg
+              </span>
+              {hasTrend && (
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-5 border-t border-dashed border-white/20" />
+                  Trend
+                </span>
+              )}
+              <span className="flex items-center gap-1.5">
+                <span className="inline-block w-3 h-3 rounded-sm" style={{ backgroundColor: chartColor + '30' }} />
+                Hi / Lo range
+              </span>
+            </div>
+          </div>
+        )
       )}
     </div>
   )
