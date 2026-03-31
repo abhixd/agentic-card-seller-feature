@@ -62,10 +62,11 @@ async function fetchSetMeta(setId: string) {
 }
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ setId: string }> }
 ) {
   const { setId } = await params
+  const force = new URL(req.url).searchParams.get('force') === '1'
   const readClient  = await createClient()
   const writeClient = createServiceClient()
 
@@ -81,11 +82,13 @@ export async function GET(
 
   const existing = (rows ?? []) as CardSearchResult[]
 
+  const needsSync = force || existing.length < 10
+
   // Fetch set meta and trigger sync in parallel if needed
   const [setMeta] = await Promise.all([
     fetchSetMeta(setId),
     (async () => {
-      if (existing.length < 10) {
+      if (needsSync) {
         try {
           const apiCards = await fetchSetCardsFromApi(setId)
           if (apiCards.length > 0) {
@@ -99,7 +102,7 @@ export async function GET(
   ])
 
   // Re-query if we triggered a sync
-  if (existing.length < 10) {
+  if (needsSync) {
     const { data: refreshed } = await readClient
       .from('card_catalog_items')
       .select(
