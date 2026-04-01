@@ -19,7 +19,7 @@ interface JustTcgVariant {
   printing:       string   // 'Normal' | 'Foil'
   language:       string   // 'English' | 'Japanese' | ...
   price:          number
-  priceHistory?:  Array<{ timestamp: number; price: number }>
+  priceHistory?:  Array<{ t: number; p: number }>  // API uses short field names
 }
 
 interface JustTcgCard {
@@ -123,9 +123,9 @@ export async function fetchJustTcgPriceHistory(
     if (!variant || !variant.priceHistory?.length) return { points: [], keyword, apiError: false }
 
     const points: JustTcgPoint[] = variant.priceHistory
-      .map((p) => ({
-        date:  new Date(p.timestamp * 1000).toISOString(),
-        price: p.price,
+      .map((p: any) => ({
+        date:  new Date((p.t ?? p.timestamp) * 1000).toISOString(),
+        price: p.p ?? p.price,
       }))
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
