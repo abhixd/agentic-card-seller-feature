@@ -107,14 +107,10 @@ export async function fetchJustTcgPriceHistory(
       ...(force ? { cache: 'no-store' } : { next: { revalidate: 86_400 } }),
     })
 
-    if (res.status === 429) {
-      console.warn('[JustTCG] Rate limit hit')
-      return { points: [], keyword, apiError: true }
-    }
-
     if (!res.ok) {
-      console.error('[JustTCG] HTTP', res.status)
-      return { points: [], keyword, apiError: true }
+      const body = await res.text().catch(() => '')
+      console.error('[JustTCG] HTTP', res.status, body.slice(0, 200))
+      return { points: [], keyword, apiError: true, debugStatus: res.status, debugBody: body.slice(0, 200) } as any
     }
 
     const json = await res.json()
@@ -135,7 +131,8 @@ export async function fetchJustTcgPriceHistory(
 
     return { points, keyword, apiError: false }
   } catch (err) {
-    console.error('[JustTCG] Fetch error:', err)
-    return { points: [], keyword, apiError: true }
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[JustTCG] Fetch error:', msg)
+    return { points: [], keyword, apiError: true, debugError: msg } as any
   }
 }

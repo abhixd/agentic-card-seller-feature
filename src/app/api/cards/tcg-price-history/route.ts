@@ -68,12 +68,13 @@ export async function GET(request: NextRequest) {
   }
 
   // ── Live JustTCG fetch ────────────────────────────────────────────────────
-  const { points, keyword, apiError } = await fetchJustTcgPriceHistory(
+  const fetchResult = await fetchJustTcgPriceHistory(
     card.card_name,
     card.card_number,
     duration,
     force,
   )
+  const { points, keyword, apiError } = fetchResult as any
 
   // ── Write back to DB cache ────────────────────────────────────────────────
   try {
@@ -93,5 +94,11 @@ export async function GET(request: NextRequest) {
     console.error('[tcg-price-history] Cache write error:', err)
   }
 
-  return NextResponse.json({ points, keyword, rateLimited: apiError })
+  const result = fetchResult as any
+  return NextResponse.json({
+    points,
+    keyword,
+    rateLimited: apiError,
+    ...(force && { debug: { status: result.debugStatus, body: result.debugBody, error: result.debugError } }),
+  })
 }
