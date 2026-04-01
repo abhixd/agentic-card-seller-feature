@@ -96,18 +96,24 @@ export function buildKeyword(card: CardMeta, lang: 'en' | 'jp' = 'en'): string {
 
 // ── eBay Finding API ──────────────────────────────────────────────────────────
 
+export interface EbayFetchResult {
+  comps:    RawEbayComp[]
+  apiError: boolean   // true = rate-limited or API failure; false = success (even if 0 results)
+}
+
 /**
  * Fetch completed eBay sales for the given keyword.
- * Uses Next.js fetch caching (8-hour revalidation) to avoid rate-limit errors.
- * Returns [] on any failure.
+ * Pass force=true to bypass the Next.js fetch cache (e.g. manual refresh).
+ * Returns { comps: [], apiError: true } on rate-limit / API errors.
+ * Returns { comps: [], apiError: false } when eBay succeeds but found nothing.
  */
-export async function fetchEbayComps(keyword: string): Promise<RawEbayComp[]> {
+export async function fetchEbayComps(keyword: string, force = false): Promise<EbayFetchResult> {
   const appId   = process.env.EBAY_APP_ID
   const baseUrl = process.env.EBAY_FINDING_API_BASE_URL
 
   if (!appId || !baseUrl || appId.includes('SBX') || appId === 'YourEbayAppId-Sandbox') {
     console.warn('[eBay] Missing or sandbox EBAY_APP_ID — returning empty comps')
-    return []
+    return { comps: [], apiError: false }
   }
 
   const params = new URLSearchParams({
@@ -124,14 +130,14 @@ export async function fetchEbayComps(keyword: string): Promise<RawEbayComp[]> {
   })
 
   try {
-    // 8-hour cache prevents rate-limit exhaustion across serverless invocations
     const res = await fetch(`${baseUrl}?${params}`, {
-      next: { revalidate: 28_800 }, // 8 hours
+      // force=true bypasses the Next.js cache so a manual refresh fetches live eBay data
+      ...(force ? { cache: 'no-store' } : { next: { revalidate: 28_800 } }), // 8 hours
     })
 
     if (!res.ok) {
       console.error('[eBay] HTTP', res.status)
-      return []
+      return { comps: [], apiError: true }
     }
 
     const json: EbayResponse = await res.json()
@@ -141,15 +147,15 @@ export async function fetchEbayComps(keyword: string): Promise<RawEbayComp[]> {
       // Top-level errorMessage (rate limit, auth error, etc.)
       const errMsg = (json as any).errorMessage?.[0]?.error?.[0]?.message?.[0]
       console.error('[eBay] No findCompletedItemsResponse. Error:', errMsg ?? 'unknown')
-      return []
+      return { comps: [], apiError: true }
     }
 
     if (root.ack?.[0] !== 'Success') {
       console.error('[eBay] API error:', root.errorMessage?.[0]?.error?.[0]?.message?.[0])
-      return []
+      return { comps: [], apiError: true }
     }
 
-    return (root.searchResult?.[0]?.item ?? [])
+    const comps = (root.searchResult?.[0]?.item ?? [])
       .map((item) => {
         const priceStr  = item.sellingStatus?.[0]?.currentPrice?.[0]?.['__value__']
         const soldPrice = priceStr ? parseFloat(priceStr) : null
@@ -163,8 +169,10 @@ export async function fetchEbayComps(keyword: string): Promise<RawEbayComp[]> {
         }
       })
       .filter((c): c is RawEbayComp => c !== null)
+
+    return { comps, apiError: false }
   } catch (err) {
     console.error('[eBay] Fetch error:', err)
-    return []
+    return { comps: [], apiError: true }
   }
 }

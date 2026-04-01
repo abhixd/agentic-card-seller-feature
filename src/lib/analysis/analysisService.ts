@@ -61,8 +61,8 @@ export async function runAnalysis(
 
   // ── 2. Fetch & normalise comps ───────────────────────────────────────────
   const keyword    = buildKeyword(card)
-  const rawComps   = await fetchEbayComps(keyword)
-  const comps      = normalizeComps(rawComps)
+  const { comps: rawComps } = await fetchEbayComps(keyword)
+  const comps               = normalizeComps(rawComps)
 
   // ── 3. Fee calculation ───────────────────────────────────────────────────
   const fees = calculateFees({

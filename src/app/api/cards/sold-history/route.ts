@@ -83,8 +83,9 @@ export async function GET(request: NextRequest) {
   }
 
   // ── Live eBay fetch ──────────────────────────────────────────────────────────
-  const rawComps = await fetchEbayComps(keyword)
-  const cutoff   = Date.now() - NINETY_DAYS_MS
+  // Pass force=true so a manual refresh bypasses the Next.js 8h fetch cache too.
+  const { comps: rawComps, apiError } = await fetchEbayComps(keyword, force)
+  const cutoff = Date.now() - NINETY_DAYS_MS
 
   const points: SalePoint[] = rawComps
     .filter((c) => c.soldAt && c.soldAt.getTime() >= cutoff)
@@ -102,25 +103,30 @@ export async function GET(request: NextRequest) {
     })
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
-  // ── Write back to DB cache — ALWAYS, even on empty/rate-limited ───────────
-  // Empty results get a 2h retry window; successful results last 24h.
+  // ── Write back to DB cache ────────────────────────────────────────────────
+  // - API error (rate limit / auth failure): cache with 2h empty_until so we
+  //   back off and surface the amber warning.
+  // - Success with 0 results (genuine no data): cache for full 24h, no warning.
+  // - Success with results: cache for 24h.
   if (card && catalogIdStr) {
     try {
       const svcClient    = createServiceClient()
       const cacheKey     = lang === 'en' ? 'ebay_en_cache' : 'ebay_jp_cache'
       const existingMeta = (card.metadata_json as Record<string, unknown>) ?? {}
       const now          = new Date()
-      const cachePayload =
-        points.length === 0
-          ? {
-              points:      [],
-              fetched_at:  now.toISOString(),
-              empty_until: new Date(Date.now() + CACHE_EMPTY_MS).toISOString(),
-            }
-          : {
-              points,
-              fetched_at: now.toISOString(),
-            }
+
+      const cachePayload = apiError
+        ? {
+            points:      [],
+            fetched_at:  now.toISOString(),
+            empty_until: new Date(Date.now() + CACHE_EMPTY_MS).toISOString(),
+          }
+        : {
+            points,
+            fetched_at: now.toISOString(),
+            // Clear any stale empty_until from a previous rate-limit period
+            empty_until: null,
+          }
 
       await svcClient
         .from('card_catalog_items')
@@ -136,6 +142,6 @@ export async function GET(request: NextRequest) {
     keyword,
     lang,
     total:       rawComps.length,
-    rateLimited: rawComps.length === 0 && !!card,
+    rateLimited: apiError,
   })
 }

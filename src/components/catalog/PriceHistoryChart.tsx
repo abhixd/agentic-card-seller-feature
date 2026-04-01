@@ -256,11 +256,13 @@ function Pill({ active, onClick, children, color }: {
 function GradePanel({
   gradeStats,
   rateLimited,
-  catalogId,
+  refreshing,
+  onRefresh,
 }: {
-  gradeStats: Map<string, GradeStat>
+  gradeStats:  Map<string, GradeStat>
   rateLimited: boolean
-  catalogId:   string
+  refreshing:  boolean
+  onRefresh:   () => void
 }) {
   const topGrade = PSA_GRADES.find((g) => gradeStats.get(`PSA ${g}`)?.count ?? 0 > 0) ?? 10
   const maxCount = Math.max(1, ...PSA_GRADES.map((g) => gradeStats.get(`PSA ${g}`)?.count ?? 0))
@@ -276,14 +278,14 @@ function GradePanel({
           <span className="text-[10px] text-white/20 font-normal">90-day eBay sales</span>
         </div>
         {rateLimited && (
-          <a
-            href={`/api/cards/sold-history?catalogId=${catalogId}&lang=en&force=1`}
-            className="flex items-center gap-1 text-[10px] text-amber-400/60 hover:text-amber-400 transition-colors"
-            target="_blank" rel="noreferrer"
+          <button
+            onClick={onRefresh}
+            disabled={refreshing}
+            className="flex items-center gap-1 text-[10px] text-amber-400/60 hover:text-amber-400 transition-colors disabled:opacity-40"
           >
-            <AlertTriangle className="h-3 w-3" />
-            Refresh eBay data
-          </a>
+            <RefreshCw className={['h-3 w-3', refreshing ? 'animate-spin' : ''].join(' ')} />
+            {refreshing ? 'Refreshing…' : 'Refresh eBay data'}
+          </button>
         )}
       </div>
 
@@ -379,32 +381,50 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
   const [enPoints,    setEnPoints]    = useState<SalePoint[]>([])
   const [jpPoints,    setJpPoints]    = useState<SalePoint[]>([])
   const [loading,     setLoading]     = useState(true)
+  const [refreshing,  setRefreshing]  = useState(false)
   const [rateLimited, setRateLimited] = useState(false)
   const [tab,         setTab]         = useState<MarketTab>('raw')
   const [rangeDays,   setRangeDays]   = useState(90)
   const [grade,       setGrade]       = useState<GradeFilter>('all')
+
+  function loadData(force = false) {
+    const qs = force ? '&force=1' : ''
+    return Promise.all([
+      fetch(`/api/cards/sold-history?catalogId=${catalogId}&lang=en${qs}`).then(r => r.json()),
+      fetch(`/api/cards/sold-history?catalogId=${catalogId}&lang=jp${qs}`).then(r => r.json()),
+    ])
+  }
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     setRateLimited(false)
 
-    Promise.all([
-      fetch(`/api/cards/sold-history?catalogId=${catalogId}&lang=en`).then(r => r.json()),
-      fetch(`/api/cards/sold-history?catalogId=${catalogId}&lang=jp`).then(r => r.json()),
-    ])
+    loadData()
       .then(([en, jp]) => {
         if (cancelled) return
         setEnPoints(en.points ?? [])
         setJpPoints(jp.points ?? [])
-        // Rate limited if BOTH return empty with rateLimited flag
         if (en.rateLimited && jp.rateLimited) setRateLimited(true)
         setLoading(false)
       })
       .catch(() => { if (!cancelled) setLoading(false) })
 
     return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [catalogId])
+
+  async function handleForceRefresh() {
+    setRefreshing(true)
+    try {
+      const [en, jp] = await loadData(true)
+      setEnPoints(en.points ?? [])
+      setJpPoints(jp.points ?? [])
+      setRateLimited(en.rateLimited && jp.rateLimited)
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   useEffect(() => { setGrade('all') }, [tab])
 
@@ -515,7 +535,8 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
           <GradePanel
             gradeStats={gradeStats}
             rateLimited={rateLimited}
-            catalogId={catalogId}
+            refreshing={refreshing}
+            onRefresh={handleForceRefresh}
           />
         </>
       )}
@@ -525,13 +546,14 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
         <div className="flex items-center gap-2 rounded-xl border border-amber-500/15 bg-amber-500/5 px-3.5 py-2.5">
           <AlertTriangle className="h-3.5 w-3.5 text-amber-400/60 shrink-0" />
           <p className="text-[11px] text-amber-300/60 flex-1">eBay price data temporarily unavailable — check back in a few hours</p>
-          <a
-            href={`/api/cards/sold-history?catalogId=${catalogId}&lang=en&force=1`}
-            className="shrink-0 flex items-center gap-1 text-[11px] text-amber-400/60 hover:text-amber-400 transition-colors"
-            target="_blank" rel="noreferrer"
+          <button
+            onClick={handleForceRefresh}
+            disabled={refreshing}
+            className="shrink-0 flex items-center gap-1 text-[11px] text-amber-400/60 hover:text-amber-400 transition-colors disabled:opacity-40"
           >
-            <RefreshCw className="h-3 w-3" /> Refresh
-          </a>
+            <RefreshCw className={['h-3 w-3', refreshing ? 'animate-spin' : ''].join(' ')} />
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
         </div>
       )}
 
