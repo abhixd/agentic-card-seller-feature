@@ -14,11 +14,14 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { RefreshCw, AlertTriangle, TrendingUp } from 'lucide-react'
 import type { SalePoint } from '@/app/api/cards/sold-history/route'
+import type { JustTcgPoint } from '@/lib/justtcg/justTcgApi'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+type DataSource  = 'ebay' | 'justtcg'
 type MarketTab   = 'raw' | 'graded' | 'jp'
 type GradeFilter = 'all' | string
+type TcgDuration = '7d' | '30d' | '90d' | '180d'
 
 interface ChartDay {
   label:  string
@@ -203,6 +206,51 @@ function buildGradeStats(points: SalePoint[]): Map<string, GradeStat> {
   return result
 }
 
+// ── TCG daily price helpers ───────────────────────────────────────────────────
+
+interface TcgChartDay {
+  label:  string
+  isoDay: string
+  price:  number
+  trend?: number
+}
+
+function buildTcgChartDays(points: JustTcgPoint[], days: number): TcgChartDay[] {
+  const cutoff  = Date.now() - days * 86_400_000
+  const inRange = points.filter((p) => new Date(p.date).getTime() >= cutoff)
+  if (!inRange.length) return []
+
+  const rows: TcgChartDay[] = inRange.map((p) => ({
+    label:  new Date(p.date.slice(0, 10) + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    isoDay: p.date.slice(0, 10),
+    price:  Math.round(p.price * 100) / 100,
+  }))
+
+  const reg = linearRegression(rows.map((r, i) => ({ x: i, y: r.price })))
+  if (reg) {
+    return rows.map((r, i) => ({
+      ...r,
+      trend: Math.round((reg.slope * i + reg.intercept) * 100) / 100,
+    }))
+  }
+  return rows
+}
+
+function TcgTooltip({ active, payload, label, color }: any) {
+  if (!active || !payload?.length) return null
+  const d = payload[0]?.payload as TcgChartDay
+  if (!d) return null
+  return (
+    <div className="rounded-xl border border-white/10 bg-black/75 backdrop-blur-md px-3.5 py-3 text-xs shadow-2xl min-w-[148px]">
+      <p className="font-semibold text-white/80 mb-2 text-[11px] tracking-wide">{label}</p>
+      <div className="flex justify-between gap-5">
+        <span className="text-white/40">Market</span>
+        <span className="tabular-nums font-bold" style={{ color }}>${d.price.toFixed(2)}</span>
+      </div>
+    </div>
+  )
+}
+
 // ── Tooltips ───────────────────────────────────────────────────────────────────
 
 function ChartTooltip({ active, payload, label, color }: any) {
@@ -378,16 +426,28 @@ function GradePanel({
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
+  // ── Source selection ──────────────────────────────────────────────────────
+  const [source,      setSource]      = useState<DataSource>('ebay')
+
+  // ── eBay state ────────────────────────────────────────────────────────────
   const [enPoints,    setEnPoints]    = useState<SalePoint[]>([])
   const [jpPoints,    setJpPoints]    = useState<SalePoint[]>([])
+  const [tab,         setTab]         = useState<MarketTab>('raw')
+  const [grade,       setGrade]       = useState<GradeFilter>('all')
+
+  // ── JustTCG state ─────────────────────────────────────────────────────────
+  const [tcgPoints,    setTcgPoints]   = useState<JustTcgPoint[]>([])
+  const [tcgDuration,  setTcgDuration] = useState<TcgDuration>('90d')
+  const [tcgConfigured, setTcgConfigured] = useState(true)
+
+  // ── Shared state ──────────────────────────────────────────────────────────
   const [loading,     setLoading]     = useState(true)
   const [refreshing,  setRefreshing]  = useState(false)
   const [rateLimited, setRateLimited] = useState(false)
-  const [tab,         setTab]         = useState<MarketTab>('raw')
   const [rangeDays,   setRangeDays]   = useState(90)
-  const [grade,       setGrade]       = useState<GradeFilter>('all')
 
-  function loadData(force = false) {
+  // ── eBay fetch ────────────────────────────────────────────────────────────
+  function loadEbayData(force = false) {
     const qs = force ? '&force=1' : ''
     return Promise.all([
       fetch(`/api/cards/sold-history?catalogId=${catalogId}&lang=en${qs}`).then(r => r.json()),
@@ -395,12 +455,20 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
     ])
   }
 
+  // ── JustTCG fetch ─────────────────────────────────────────────────────────
+  function loadTcgData(dur: TcgDuration = tcgDuration, force = false) {
+    const qs = force ? '&force=1' : ''
+    return fetch(`/api/cards/tcg-price-history?catalogId=${catalogId}&duration=${dur}${qs}`).then(r => r.json())
+  }
+
+  // ── Initial load (eBay) ───────────────────────────────────────────────────
   useEffect(() => {
+    if (source !== 'ebay') return
     let cancelled = false
     setLoading(true)
     setRateLimited(false)
 
-    loadData()
+    loadEbayData()
       .then(([en, jp]) => {
         if (cancelled) return
         setEnPoints(en.points ?? [])
@@ -412,15 +480,48 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
 
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [catalogId])
+  }, [catalogId, source])
+
+  // ── Initial load (JustTCG) ────────────────────────────────────────────────
+  useEffect(() => {
+    if (source !== 'justtcg') return
+    let cancelled = false
+    setLoading(true)
+    setRateLimited(false)
+
+    loadTcgData(tcgDuration)
+      .then((res) => {
+        if (cancelled) return
+        setTcgPoints(res.points ?? [])
+        setTcgConfigured(res.configured !== false)
+        if (res.rateLimited) setRateLimited(true)
+        setLoading(false)
+      })
+      .catch(() => { if (!cancelled) setLoading(false) })
+
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalogId, source, tcgDuration])
+
+  // ── Source switch resets ──────────────────────────────────────────────────
+  useEffect(() => {
+    setRateLimited(false)
+    setLoading(true)
+  }, [source])
 
   async function handleForceRefresh() {
     setRefreshing(true)
     try {
-      const [en, jp] = await loadData(true)
-      setEnPoints(en.points ?? [])
-      setJpPoints(jp.points ?? [])
-      setRateLimited(en.rateLimited && jp.rateLimited)
+      if (source === 'ebay') {
+        const [en, jp] = await loadEbayData(true)
+        setEnPoints(en.points ?? [])
+        setJpPoints(jp.points ?? [])
+        setRateLimited(en.rateLimited && jp.rateLimited)
+      } else {
+        const res = await loadTcgData(tcgDuration, true)
+        setTcgPoints(res.points ?? [])
+        setRateLimited(!!res.rateLimited)
+      }
     } finally {
       setRefreshing(false)
     }
@@ -457,12 +558,160 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
   const yMin = chartData.length ? Math.max(0, Math.floor(Math.min(...allPrices) * 0.85)) : 0
   const yMax = chartData.length ? Math.ceil(Math.max(...allPrices) * 1.10) : 100
 
+  // ── TCG-specific derived values ───────────────────────────────────────────
+  const tcgDurationDays: Record<TcgDuration, number> = { '7d': 7, '30d': 30, '90d': 90, '180d': 180 }
+  const tcgChartData  = source === 'justtcg' ? buildTcgChartDays(tcgPoints, tcgDurationDays[tcgDuration]) : []
+  const tcgColor      = '#a78bfa'
+  const tcgHasTrend   = tcgChartData.length >= 4 && tcgChartData[0].trend != null
+  const tcgTrendDelta = tcgHasTrend ? (tcgChartData.at(-1)!.trend! - tcgChartData[0].trend!) : 0
+  const tcgTrendUp    = tcgTrendDelta > 0.5
+  const tcgPrices     = tcgChartData.map(d => d.price)
+  const tcgYMin       = tcgChartData.length ? Math.max(0, Math.floor(Math.min(...tcgPrices) * 0.85)) : 0
+  const tcgYMax       = tcgChartData.length ? Math.ceil(Math.max(...tcgPrices) * 1.10) : 100
+  const tcgGradId     = `grad-tcg-${catalogId.slice(0, 8)}`
+
   const gradId = `grad-${catalogId.slice(0, 8)}-${tab}-${grade.replace(/[\s.]/g, '')}`
 
   if (loading) return <Skeleton className="h-64 w-full rounded-2xl" />
 
   return (
     <div className="space-y-4">
+
+      {/* ── Data source toggle ── */}
+      <div className="flex items-center gap-1 bg-white/5 rounded-xl p-1 w-fit">
+        {([
+          { key: 'ebay',     label: 'eBay Sales',       color: '#818cf8' },
+          { key: 'justtcg',  label: 'TCGPlayer Market',  color: '#a78bfa' },
+        ] as { key: DataSource; label: string; color: string }[]).map(({ key, label, color }) => (
+          <button
+            key={key}
+            onClick={() => setSource(key)}
+            className={[
+              'text-xs px-3 py-1.5 rounded-lg font-medium transition-all',
+              source === key ? 'text-black shadow' : 'text-white/40 hover:text-white/70',
+            ].join(' ')}
+            style={source === key ? { backgroundColor: color } : undefined}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── JustTCG not configured notice ── */}
+      {source === 'justtcg' && !tcgConfigured && (
+        <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.02] px-3.5 py-3">
+          <AlertTriangle className="h-3.5 w-3.5 text-white/30 shrink-0" />
+          <p className="text-[11px] text-white/40">
+            Add a <code className="text-white/60">JUSTTCG_API_KEY</code> environment variable to enable TCGPlayer price history.
+            Get a free key at <span className="text-violet-400">justtcg.com</span>.
+          </p>
+        </div>
+      )}
+
+      {/* ── JustTCG chart ── */}
+      {source === 'justtcg' && tcgConfigured && (
+        <div className="space-y-4">
+          {/* Duration selector + trend badge */}
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-0.5 bg-white/5 rounded-xl p-1">
+              {(['7d', '30d', '90d', '180d'] as TcgDuration[]).map((d) => (
+                <button key={d} onClick={() => setTcgDuration(d)}
+                  className={[
+                    'text-[11px] px-2.5 py-1 rounded-lg font-medium transition-all',
+                    tcgDuration === d ? 'bg-white/12 text-white' : 'text-white/35 hover:text-white/60',
+                  ].join(' ')}>
+                  {d}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-2">
+              {tcgHasTrend && (
+                <span className={[
+                  'text-[11px] font-semibold tabular-nums px-2 py-1 rounded-lg',
+                  Math.abs(tcgTrendDelta) < 0.5 ? 'text-white/40 bg-white/5'
+                    : tcgTrendUp ? 'text-emerald-400 bg-emerald-400/10'
+                    : 'text-red-400 bg-red-400/10',
+                ].join(' ')}>
+                  {Math.abs(tcgTrendDelta) < 0.5 ? '→ Flat' : tcgTrendUp ? `↑ +$${tcgTrendDelta.toFixed(2)}` : `↓ −$${Math.abs(tcgTrendDelta).toFixed(2)}`}
+                </span>
+              )}
+              <span className="text-[10px] text-white/20">{tcgChartData.length} data points</span>
+            </div>
+          </div>
+
+          {/* Rate limited notice */}
+          {rateLimited && (
+            <div className="flex items-center gap-2 rounded-xl border border-amber-500/15 bg-amber-500/5 px-3.5 py-2.5">
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-400/60 shrink-0" />
+              <p className="text-[11px] text-amber-300/60 flex-1">TCGPlayer price data temporarily unavailable</p>
+              <button onClick={handleForceRefresh} disabled={refreshing}
+                className="shrink-0 flex items-center gap-1 text-[11px] text-amber-400/60 hover:text-amber-400 transition-colors disabled:opacity-40">
+                <RefreshCw className={['h-3 w-3', refreshing ? 'animate-spin' : ''].join(' ')} />
+                {refreshing ? 'Refreshing…' : 'Refresh'}
+              </button>
+            </div>
+          )}
+
+          {/* Chart */}
+          {tcgChartData.length === 0 ? (
+            <div className="h-24 flex flex-col items-center justify-center rounded-2xl bg-white/[0.02] border border-white/5 gap-1.5">
+              <TrendingUp className="h-4 w-4 text-white/15" />
+              <span className="text-xs text-white/30">No TCGPlayer price data for this period</span>
+            </div>
+          ) : (
+            <div className="rounded-2xl overflow-hidden bg-white/[0.02] border border-white/5 p-3 pb-2">
+              <ResponsiveContainer width="100%" height={200}>
+                <ComposedChart data={tcgChartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                  <defs>
+                    <linearGradient id={tcgGradId} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%"   stopColor={tcgColor} stopOpacity={0.22} />
+                      <stop offset="100%" stopColor={tcgColor} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} />
+                  <XAxis dataKey="label"
+                    tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.25)', fontFamily: 'ui-monospace,monospace' }}
+                    tickLine={false} axisLine={false} interval="preserveStartEnd" dy={4} />
+                  <YAxis domain={[tcgYMin, tcgYMax]}
+                    tickFormatter={(v) => `$${v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v}`}
+                    tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.25)', fontFamily: 'ui-monospace,monospace' }}
+                    tickLine={false} axisLine={false} width={46} dx={-4} />
+                  <Tooltip content={(props: any) => <TcgTooltip {...props} color={tcgColor} />} />
+                  <Area type="monotone" dataKey="price" stroke="none" fill={`url(#${tcgGradId})`}
+                    legendType="none" activeDot={false} isAnimationActive={false} />
+                  <Line type="monotoneX" dataKey="price" stroke={tcgColor} strokeWidth={2.5} dot={false}
+                    activeDot={{ r: 5, fill: tcgColor, stroke: 'rgba(0,0,0,0.4)', strokeWidth: 2 }}
+                    isAnimationActive animationDuration={700} />
+                  {tcgHasTrend && (
+                    <Line type="linear" dataKey="trend" stroke="rgba(255,255,255,0.15)"
+                      strokeWidth={1.5} strokeDasharray="5 4" dot={false} activeDot={false}
+                      isAnimationActive={false} />
+                  )}
+                </ComposedChart>
+              </ResponsiveContainer>
+              <div className="flex items-center gap-4 px-1 mt-1.5 text-[10px] text-white/25">
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: tcgColor }} />
+                  TCGPlayer market price (NM)
+                </span>
+                {tcgHasTrend && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block w-5 border-t border-dashed border-white/20" />
+                    Trend
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+          <p className="text-[9px] text-white/15 text-right">
+            Data via JustTCG · TCGPlayer market price · NM condition
+          </p>
+        </div>
+      )}
+
+      {/* ── eBay section (only shown when eBay source is active) ── */}
+      {source === 'ebay' && (
+        <>
 
       {/* ── Market tabs ── */}
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -653,6 +902,10 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
           </div>
         )
       )}
+
+        </> // close eBay section fragment
+      )} {/* close source === 'ebay' */}
+
     </div>
   )
 }
