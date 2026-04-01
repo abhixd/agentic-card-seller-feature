@@ -110,7 +110,7 @@ export async function fetchJustTcgPriceHistory(
     if (!res.ok) {
       const body = await res.text().catch(() => '')
       console.error('[JustTCG] HTTP', res.status, body.slice(0, 200))
-      return { points: [], keyword, apiError: true, debugStatus: res.status, debugBody: body.slice(0, 200) } as any
+      return { points: [], keyword, apiError: true }
     }
 
     const json = await res.json()
@@ -131,8 +131,7 @@ export async function fetchJustTcgPriceHistory(
 
     return { points, keyword, apiError: false }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error('[JustTCG] Fetch error:', msg)
-    return { points: [], keyword, apiError: true, debugError: msg } as any
+    console.error('[JustTCG] Fetch error:', err instanceof Error ? err.message : String(err))
+    return { points: [], keyword, apiError: true }
   }
 }

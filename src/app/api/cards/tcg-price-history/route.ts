@@ -94,11 +94,5 @@ export async function GET(request: NextRequest) {
     console.error('[tcg-price-history] Cache write error:', err)
   }
 
-  const result = fetchResult as any
-  return NextResponse.json({
-    points,
-    keyword,
-    rateLimited: apiError,
-    ...(force && { debug: { status: result.debugStatus, body: result.debugBody, error: result.debugError } }),
-  })
+  return NextResponse.json({ points, keyword, rateLimited: apiError })
 }
