@@ -36,13 +36,20 @@ function normaliseNum(n: string | null | undefined): string {
   return String(parseInt(n.split('/')[0], 10))
 }
 
+const CONDITION_RANK: Record<string, number> = {
+  'NM': 5, 'Near Mint': 5,
+  'LP': 4, 'Lightly Played': 4,
+  'MP': 3, 'Moderately Played': 3,
+  'HP': 2, 'Heavily Played': 2,
+  'DMG': 1, 'Damaged': 1,
+}
+
 function pickBestVariant(variants: JustTcgVariant[]): JustTcgVariant | null {
-  // Priority: NM Normal English → NM English → NM anything → first with history
+  // Priority: best condition English → best condition any language → first with history
+  // Printing (Normal / Holofoil / Reverse Holofoil) is NOT filtered — include all
   const score = (v: JustTcgVariant) => {
-    let s = 0
-    if (v.condition === 'NM')       s += 4
-    if (v.printing   === 'Normal')  s += 2
-    if (v.language   === 'English') s += 1
+    let s = CONDITION_RANK[v.condition] ?? 0
+    if (v.language === 'English') s += 10  // strong preference for English
     return s
   }
   const withHistory = variants.filter((v) => (v.priceHistory?.length ?? 0) > 0)
@@ -82,8 +89,12 @@ export async function fetchJustTcgPriceHistory(
   const apiKey = process.env.JUSTTCG_API_KEY
   if (!apiKey) return { points: [], keyword: cardName, apiError: false }
 
+  // Include card number in query to narrow results (e.g. "Charizard ex 125")
+  const baseNum = cardNumber ? cardNumber.split('/')[0] : null
+  const q = baseNum ? `${cardName} ${baseNum}` : cardName
+
   const params = new URLSearchParams({
-    q:                     cardName,
+    q,
     include_price_history: 'true',
     priceHistoryDuration:  duration,
   })
