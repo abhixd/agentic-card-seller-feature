@@ -12,16 +12,20 @@ import {
   Tooltip,
 } from 'recharts'
 import { Skeleton } from '@/components/ui/skeleton'
-import { RefreshCw, AlertTriangle, TrendingUp } from 'lucide-react'
+import { RefreshCw, AlertTriangle, TrendingUp, Sparkles } from 'lucide-react'
 import type { SalePoint } from '@/app/api/cards/sold-history/route'
 import type { JustTcgPoint } from '@/lib/justtcg/justTcgApi'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type DataSource  = 'ebay' | 'justtcg'
-type MarketTab   = 'raw' | 'graded' | 'jp'
-type GradeFilter = 'all' | string
-type TcgDuration = '7d' | '30d' | '90d' | '180d'
+type DataSource      = 'ebay' | 'justtcg'
+type MarketTab       = 'raw' | 'graded' | 'jp'
+type GradeFilter     = 'all' | string
+type TcgDuration     = '1m' | '3m' | '6m' | '1y' | 'all'
+type ForecastHorizon = 7 | 30 | 90 | 180
+
+interface ForecastPoint  { date: string; yhat: number; lower: number; upper: number }
+interface ChangePoint    { date: string; delta: number }
 
 interface ChartDay {
   label:  string
@@ -209,24 +213,42 @@ function buildGradeStats(points: SalePoint[]): Map<string, GradeStat> {
 // ── TCG daily price helpers ───────────────────────────────────────────────────
 
 interface TcgChartDay {
-  label:  string
-  isoDay: string
-  price:  number
-  trend?: number
+  label:          string
+  isoDay:         string
+  price?:         number        // actual price (null in forecast-only rows)
+  trend?:         number        // OLS trend line (historical only)
+  forecast?:      number        // Prophet yhat (forecast rows only)
+  forecastLower?: number        // 80% CI lower
+  forecastUpper?: number        // 80% CI upper
+  isChangepoint?: boolean
 }
 
 function buildTcgChartDays(points: JustTcgPoint[], days: number): TcgChartDay[] {
-  const cutoff  = Date.now() - days * 86_400_000
-  const inRange = points.filter((p) => new Date(p.date).getTime() >= cutoff)
-  if (!inRange.length) return []
+  if (!points.length) return []
 
-  const rows: TcgChartDay[] = inRange.map((p) => ({
-    label:  new Date(p.date.slice(0, 10) + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+  // Apply time-window filter (points are pre-filtered but guard here too)
+  const cutoff = days >= 99999 ? 0 : Date.now() - days * 86_400_000
+  const filtered = cutoff > 0
+    ? points.filter((p) => new Date(p.date).getTime() >= cutoff)
+    : points
+
+  if (!filtered.length) return []
+
+  // Use year in label when range spans multiple years
+  const oldestYear = new Date(filtered[0].date).getFullYear()
+  const newestYear = new Date(filtered[filtered.length - 1].date).getFullYear()
+  const showYear   = oldestYear !== newestYear
+
+  const rows: TcgChartDay[] = filtered.map((p) => ({
+    label:  new Date(p.date.slice(0, 10) + 'T12:00:00Z').toLocaleDateString('en-US', {
+      month: 'short', day: 'numeric',
+      ...(showYear ? { year: '2-digit' } : {}),
+    }),
     isoDay: p.date.slice(0, 10),
     price:  Math.round(p.price * 100) / 100,
   }))
 
-  const reg = linearRegression(rows.map((r, i) => ({ x: i, y: r.price })))
+  const reg = linearRegression(rows.map((r, i) => ({ x: i, y: r.price! })))
   if (reg) {
     return rows.map((r, i) => ({
       ...r,
@@ -236,16 +258,195 @@ function buildTcgChartDays(points: JustTcgPoint[], days: number): TcgChartDay[] 
   return rows
 }
 
+function mergeForecast(
+  base: TcgChartDay[],
+  forecast: ForecastPoint[],
+  fitted: ForecastPoint[],
+  changepoints: ChangePoint[],
+): TcgChartDay[] {
+  const cpSet = new Set(changepoints.map((c) => c.date))
+
+  // Mark changepoints on existing rows
+  const marked = base.map((r) => ({
+    ...r,
+    isChangepoint: cpSet.has(r.isoDay),
+  }))
+
+  // Overlay fitted values (Prophet's in-sample yhat) onto historical rows
+  // We keep the actual `price` line and add a separate `forecast` track
+  // so the two can be styled independently.
+  const fittedByDay = new Map(fitted.map((f) => [f.date, f]))
+  const withFitted = marked.map((r) => {
+    const f = fittedByDay.get(r.isoDay)
+    return f ? { ...r, forecast: f.yhat, forecastLower: f.lower, forecastUpper: f.upper } : r
+  })
+
+  // Append future forecast rows
+  const lastActual = base.at(-1)?.isoDay ?? ''
+  const futureRows: TcgChartDay[] = forecast
+    .filter((f) => f.date > lastActual)
+    .map((f) => ({
+      label:          new Date(f.date + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      isoDay:         f.date,
+      // price intentionally absent — Recharts will gap the actual line here
+      forecast:       Math.round(f.yhat * 100) / 100,
+      forecastLower:  Math.round(f.lower * 100) / 100,
+      forecastUpper:  Math.round(f.upper * 100) / 100,
+      isChangepoint:  false,
+    }))
+
+  return [...withFitted, ...futureRows]
+}
+
 function TcgTooltip({ active, payload, label, color }: any) {
   if (!active || !payload?.length) return null
   const d = payload[0]?.payload as TcgChartDay
   if (!d) return null
+  const isForecast = d.price == null
   return (
-    <div className="rounded-xl border border-white/10 bg-black/75 backdrop-blur-md px-3.5 py-3 text-xs shadow-2xl min-w-[148px]">
-      <p className="font-semibold text-white/80 mb-2 text-[11px] tracking-wide">{label}</p>
-      <div className="flex justify-between gap-5">
-        <span className="text-white/40">Market</span>
-        <span className="tabular-nums font-bold" style={{ color }}>${d.price.toFixed(2)}</span>
+    <div className="rounded-xl border border-white/10 bg-black/75 backdrop-blur-md px-3.5 py-3 text-xs shadow-2xl min-w-[160px]">
+      <div className="flex items-center gap-1.5 mb-2">
+        <p className="font-semibold text-white/80 text-[11px] tracking-wide">{label}</p>
+        {isForecast && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-violet-500/20 text-violet-300 font-medium">forecast</span>
+        )}
+        {d.isChangepoint && (
+          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-medium">changepoint</span>
+        )}
+      </div>
+      {d.price != null && (
+        <div className="flex justify-between gap-5">
+          <span className="text-white/40">Market</span>
+          <span className="tabular-nums font-bold" style={{ color }}>${d.price.toFixed(2)}</span>
+        </div>
+      )}
+      {d.forecast != null && (
+        <div className="space-y-0.5 mt-1">
+          <div className="flex justify-between gap-5">
+            <span className="text-white/40">{isForecast ? 'Forecast' : 'Fitted'}</span>
+            <span className="tabular-nums font-bold text-violet-300">${d.forecast.toFixed(2)}</span>
+          </div>
+          {d.forecastLower != null && d.forecastUpper != null && (
+            <div className="flex justify-between gap-5">
+              <span className="text-white/40">80% CI</span>
+              <span className="tabular-nums text-white/50">${d.forecastLower.toFixed(2)} – ${d.forecastUpper.toFixed(2)}</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Forecast evaluation panel ─────────────────────────────────────────────────
+
+function ForecastPanel({
+  chartData,
+  changepoints,
+  horizon,
+  color,
+}: {
+  chartData:    TcgChartDay[]
+  changepoints: ChangePoint[]
+  horizon:      number
+  color:        string
+}) {
+  // Compute MAE and MAPE on the historical fitted portion
+  const historicalRows = chartData.filter((d) => d.price != null && d.forecast != null)
+  const mae = historicalRows.length
+    ? historicalRows.reduce((s, d) => s + Math.abs(d.price! - d.forecast!), 0) / historicalRows.length
+    : null
+  const mape = historicalRows.length
+    ? historicalRows.reduce((s, d) => s + Math.abs((d.price! - d.forecast!) / d.price!), 0) / historicalRows.length * 100
+    : null
+
+  const futureRows = chartData.filter((d) => d.price == null && d.forecast != null)
+  const lastForecast = futureRows.at(-1)
+  const firstForecast = futureRows[0]
+  const forecastDelta = (lastForecast && firstForecast)
+    ? lastForecast.forecast! - firstForecast.forecast!
+    : null
+
+  return (
+    <div className="rounded-2xl border border-white/8 bg-white/[0.02] overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-white/5">
+        <Sparkles className="h-3.5 w-3.5 text-violet-400/70" />
+        <span className="text-[11px] font-semibold text-white/50 uppercase tracking-wider">
+          Prophet Forecast Analysis
+        </span>
+        <span className="ml-auto text-[10px] text-white/20">+{horizon}d horizon</span>
+      </div>
+
+      <div className="divide-y divide-white/[0.04]">
+        {/* Model fit quality */}
+        <div className="grid grid-cols-3 divide-x divide-white/[0.04]">
+          <div className="px-4 py-3 text-center">
+            <p className="text-[10px] text-white/30 mb-1">MAE</p>
+            <p className="text-[13px] font-semibold tabular-nums text-white/80">
+              {mae != null ? `$${mae.toFixed(2)}` : '—'}
+            </p>
+          </div>
+          <div className="px-4 py-3 text-center">
+            <p className="text-[10px] text-white/30 mb-1">MAPE</p>
+            <p className="text-[13px] font-semibold tabular-nums text-white/80">
+              {mape != null ? `${mape.toFixed(1)}%` : '—'}
+            </p>
+          </div>
+          <div className="px-4 py-3 text-center">
+            <p className="text-[10px] text-white/30 mb-1">{horizon}d Δ</p>
+            <p className={[
+              'text-[13px] font-semibold tabular-nums',
+              forecastDelta == null ? 'text-white/40'
+                : forecastDelta > 0 ? 'text-emerald-400'
+                : 'text-red-400',
+            ].join(' ')}>
+              {forecastDelta != null
+                ? `${forecastDelta > 0 ? '+' : ''}$${forecastDelta.toFixed(2)}`
+                : '—'}
+            </p>
+          </div>
+        </div>
+
+        {/* Changepoints */}
+        {changepoints.length > 0 && (
+          <div className="px-4 py-3">
+            <p className="text-[10px] text-white/30 uppercase tracking-wider mb-2">
+              Detected Changepoints
+            </p>
+            <div className="space-y-1.5">
+              {changepoints.slice(0, 5).map((cp) => (
+                <div key={cp.date} className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className={[
+                      'w-1.5 h-1.5 rounded-full shrink-0',
+                      cp.delta > 0 ? 'bg-emerald-400' : 'bg-red-400',
+                    ].join(' ')} />
+                    <span className="text-[11px] text-white/60 tabular-nums font-mono">{cp.date}</span>
+                  </div>
+                  <span className={[
+                    'text-[11px] font-semibold tabular-nums',
+                    cp.delta > 0 ? 'text-emerald-400' : 'text-red-400',
+                  ].join(' ')}>
+                    {cp.delta > 0 ? '↑' : '↓'} {Math.abs(cp.delta).toFixed(3)}/day
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Forecast range */}
+        {futureRows.length > 0 && (
+          <div className="px-4 py-3 flex items-center justify-between">
+            <span className="text-[10px] text-white/30">Forecast range (80% CI)</span>
+            <span className="text-[11px] tabular-nums text-white/60">
+              ${Math.min(...futureRows.map(d => d.forecastLower!)).toFixed(2)}
+              {' – '}
+              ${Math.max(...futureRows.map(d => d.forecastUpper!)).toFixed(2)}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -436,9 +637,20 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
   const [grade,       setGrade]       = useState<GradeFilter>('all')
 
   // ── JustTCG state ─────────────────────────────────────────────────────────
-  const [tcgPoints,    setTcgPoints]   = useState<JustTcgPoint[]>([])
-  const [tcgDuration,  setTcgDuration] = useState<TcgDuration>('90d')
+  // tcgPoints holds ALL accumulated history returned by the API.
+  // tcgDuration is the view window; filtering happens client-side.
+  const [tcgPoints,     setTcgPoints]    = useState<JustTcgPoint[]>([])
+  const [tcgDuration,   setTcgDuration]  = useState<TcgDuration>('6m')
   const [tcgConfigured, setTcgConfigured] = useState(true)
+
+  // ── Forecast state ────────────────────────────────────────────────────────
+  const [showForecast,     setShowForecast]     = useState(false)
+  const [forecastHorizon,  setForecastHorizon]  = useState<ForecastHorizon>(30)
+  const [forecastPoints,   setForecastPoints]   = useState<ForecastPoint[]>([])
+  const [fittedPoints,     setFittedPoints]     = useState<ForecastPoint[]>([])
+  const [changepoints,     setChangepoints]     = useState<ChangePoint[]>([])
+  const [forecastLoading,  setForecastLoading]  = useState(false)
+  const [forecastError,    setForecastError]    = useState<string | null>(null)
 
   // ── Shared state ──────────────────────────────────────────────────────────
   const [loading,     setLoading]     = useState(true)
@@ -456,9 +668,10 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
   }
 
   // ── JustTCG fetch ─────────────────────────────────────────────────────────
-  function loadTcgData(dur: TcgDuration = tcgDuration, force = false) {
+  // Always fetch all accumulated history — duration is a client-side view filter.
+  function loadTcgData(force = false) {
     const qs = force ? '&force=1' : ''
-    return fetch(`/api/cards/tcg-price-history?catalogId=${catalogId}&duration=${dur}${qs}`).then(r => r.json())
+    return fetch(`/api/cards/tcg-price-history?catalogId=${catalogId}${qs}`).then(r => r.json())
   }
 
   // ── Initial load (eBay) ───────────────────────────────────────────────────
@@ -483,13 +696,15 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
   }, [catalogId, source])
 
   // ── Initial load (JustTCG) ────────────────────────────────────────────────
+  // Only re-fetch from the server when the card/source changes — duration
+  // changes are handled purely client-side via tcgVisiblePoints.
   useEffect(() => {
     if (source !== 'justtcg') return
     let cancelled = false
     setLoading(true)
     setRateLimited(false)
 
-    loadTcgData(tcgDuration)
+    loadTcgData()
       .then((res) => {
         if (cancelled) return
         setTcgPoints(res.points ?? [])
@@ -501,7 +716,7 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
 
     return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [catalogId, source, tcgDuration])
+  }, [catalogId, source])
 
   // ── Source switch resets ──────────────────────────────────────────────────
   useEffect(() => {
@@ -518,7 +733,7 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
         setJpPoints(jp.points ?? [])
         setRateLimited(en.rateLimited && jp.rateLimited)
       } else {
-        const res = await loadTcgData(tcgDuration, true)
+        const res = await loadTcgData(true)
         setTcgPoints(res.points ?? [])
         setRateLimited(!!res.rateLimited)
       }
@@ -526,6 +741,35 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
       setRefreshing(false)
     }
   }
+
+  // ── Forecast fetch ────────────────────────────────────────────────────────
+  function loadForecast(horizon: ForecastHorizon = forecastHorizon, force = false) {
+    const qs = force ? '&force=1' : ''
+    return fetch(
+      `/api/cards/forecast?catalogId=${catalogId}&source=${source}&horizon=${horizon}${qs}`
+    ).then((r) => r.json())
+  }
+
+  useEffect(() => {
+    if (!showForecast) return
+    let cancelled = false
+    setForecastLoading(true)
+    setForecastError(null)
+
+    loadForecast(forecastHorizon)
+      .then((res) => {
+        if (cancelled) return
+        if (res.error) { setForecastError(res.error); return }
+        setForecastPoints(res.forecast ?? [])
+        setFittedPoints(res.fitted ?? [])
+        setChangepoints(res.changepoints ?? [])
+      })
+      .catch(() => { if (!cancelled) setForecastError('Forecast unavailable') })
+      .finally(() => { if (!cancelled) setForecastLoading(false) })
+
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalogId, source, showForecast, forecastHorizon])
 
   useEffect(() => { setGrade('all') }, [tab])
 
@@ -559,15 +803,38 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
   const yMax = chartData.length ? Math.ceil(Math.max(...allPrices) * 1.10) : 100
 
   // ── TCG-specific derived values ───────────────────────────────────────────
-  const tcgDurationDays: Record<TcgDuration, number> = { '7d': 7, '30d': 30, '90d': 90, '180d': 180 }
-  const tcgChartData  = source === 'justtcg' ? buildTcgChartDays(tcgPoints, tcgDurationDays[tcgDuration]) : []
+  // Map view labels to cutoff days (99999 = "All" = show everything stored)
+  const TCG_DURATION_DAYS: Record<TcgDuration, number> = {
+    '1m': 30, '3m': 90, '6m': 180, '1y': 365, 'all': 99999,
+  }
+  const TCG_DURATION_LABELS: Record<TcgDuration, string> = {
+    '1m': '1M', '3m': '3M', '6m': '6M', '1y': '1Y', 'all': 'All',
+  }
+
+  // Filter accumulated history to the selected window (client-side, no re-fetch)
+  const tcgVisiblePoints = useMemo(() => {
+    const days = TCG_DURATION_DAYS[tcgDuration]
+    if (days >= 99999) return tcgPoints
+    const cutoff = Date.now() - days * 86_400_000
+    return tcgPoints.filter((p) => new Date(p.date).getTime() >= cutoff)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tcgPoints, tcgDuration])
+
+  const tcgBaseData   = source === 'justtcg' ? buildTcgChartDays(tcgVisiblePoints, TCG_DURATION_DAYS[tcgDuration]) : []
+  const tcgChartData  = (source === 'justtcg' && showForecast && forecastPoints.length)
+    ? mergeForecast(tcgBaseData, forecastPoints, fittedPoints, changepoints)
+    : tcgBaseData
   const tcgColor      = '#a78bfa'
   const tcgHasTrend   = tcgChartData.length >= 4 && tcgChartData[0].trend != null
   const tcgTrendDelta = tcgHasTrend ? (tcgChartData.at(-1)!.trend! - tcgChartData[0].trend!) : 0
   const tcgTrendUp    = tcgTrendDelta > 0.5
-  const tcgPrices     = tcgChartData.map(d => d.price)
-  const tcgYMin       = tcgChartData.length ? Math.max(0, Math.floor(Math.min(...tcgPrices) * 0.85)) : 0
-  const tcgYMax       = tcgChartData.length ? Math.ceil(Math.max(...tcgPrices) * 1.10) : 100
+  const tcgPrices     = tcgChartData.flatMap(d => [
+    d.price,
+    d.forecastLower,
+    d.forecastUpper,
+  ].filter((v): v is number => v != null))
+  const tcgYMin       = tcgPrices.length ? Math.max(0, Math.floor(Math.min(...tcgPrices) * 0.85)) : 0
+  const tcgYMax       = tcgPrices.length ? Math.ceil(Math.max(...tcgPrices) * 1.10) : 100
   const tcgGradId     = `grad-tcg-${catalogId.slice(0, 8)}`
 
   const gradId = `grad-${catalogId.slice(0, 8)}-${tab}-${grade.replace(/[\s.]/g, '')}`
@@ -613,16 +880,37 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
         <div className="space-y-4">
           {/* Duration selector + trend badge */}
           <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex items-center gap-0.5 bg-white/5 rounded-xl p-1">
-              {(['7d', '30d', '90d', '180d'] as TcgDuration[]).map((d) => (
-                <button key={d} onClick={() => setTcgDuration(d)}
-                  className={[
-                    'text-[11px] px-2.5 py-1 rounded-lg font-medium transition-all',
-                    tcgDuration === d ? 'bg-white/12 text-white' : 'text-white/35 hover:text-white/60',
-                  ].join(' ')}>
-                  {d}
-                </button>
-              ))}
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-0.5 bg-white/5 rounded-xl p-1">
+                {(['1m', '3m', '6m', '1y', 'all'] as TcgDuration[]).map((d) => {
+                  const days    = TCG_DURATION_DAYS[d]
+                  const cutoff  = Date.now() - days * 86_400_000
+                  const hasData = d === 'all'
+                    ? tcgPoints.length > 0
+                    : tcgPoints.some((p) => new Date(p.date).getTime() >= cutoff)
+                  return (
+                    <button
+                      key={d}
+                      onClick={() => setTcgDuration(d)}
+                      className={[
+                        'text-[11px] px-2.5 py-1 rounded-lg font-medium transition-all relative',
+                        tcgDuration === d ? 'bg-white/12 text-white' : 'text-white/35 hover:text-white/60',
+                        !hasData ? 'opacity-40' : '',
+                      ].join(' ')}
+                      title={!hasData ? 'No data for this period yet' : undefined}
+                    >
+                      {TCG_DURATION_LABELS[d]}
+                    </button>
+                  )
+                })}
+              </div>
+              {/* Coverage indicator: oldest stored data point */}
+              {tcgPoints.length > 0 && (
+                <p className="text-[9px] text-white/20 px-1">
+                  History from {new Date(tcgPoints[0].date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                  {' · '}{tcgPoints.length} data points
+                </p>
+              )}
             </div>
             <div className="flex items-center gap-2">
               {tcgHasTrend && (
@@ -635,8 +923,49 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
                   {Math.abs(tcgTrendDelta) < 0.5 ? '→ Flat' : tcgTrendUp ? `↑ +$${tcgTrendDelta.toFixed(2)}` : `↓ −$${Math.abs(tcgTrendDelta).toFixed(2)}`}
                 </span>
               )}
-              <span className="text-[10px] text-white/20">{tcgChartData.length} data points</span>
+              <span className="text-[10px] text-white/20">{tcgBaseData.length} data pts</span>
             </div>
+          </div>
+
+          {/* ── Forecast controls ── */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => setShowForecast((v) => !v)}
+              className={[
+                'flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg font-medium transition-all',
+                showForecast
+                  ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30'
+                  : 'bg-white/5 text-white/40 hover:text-white/70 border border-transparent',
+              ].join(' ')}
+            >
+              <Sparkles className="h-3 w-3" />
+              {forecastLoading ? 'Computing…' : 'Prophet Forecast'}
+            </button>
+
+            {showForecast && (
+              <div className="flex items-center gap-0.5 bg-white/5 rounded-xl p-1">
+                {([7, 30, 90, 180] as ForecastHorizon[]).map((h) => (
+                  <button key={h} onClick={() => setForecastHorizon(h)}
+                    className={[
+                      'text-[11px] px-2.5 py-1 rounded-lg font-medium transition-all',
+                      forecastHorizon === h ? 'bg-violet-500/25 text-violet-200' : 'text-white/35 hover:text-white/60',
+                    ].join(' ')}>
+                    +{h}d
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {showForecast && changepoints.length > 0 && (
+              <span className="text-[10px] text-amber-300/60 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400/60 inline-block" />
+                {changepoints.length} changepoint{changepoints.length !== 1 ? 's' : ''} detected
+              </span>
+            )}
+
+            {forecastError && (
+              <span className="text-[10px] text-red-400/70">{forecastError}</span>
+            )}
           </div>
 
           {/* Rate limited notice */}
@@ -653,10 +982,20 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
           )}
 
           {/* Chart */}
-          {tcgChartData.length === 0 ? (
-            <div className="h-24 flex flex-col items-center justify-center rounded-2xl bg-white/[0.02] border border-white/5 gap-1.5">
+          {tcgBaseData.length === 0 ? (
+            <div className="h-24 flex flex-col items-center justify-center rounded-2xl bg-white/[0.02] border border-white/5 gap-2">
               <TrendingUp className="h-4 w-4 text-white/15" />
               <span className="text-xs text-white/30">No TCGPlayer price data for this period</span>
+              {!rateLimited && (
+                <button
+                  onClick={handleForceRefresh}
+                  disabled={refreshing}
+                  className="flex items-center gap-1 text-[10px] text-white/25 hover:text-white/50 transition-colors disabled:opacity-40"
+                >
+                  <RefreshCw className={['h-3 w-3', refreshing ? 'animate-spin' : ''].join(' ')} />
+                  {refreshing ? 'Fetching…' : 'Try fetching data'}
+                </button>
+              )}
             </div>
           ) : (
             <div className="rounded-2xl overflow-hidden bg-white/[0.02] border border-white/5 p-3 pb-2">
@@ -666,6 +1005,10 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
                     <linearGradient id={tcgGradId} x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%"   stopColor={tcgColor} stopOpacity={0.22} />
                       <stop offset="100%" stopColor={tcgColor} stopOpacity={0} />
+                    </linearGradient>
+                    <linearGradient id={`${tcgGradId}-fc`} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%"   stopColor="#8b5cf6" stopOpacity={0.18} />
+                      <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0.04} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} />
@@ -677,34 +1020,95 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
                     tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.25)', fontFamily: 'ui-monospace,monospace' }}
                     tickLine={false} axisLine={false} width={46} dx={-4} />
                   <Tooltip content={(props: any) => <TcgTooltip {...props} color={tcgColor} />} />
+
+                  {/* Actual price area + line */}
                   <Area type="monotone" dataKey="price" stroke="none" fill={`url(#${tcgGradId})`}
-                    legendType="none" activeDot={false} isAnimationActive={false} />
+                    connectNulls={false} legendType="none" activeDot={false} isAnimationActive={false} />
                   <Line type="monotoneX" dataKey="price" stroke={tcgColor} strokeWidth={2.5} dot={false}
+                    connectNulls={false}
                     activeDot={{ r: 5, fill: tcgColor, stroke: 'rgba(0,0,0,0.4)', strokeWidth: 2 }}
                     isAnimationActive animationDuration={700} />
-                  {tcgHasTrend && (
+
+                  {/* OLS trend */}
+                  {tcgHasTrend && !showForecast && (
                     <Line type="linear" dataKey="trend" stroke="rgba(255,255,255,0.15)"
                       strokeWidth={1.5} strokeDasharray="5 4" dot={false} activeDot={false}
                       isAnimationActive={false} />
                   )}
+
+                  {/* Prophet forecast CI band */}
+                  {showForecast && (
+                    <Area type="monotone" dataKey="forecastUpper" stroke="none"
+                      fill={`url(#${tcgGradId}-fc)`} legendType="none"
+                      activeDot={false} isAnimationActive={false} connectNulls={false} />
+                  )}
+                  {showForecast && (
+                    <Area type="monotone" dataKey="forecastLower" stroke="none"
+                      fill="transparent" legendType="none"
+                      activeDot={false} isAnimationActive={false} connectNulls={false} />
+                  )}
+
+                  {/* Prophet forecast line (fitted + future) */}
+                  {showForecast && (
+                    <Line type="monotone" dataKey="forecast"
+                      stroke="#8b5cf6" strokeWidth={2} strokeDasharray="6 3"
+                      dot={(props: any) => {
+                        if (!props.payload?.isChangepoint) return <g key={props.key} />
+                        return (
+                          <circle key={props.key} cx={props.cx} cy={props.cy}
+                            r={4} fill="#f59e0b" stroke="rgba(0,0,0,0.4)" strokeWidth={1.5} />
+                        )
+                      }}
+                      activeDot={{ r: 4, fill: '#8b5cf6', stroke: 'rgba(0,0,0,0.4)', strokeWidth: 2 }}
+                      connectNulls={false} isAnimationActive={false} />
+                  )}
                 </ComposedChart>
               </ResponsiveContainer>
-              <div className="flex items-center gap-4 px-1 mt-1.5 text-[10px] text-white/25">
+              <div className="flex items-center gap-4 px-1 mt-1.5 text-[10px] text-white/25 flex-wrap">
                 <span className="flex items-center gap-1.5">
                   <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: tcgColor }} />
-                  TCGPlayer market price (NM)
+                  Market price (NM)
                 </span>
-                {tcgHasTrend && (
+                {tcgHasTrend && !showForecast && (
                   <span className="flex items-center gap-1.5">
                     <span className="inline-block w-5 border-t border-dashed border-white/20" />
                     Trend
                   </span>
                 )}
+                {showForecast && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block w-5 border-t-2 border-dashed border-violet-400/50" />
+                    Prophet forecast
+                  </span>
+                )}
+                {showForecast && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block w-3 h-3 rounded-sm bg-violet-500/15" />
+                    80% CI
+                  </span>
+                )}
+                {showForecast && changepoints.length > 0 && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block w-2 h-2 rounded-full bg-amber-400/70" />
+                    Changepoint
+                  </span>
+                )}
               </div>
             </div>
           )}
+          {/* ── Forecast evaluation panel ── */}
+          {showForecast && !forecastLoading && tcgChartData.some(d => d.forecast != null) && (
+            <ForecastPanel
+              chartData={tcgChartData}
+              changepoints={changepoints}
+              horizon={forecastHorizon}
+              color={tcgColor}
+            />
+          )}
+
           <p className="text-[9px] text-white/15 text-right">
             Data via JustTCG · TCGPlayer market price · NM condition
+            {showForecast && ' · Forecast via Prophet (Meta)'}
           </p>
         </div>
       )}

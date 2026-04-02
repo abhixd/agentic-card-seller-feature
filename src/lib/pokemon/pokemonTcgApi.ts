@@ -150,31 +150,57 @@ function getHeaders(): Record<string, string> {
   return headers
 }
 
+// Hard cap on total cards fetched per search to avoid runaway API calls.
+// 1,000 covers every realistic Pokémon name (Charizard has ~300 variants).
+const MAX_CARDS_PER_SEARCH = 1000
+
 export async function searchPokemonCards(query: string): Promise<PokemonTcgCard[]> {
   if (!query || query.trim().length < 2) return []
 
-  const params = new URLSearchParams({
-    q:        buildQuery(query),
-    pageSize: String(PAGE_SIZE),
-    page:     '1',
-    orderBy:  '-set.releaseDate',  // newest sets first
-  })
+  const headers    = getHeaders()
+  const builtQuery = buildQuery(query)
+  const allCards:  PokemonTcgCard[] = []
 
-  try {
-    const res = await fetch(`${BASE_URL}/cards?${params}`, {
-      headers: getHeaders(),
-      cache:   'no-store',
+  let page = 1
+  let totalCount = Infinity  // updated after first response
+
+  while (allCards.length < Math.min(totalCount, MAX_CARDS_PER_SEARCH)) {
+    const params = new URLSearchParams({
+      q:        builtQuery,
+      pageSize: String(PAGE_SIZE),
+      page:     String(page),
+      orderBy:  '-set.releaseDate',  // newest sets first
     })
-    if (!res.ok) {
-      console.error('[PokemonTCG] HTTP', res.status, await res.text().catch(() => ''))
-      return []
+
+    try {
+      const res = await fetch(`${BASE_URL}/cards?${params}`, {
+        headers,
+        cache: 'no-store',
+      })
+      if (!res.ok) {
+        console.error('[PokemonTCG] HTTP', res.status, await res.text().catch(() => ''))
+        break
+      }
+      const json = await res.json()
+
+      // The API reports the total count in `totalCount`
+      if (page === 1) {
+        totalCount = json.totalCount ?? json.data?.length ?? 0
+      }
+
+      const pageCards = (json.data ?? []) as PokemonTcgCard[]
+      allCards.push(...pageCards)
+
+      // Stop if this was the last page
+      if (pageCards.length < PAGE_SIZE) break
+      page++
+    } catch (err) {
+      console.error('[PokemonTCG] Fetch error (page', page, '):', err)
+      break
     }
-    const json = await res.json()
-    return (json.data ?? []) as PokemonTcgCard[]
-  } catch (err) {
-    console.error('[PokemonTCG] Fetch error:', err)
-    return []
   }
+
+  return allCards
 }
 
 // ---------------------------------------------------------------

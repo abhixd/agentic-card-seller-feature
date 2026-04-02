@@ -549,7 +549,7 @@ function InventoryCard({ item }: { item: InventoryListItem }) {
   const initial = (item.card.card_name?.[0] ?? '?').toUpperCase()
 
   return (
-    <Link href={`/inventory/${item.item_id}`} className="block group">
+    <Link href={`/analyze/${item.catalog_id}`} className="block group">
       <div
         data-testid="inventory-item"
         style={{
@@ -655,6 +655,37 @@ function InventoryCard({ item }: { item: InventoryListItem }) {
           )}
 
           <StatusBadge status={item.status} />
+
+          {/* Manage link — stops propagation so it doesn't trigger the parent Link */}
+          <a
+            href={`/inventory/${item.item_id}`}
+            onClick={(e) => e.stopPropagation()}
+            title="Manage inventory item"
+            style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: 24, height: 24, borderRadius: 6, flexShrink: 0,
+              border: '1px solid rgba(255,255,255,0.1)',
+              background: 'rgba(255,255,255,0.04)',
+              color: 'rgba(255,255,255,0.3)',
+              textDecoration: 'none',
+              transition: 'background 0.15s, color 0.15s',
+            }}
+            onMouseEnter={(e) => {
+              const el = e.currentTarget
+              el.style.background = 'rgba(255,255,255,0.1)'
+              el.style.color = 'rgba(255,255,255,0.7)'
+            }}
+            onMouseLeave={(e) => {
+              const el = e.currentTarget
+              el.style.background = 'rgba(255,255,255,0.04)'
+              el.style.color = 'rgba(255,255,255,0.3)'
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+            </svg>
+          </a>
 
           <ChevronRight size={14} style={{ color: 'rgba(255,255,255,0.2)', flexShrink: 0, transition: 'color 0.15s' }} />
         </div>

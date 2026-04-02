@@ -2,13 +2,17 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, ScanLine, Archive, MessageSquare, BookOpen, Newspaper, Users } from 'lucide-react'
+import { LayoutDashboard, ScanLine, Archive, MessageSquare, BookOpen, Newspaper, Users, ArrowLeftRight, TrendingUp, MapPin, Heart } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/analyze', label: 'Analyze', icon: ScanLine },
   { href: '/inventory', label: 'Inventory', icon: Archive },
+  { href: '/market', label: 'Market', icon: TrendingUp },
+  { href: '/trade', label: 'Trade', icon: ArrowLeftRight },
+  { href: '/shows', label: 'Shows', icon: MapPin },
+  { href: '/wantlist', label: 'Wantlist', icon: Heart },
   { href: '/chat', label: 'Chat', icon: MessageSquare },
   { href: '/community', label: 'Community', icon: Users },
   { href: '/sets', label: 'Sets', icon: BookOpen },

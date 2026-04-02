@@ -1,16 +1,18 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import Image from 'next/image'
-import { PriceHistoryChart } from '@/components/catalog/PriceHistoryChart'
+import { PriceIntelligenceHub } from '@/components/catalog/PriceIntelligenceHub'
+import { GradingAdvisor } from '@/components/catalog/GradingAdvisor'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { ConditionForm } from '@/components/analysis/ConditionForm'
 import { ArrowLeft, Loader2, ChevronDown, ChevronUp, ChevronRight } from 'lucide-react'
 import type { CardCatalogItem } from '@/types/catalog'
 import type { ConditionRatings } from '@/types/analysis'
+import { AddToInventoryButton } from '@/components/inventory/AddToInventoryButton'
 
 // ── Edition mapping (same as SearchResults) ───────────────────────────────
 
@@ -292,19 +294,7 @@ export default function CardDetailPage() {
       .catch(() => setLoading(false))
   }, [catalogId])
 
-  const meta     = (card?.metadata_json ?? {}) as Record<string, any>
-  const bands    = meta?.tcgplayer?.prices ?? {}
-  const editions = useMemo(() => getAvailableEditions(bands), [bands])
-
-  const [selectedEdition, setSelectedEdition] = useState<EditionKey | null>(null)
-  const activeEdition  = selectedEdition ?? editions[0] ?? 'unlimited'
-  const editionBands   = getBandsForEdition(bands, activeEdition)
-  const editionEntries = Object.entries(editionBands)
-  const heroPrice      = bestMarket(editionBands)
-  const heroSubLabel   = editionEntries.find(([, b]) => {
-    const p = (b as any)?.market ?? (b as any)?.mid; return p === heroPrice
-  })?.[0]
-
+  const meta = (card?.metadata_json ?? {}) as Record<string, any>
   const [showCardDetails, setShowCardDetails] = useState(false)
   const types: string[] = meta?.types ?? []
   const imageUrl = meta?.images?.large ?? meta?.images?.small ?? card?.canonical_image_url
@@ -370,73 +360,39 @@ export default function CardDetailPage() {
               {meta?.rarity && <span className="text-[10px] text-muted-foreground">{meta.rarity}</span>}
             </div>
           </div>
+
+          {/* Add to Inventory */}
+          {card && (
+            <AddToInventoryButton
+              catalogId={catalogId}
+              tcgPrice={(() => {
+                const prices = meta?.tcgplayer?.prices as Record<string, any> | undefined
+                if (!prices) return null
+                const BANDS = ['holofoil', '1stEditionHolofoil', 'reverseHolofoil', 'normal', 'unlimitedHolofoil', '1stEditionNormal']
+                for (const band of BANDS) {
+                  const p = prices[band]
+                  if (p?.market && p.market > 0) return p.market as number
+                  if (p?.mid && p.mid > 0) return p.mid as number
+                }
+                for (const b of Object.values(prices)) {
+                  const p = b as any
+                  if (p?.market && p.market > 0) return p.market as number
+                  if (p?.mid && p.mid > 0) return p.mid as number
+                }
+                return null
+              })()}
+            />
+          )}
         </div>
 
         {/* ── Right: Price intelligence + analysis ── */}
         <div className="space-y-6">
 
-          {/* Edition toggle */}
-          {editions.length > 1 && (
-            <div className="flex bg-muted/50 rounded-lg p-0.5 gap-0.5 w-fit">
-              {editions.map((ed) => (
-                <button key={ed} onClick={() => setSelectedEdition(ed)}
-                  className={['text-sm px-4 py-2 rounded-md font-medium transition-all',
-                    activeEdition === ed ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'].join(' ')}>
-                  {EDITION_LABELS[ed]}
-                </button>
-              ))}
-            </div>
-          )}
+          {/* ── Price Intelligence Hub — unified multi-platform price view ── */}
+          <PriceIntelligenceHub catalogId={catalogId} meta={meta} />
 
-          {/* Hero price */}
-          {heroPrice != null && (
-            <div className="space-y-1">
-              <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium">
-                TCGPlayer{heroSubLabel ? ` · ${BAND_DISPLAY[heroSubLabel] ?? heroSubLabel}` : ''} · Market Price (NM)
-              </p>
-              <p className="text-5xl font-bold tabular-nums tracking-tight">{fmt(heroPrice)}</p>
-            </div>
-          )}
-
-          {/* Condition Estimator */}
-          {heroPrice != null && <ConditionEstimator basePrice={heroPrice} />}
-
-          {/* TCGPlayer price table */}
-          {editionEntries.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium flex items-center gap-1.5">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/70" />
-                TCGPlayer · {EDITION_LABELS[activeEdition]}
-              </p>
-              <div className="rounded-xl overflow-hidden border border-border/25">
-                <div className="grid grid-cols-5 text-[10px] uppercase tracking-widest text-muted-foreground/70 px-3 py-2 bg-muted/20 border-b border-border/20">
-                  <span>Finish</span><span className="text-right">Low</span><span className="text-right">Mid</span>
-                  <span className="text-right font-medium text-foreground/50">Market</span><span className="text-right">High</span>
-                </div>
-                {editionEntries.map(([bandKey, b]) => (
-                  <div key={bandKey} className="grid grid-cols-5 text-sm px-3 py-3 border-b border-border/15 last:border-0 bg-card">
-                    <span className="text-muted-foreground font-medium text-xs">{BAND_DISPLAY[bandKey] ?? bandKey}</span>
-                    <span className="tabular-nums text-right text-muted-foreground text-xs">{fmt((b as any).low)}</span>
-                    <span className="tabular-nums text-right text-muted-foreground text-xs">{fmt((b as any).mid)}</span>
-                    <span className="tabular-nums text-right font-bold text-foreground">{fmt((b as any).market)}</span>
-                    <span className="tabular-nums text-right text-muted-foreground text-xs">{fmt((b as any).high)}</span>
-                  </div>
-                ))}
-                {meta.tcgplayer?.updatedAt && (
-                  <div className="px-3 py-1.5 text-[10px] text-muted-foreground/40 bg-muted/10">Updated {meta.tcgplayer.updatedAt}</div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* eBay sales: EN Raw / Graded / JP tabs handled inside chart */}
-          <div className="space-y-2">
-            <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium flex items-center gap-1.5">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400/70" />
-              eBay Sold History
-            </p>
-            <PriceHistoryChart catalogId={catalogId} />
-          </div>
+          {/* Grading Intelligence */}
+          <GradingAdvisor catalogId={catalogId} />
 
           {/* Card Details collapsible */}
           {(meta.attacks?.length > 0 || meta.abilities?.length > 0 || meta.weaknesses?.length > 0 || meta.flavor_text || meta.artist) && (

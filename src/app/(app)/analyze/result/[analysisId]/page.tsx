@@ -15,6 +15,7 @@ import { Separator } from '@/components/ui/separator'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { ArrowLeft, ScanLine, Archive, CheckCircle, Loader2 } from 'lucide-react'
 import type { FullAnalysisResponse } from '@/types/analysis'
+import { ListingGenerator } from '@/components/analyze/ListingGenerator'
 
 const CATEGORY_COLORS: Record<string, 'default' | 'secondary' | 'outline'> = {
   sports: 'default',
@@ -214,6 +215,11 @@ export default function AnalysisResultPage() {
           </Button>
         </CardContent>
       </Card>
+
+      {/* Generate eBay listing */}
+      {analysis && recommendation.type !== 'INSUFFICIENT_CONFIDENCE' && (
+        <ListingGenerator analysisId={analysisId} cardName={card.card_name} />
+      )}
 
       <Separator />
 

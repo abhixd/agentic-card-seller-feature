@@ -38,7 +38,7 @@ export function SearchForm({ initialQuery = '', onSearch, isLoading = false }: S
           ref={inputRef}
           id="card-search-input"
           type="text"
-          placeholder="Search by card name, set, or number…"
+          placeholder="e.g. Charizard, Charizard 151, Pikachu Base Set…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           className="pl-8 pr-8"

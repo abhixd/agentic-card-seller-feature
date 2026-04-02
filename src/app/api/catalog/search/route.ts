@@ -5,7 +5,10 @@ import { searchPokemonCards } from '@/lib/pokemon/pokemonTcgApi'
 import { syncPokemonCards } from '@/lib/pokemon/pokemonTcgSync'
 import type { CatalogSearchResponse, CardSearchResult } from '@/types/catalog'
 
-const LOCAL_THRESHOLD = 5
+// Trigger a Pokemon TCG API sync if we have fewer than this many local results.
+// 50 is intentionally generous: a common name like "Charizard" has 100+ real
+// variants, so 39 local hits doesn't mean the catalog is complete.
+const LOCAL_THRESHOLD = 50
 
 function isPokemon(r: CardSearchResult) {
   return r.franchise_or_brand === 'Pokémon' || r.franchise_or_brand === 'Pokemon'
@@ -15,10 +18,39 @@ function hasPrices(r: CardSearchResult) {
   return !!r.metadata_json?.tcgplayer
 }
 
+/**
+ * De-duplicate search results by (card_name, card_number, set_name).
+ * When two rows represent the same card, prefer the one with a pokemon_tcg_id
+ * (synced from the API) over bare seed data.
+ */
+function deduplicateResults(results: CardSearchResult[]): CardSearchResult[] {
+  const seen = new Map<string, CardSearchResult>()
+  for (const r of results) {
+    const key = [
+      (r.card_name ?? '').toLowerCase(),
+      (r.card_number ?? '').toLowerCase(),
+      (r.set_name ?? '').toLowerCase(),
+    ].join('|')
+
+    const existing = seen.get(key)
+    if (!existing) {
+      seen.set(key, r)
+    } else {
+      // Prefer the entry that has a pokemon_tcg_id (synced) over raw seed data
+      const rHasId       = !!(r.metadata_json as any)?.pokemon_tcg_id
+      const existingHasId = !!(existing.metadata_json as any)?.pokemon_tcg_id
+      if (rHasId && !existingHasId) {
+        seen.set(key, r)
+      }
+    }
+  }
+  return [...seen.values()]
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const q     = searchParams.get('q') ?? ''
-  const limit = Number(searchParams.get('limit') ?? '36')
+  const limit = Number(searchParams.get('limit') ?? '100')
 
   // anon client for reads, service client for writes (bypasses RLS insert policy)
   const supabase      = await createClient()
@@ -59,6 +91,9 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const body: CatalogSearchResponse = { results, query: q, count: results.length }
+  // Deduplicate and cap at the caller-requested limit (dedup works on the
+  // larger DB batch fetched by searchCatalog, so we have plenty to choose from)
+  const deduped = deduplicateResults(results).slice(0, limit)
+  const body: CatalogSearchResponse = { results: deduped, query: q, count: deduped.length }
   return NextResponse.json(body)
 }

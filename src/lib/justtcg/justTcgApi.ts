@@ -58,65 +58,149 @@ function pickBestVariant(variants: JustTcgVariant[]): JustTcgVariant | null {
   return pool.sort((a, b) => score(b) - score(a))[0]
 }
 
-function findBestCard(cards: JustTcgCard[], cardName: string, cardNumber: string | null | undefined): JustTcgCard | null {
+/**
+ * Normalise a card name for fuzzy matching:
+ * - lowercase
+ * - replace hyphens/underscores with spaces
+ * - collapse multiple spaces
+ * This handles variants like "Charizard-EX" vs "Charizard EX",
+ * "Pikachu V-UNION" vs "Pikachu V UNION", etc.
+ */
+function normaliseName(name: string): string {
+  return name.toLowerCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Normalise a set name for fuzzy matching.
+ * Strips common prefixes like "SWSH09:", "SV01:", parenthetical codes, etc.
+ * "SWSH09: Brilliant Stars" → "brilliant stars"
+ * "Scarlet & Violet (SV1)" → "scarlet violet sv1"
+ */
+function normaliseSetName(s: string | null | undefined): string {
+  if (!s) return ''
+  return s
+    .replace(/^[A-Z0-9]+:\s*/, '')      // strip leading series codes like "SWSH09: "
+    .replace(/\(.*?\)/g, ' ')           // remove parenthetical codes
+    .toLowerCase()
+    .replace(/[-_&]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function findBestCard(
+  cards: JustTcgCard[],
+  cardName: string,
+  cardNumber: string | null | undefined,
+  setName?: string | null,
+): JustTcgCard | null {
   if (!cards.length) return null
 
-  const normTarget = normaliseNum(cardNumber)
-  const nameLower  = cardName.toLowerCase()
+  const normTarget  = normaliseNum(cardNumber)
+  const normName    = normaliseName(cardName)
+  const normSet     = normaliseSetName(setName)
 
-  // Exact name + number match first
-  if (normTarget) {
+  // 1. Exact name + number + set — most specific, prevents wrong-set matches
+  if (normTarget && normSet) {
     const exact = cards.find(
-      (c) => c.name.toLowerCase() === nameLower && normaliseNum(c.number) === normTarget
+      (c) =>
+        normaliseName(c.name) === normName &&
+        normaliseNum(c.number) === normTarget &&
+        normaliseSetName(c.set).includes(normSet.split(' ')[0])  // first keyword of set
     )
     if (exact) return exact
   }
 
-  // Exact name match (any number)
-  const byName = cards.find((c) => c.name.toLowerCase() === nameLower)
+  // 2. Exact normalised name + number
+  if (normTarget) {
+    const exact = cards.find(
+      (c) => normaliseName(c.name) === normName && normaliseNum(c.number) === normTarget
+    )
+    if (exact) return exact
+  }
+
+  // 3. Exact name + set match (no number)
+  if (normSet) {
+    const byNameSet = cards.find(
+      (c) =>
+        normaliseName(c.name) === normName &&
+        normaliseSetName(c.set).includes(normSet.split(' ')[0])
+    )
+    if (byNameSet) return byNameSet
+  }
+
+  // 4. Exact normalised name match (any number / set)
+  const byName = cards.find((c) => normaliseName(c.name) === normName)
   if (byName) return byName
 
-  // Partial name match
-  return cards.find((c) => c.name.toLowerCase().includes(nameLower)) ?? cards[0]
+  // 5. Partial normalised name match
+  const partial = cards.find((c) => {
+    const cn = normaliseName(c.name)
+    return cn.includes(normName) || normName.includes(cn)
+  })
+  if (partial) return partial
+
+  // 6. Word-token subset match: all words in search name present in card name
+  const queryTokens = normName.split(' ')
+  const tokenMatch = cards.find((c) => {
+    const cardTokens = normaliseName(c.name).split(' ')
+    return queryTokens.every((t) => cardTokens.includes(t))
+  })
+  return tokenMatch ?? cards[0]
 }
 
+/**
+ * Fetch the maximum available price history (180 days) from JustTCG.
+ *
+ * @param setName  Optional set name for disambiguation — passed as an extra
+ *                 keyword in the search query and used to prefer the correct
+ *                 card when multiple variants share the same name + number
+ *                 (e.g. "Charizard VSTAR" exists in more than one set).
+ */
 export async function fetchJustTcgPriceHistory(
   cardName: string,
   cardNumber: string | null | undefined,
-  duration: '7d' | '30d' | '90d' | '180d' = '90d',
+  setName: string | null | undefined,
   force = false,
 ): Promise<JustTcgFetchResult> {
   const apiKey = process.env.JUSTTCG_API_KEY
   if (!apiKey) return { points: [], keyword: cardName, apiError: false }
 
-  // Include card number in query to narrow results (e.g. "Charizard ex 125")
-  const baseNum = cardNumber ? cardNumber.split('/')[0] : null
-  const q = baseNum ? `${cardName} ${baseNum}` : cardName
+  const baseNum    = cardNumber ? cardNumber.split('/')[0] : null
+  const setKeyword = setName ? normaliseSetName(setName).split(' ').slice(0, 2).join(' ') : null
 
-  const params = new URLSearchParams({
-    q,
-    include_price_history: 'true',
-    priceHistoryDuration:  duration,
-  })
+  // Build primary query: name + number + set (maximally specific)
+  const primaryQ = [cardName, baseNum, setKeyword].filter(Boolean).join(' ')
+  // Fallback query: name + number only
+  const fallbackQ = [cardName, baseNum].filter(Boolean).join(' ')
 
-  const keyword = `${cardName}${cardNumber ? ` #${cardNumber.split('/')[0]}` : ''}`
+  const keyword = `${cardName}${cardNumber ? ` #${baseNum}` : ''}${setName ? ` (${setName})` : ''}`
 
-  try {
+  async function fetchCards(q: string): Promise<JustTcgCard[]> {
+    const params = new URLSearchParams({
+      q,
+      include_price_history: 'true',
+      priceHistoryDuration:  '180d',   // always fetch maximum available history
+    })
     const res = await fetch(`https://api.justtcg.com/v1/cards?${params}`, {
-      headers: { 'x-api-key': apiKey },
+      headers: { 'x-api-key': apiKey! },
       ...(force ? { cache: 'no-store' } : { next: { revalidate: 86_400 } }),
     })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const json = await res.json()
+    return json.data ?? []
+  }
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => '')
-      console.error('[JustTCG] HTTP', res.status, body.slice(0, 200))
-      return { points: [], keyword, apiError: true }
+  try {
+    // First attempt: specific query (name + number + set)
+    let cards = await fetchCards(primaryQ)
+
+    // If no match found with the specific query, retry without set name
+    let match = findBestCard(cards, cardName, cardNumber, setName)
+    if (!match && primaryQ !== fallbackQ) {
+      cards = await fetchCards(fallbackQ)
+      match = findBestCard(cards, cardName, cardNumber, setName)
     }
 
-    const json = await res.json()
-    const cards: JustTcgCard[] = json.data ?? []
-
-    const match   = findBestCard(cards, cardName, cardNumber)
     if (!match) return { points: [], keyword, apiError: false }
 
     const variant = pickBestVariant(match.variants ?? [])

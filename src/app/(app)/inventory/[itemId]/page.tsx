@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { StatusBadge } from '@/components/inventory/StatusBadge'
-import { ArrowLeft, TrendingUp, FileText, Save, ExternalLink } from 'lucide-react'
+import { ArrowLeft, TrendingUp, FileText, Save, ExternalLink, BarChart2 } from 'lucide-react'
 import type { InventoryDetail, InventoryStatus } from '@/types/inventory'
 
 const STATUS_OPTIONS: { value: InventoryStatus; label: string }[] = [
@@ -150,6 +150,21 @@ export default function InventoryDetailPage() {
           <StatusBadge status={item.status} />
         </div>
       </div>
+
+      {/* View full card stats shortcut */}
+      <Link href={`/analyze/${item.catalog_id}`}>
+        <Card className="border-primary/20 bg-primary/5 hover:bg-primary/8 transition-colors cursor-pointer">
+          <CardContent className="py-3 px-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm">
+                <BarChart2 className="h-4 w-4 text-primary/70 shrink-0" />
+                <span className="font-medium">View prices, chart & full card details</span>
+              </div>
+              <ArrowLeft className="h-4 w-4 text-muted-foreground rotate-180 shrink-0" />
+            </div>
+          </CardContent>
+        </Card>
+      </Link>
 
       {/* Latest analysis summary */}
       {(item.recommendation_type || item.estimated_market_value != null) && (

@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { LayoutDashboard, ScanLine, Archive, MessageSquare, LogOut, Layers, BookOpen, Newspaper, Users } from 'lucide-react'
+import { LayoutDashboard, ScanLine, Archive, MessageSquare, LogOut, Layers, BookOpen, Newspaper, Users, ArrowLeftRight, TrendingUp, MapPin, Heart } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import { signOut } from '@/lib/auth/authService'
@@ -29,6 +29,34 @@ const navItems = [
     icon: Archive,
     activeColor: 'text-emerald-400',
     activeGlow: 'shadow-emerald-500/20',
+  },
+  {
+    href: '/market',
+    label: 'Market Index',
+    icon: TrendingUp,
+    activeColor: 'text-amber-400',
+    activeGlow: 'shadow-amber-500/20',
+  },
+  {
+    href: '/trade',
+    label: 'Trade Analyzer',
+    icon: ArrowLeftRight,
+    activeColor: 'text-orange-400',
+    activeGlow: 'shadow-orange-500/20',
+  },
+  {
+    href: '/shows',
+    label: 'Card Shows',
+    icon: MapPin,
+    activeColor: 'text-rose-400',
+    activeGlow: 'shadow-rose-500/20',
+  },
+  {
+    href: '/wantlist',
+    label: 'Wantlist',
+    icon: Heart,
+    activeColor: 'text-rose-400',
+    activeGlow: 'shadow-rose-500/20',
   },
   {
     href: '/chat',
