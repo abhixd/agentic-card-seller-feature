@@ -423,19 +423,41 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
   ] as const
   const trendPeriod = TREND_PERIODS.find(p => p.days === trendPeriodDays)!
 
-  // Generic TCGPlayer % change for the selected period
-  const tcgPeriodChange = useMemo(() => {
+  // Generic TCGPlayer change for the selected period.
+  // Returns an object so the display can show both % and $ simultaneously.
+  // Falls back to the oldest available point when the period exceeds stored history
+  // (e.g. "6M" on a card that only has 170d stored — shows actual span in label).
+  const tcgPeriodChange = useMemo((): {
+    pct: number; dollars: number; actualDays: number; usedFallback: boolean
+  } | null => {
     if (tcgPoints.length < 2) return null
     const sorted = [...tcgPoints].sort((a, b) => a.date.localeCompare(b.date))
-    const latest = sorted[sorted.length - 1].price
-    const cutoff = Date.now() - trendPeriodDays * 86_400_000
-    const anchor = sorted.filter(p => new Date(p.date).getTime() <= cutoff).at(-1)
+    const latestPt = sorted[sorted.length - 1]
+    const cutoff   = new Date(latestPt.date).getTime() - trendPeriodDays * 86_400_000
+
+    // Find the last point at-or-before the cutoff
+    let anchor       = sorted.filter(p => new Date(p.date).getTime() <= cutoff).at(-1)
+    let usedFallback = false
+
+    // No point that old — fall back to the oldest we have rather than showing nothing
+    if (!anchor) {
+      anchor       = sorted[0]
+      usedFallback = true
+    }
+
     if (!anchor || anchor.price === 0) return null
-    return (latest - anchor.price) / anchor.price * 100
+
+    const dollars    = latestPt.price - anchor.price
+    const pct        = dollars / anchor.price * 100
+    const actualDays = Math.round(
+      (new Date(latestPt.date).getTime() - new Date(anchor.date).getTime()) / 86_400_000
+    )
+
+    return { pct, dollars, actualDays, usedFallback }
   }, [tcgPoints, trendPeriodDays])
 
-  // Keep legacy alias so comparison rows still compile
-  const tcg7dChange = tcgPeriodChange
+  // Plain-number alias for the comparison table rows (still expects a number | null)
+  const tcg7dChange = tcgPeriodChange?.pct ?? null
 
   const ebayRawMed = useMemo(() => {
     const ps = rawPoints.filter(p => Date.now() - new Date(p.date).getTime() <= 30 * 86_400_000).map(p => p.price)
@@ -601,15 +623,28 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
               ))}
             </div>
             {/* Change value */}
-            {tcgPeriodChange != null ? (
-              <div className={`flex flex-col items-end gap-0.5 ${tcgPeriodChange > 2 ? 'text-emerald-400' : tcgPeriodChange < -2 ? 'text-red-400' : 'text-yellow-400'}`}>
-                <div className="flex items-center gap-1">
-                  {tcgPeriodChange > 0 ? <TrendingUp className="h-4 w-4" /> : tcgPeriodChange < 0 ? <TrendingDown className="h-4 w-4" /> : <Minus className="h-4 w-4" />}
-                  <span className="text-lg font-bold tabular-nums">{pct(tcgPeriodChange)}</span>
+            {tcgPeriodChange != null ? (() => {
+              const { pct: chgPct, dollars, actualDays, usedFallback } = tcgPeriodChange
+              const color = chgPct > 2 ? 'text-emerald-400' : chgPct < -2 ? 'text-red-400' : 'text-yellow-400'
+              const sign  = dollars >= 0 ? '+' : ''
+              const periodLabel = usedFallback
+                ? `${actualDays}d (max available)`
+                : trendPeriod.desc
+              return (
+                <div className={`flex flex-col items-end gap-0.5 ${color}`}>
+                  {/* % row */}
+                  <div className="flex items-center gap-1">
+                    {chgPct > 0 ? <TrendingUp className="h-4 w-4" /> : chgPct < 0 ? <TrendingDown className="h-4 w-4" /> : <Minus className="h-4 w-4" />}
+                    <span className="text-lg font-bold tabular-nums">{pct(chgPct)}</span>
+                  </div>
+                  {/* $ row */}
+                  <span className="text-sm font-semibold tabular-nums opacity-80">
+                    {sign}${Math.abs(dollars).toFixed(2)}
+                  </span>
+                  <span className="text-[10px] opacity-40">{periodLabel}</span>
                 </div>
-                <span className="text-[10px] opacity-50">{trendPeriod.desc}</span>
-              </div>
-            ) : (
+              )
+            })() : (
               <div className="flex flex-col items-end gap-0.5 text-white/20">
                 <Minus className="h-4 w-4" />
                 <span className="text-[10px]">no {trendPeriod.label} data</span>
