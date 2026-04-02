@@ -197,7 +197,7 @@ export async function fetchJustTcgPriceHistory(
     const params = new URLSearchParams({
       q,
       include_price_history: 'true',
-      priceHistoryDuration:  '365d',   // request up to 365d; API returns whatever it has (max 180d per JustTCG docs)
+      priceHistoryDuration:  '180d',   // JustTCG max — 365d breaks the response, 180d is the stable limit
     })
     const res = await fetch(`https://api.justtcg.com/v1/cards?${params}`, {
       headers: { 'x-api-key': apiKey! },
