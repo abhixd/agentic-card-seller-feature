@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { StatusBadge } from '@/components/inventory/StatusBadge'
-import { ArrowLeft, TrendingUp, FileText, Save, ExternalLink, BarChart2 } from 'lucide-react'
+import { ArrowLeft, TrendingUp, FileText, Save, ExternalLink, BarChart2, Zap } from 'lucide-react'
 import type { InventoryDetail, InventoryStatus } from '@/types/inventory'
 
 const STATUS_OPTIONS: { value: InventoryStatus; label: string }[] = [
@@ -159,6 +159,24 @@ export default function InventoryDetailPage() {
               <div className="flex items-center gap-2 text-sm">
                 <BarChart2 className="h-4 w-4 text-primary/70 shrink-0" />
                 <span className="font-medium">View prices, chart & full card details</span>
+              </div>
+              <ArrowLeft className="h-4 w-4 text-muted-foreground rotate-180 shrink-0" />
+            </div>
+          </CardContent>
+        </Card>
+      </Link>
+
+      {/* Sell Intelligence shortcut */}
+      <Link href={`/inventory/${itemId}/sell`}>
+        <Card className="border-emerald-400/20 bg-emerald-400/[0.04] hover:bg-emerald-400/[0.07] transition-colors cursor-pointer">
+          <CardContent className="py-3 px-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm">
+                <Zap className="h-4 w-4 text-emerald-400/70 shrink-0" />
+                <div>
+                  <span className="font-medium">Sell Intelligence</span>
+                  <span className="text-xs text-muted-foreground ml-2">eBay comps · optimal price · AI listing</span>
+                </div>
               </div>
               <ArrowLeft className="h-4 w-4 text-muted-foreground rotate-180 shrink-0" />
             </div>

@@ -412,15 +412,31 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
   const rawPoints   = useMemo(() => ebayPoints.filter(p => !p.graded),              [ebayPoints])
   const p10Points   = useMemo(() => ebayPoints.filter(p => p.graded && p.grader?.toUpperCase() === 'PSA' && p.grade === 10), [ebayPoints])
 
-  const tcg7dChange = useMemo(() => {
+  // ── Trend period (configurable — shared between hero badge + comparison table) ─
+  const TREND_PERIODS = [
+    { days: 7,   label: '7D',  desc: '7-day change'   },
+    { days: 30,  label: '30D', desc: '30-day change'  },
+    { days: 90,  label: '90D', desc: '90-day change'  },
+    { days: 180, label: '6M',  desc: '6-month change' },
+    { days: 365, label: '1Y',  desc: '1-year change'  },
+  ] as const
+  type TrendPeriodDays = typeof TREND_PERIODS[number]['days']
+  const [trendPeriodDays, setTrendPeriodDays] = useState<TrendPeriodDays>(7)
+  const trendPeriod = TREND_PERIODS.find(p => p.days === trendPeriodDays)!
+
+  // Generic TCGPlayer % change for the selected period
+  const tcgPeriodChange = useMemo(() => {
     if (tcgPoints.length < 2) return null
-    const sorted  = [...tcgPoints].sort((a, b) => a.date.localeCompare(b.date))
-    const latest  = sorted[sorted.length - 1].price
-    const cutoff  = Date.now() - 7 * 86_400_000
-    const old7    = sorted.filter(p => new Date(p.date).getTime() <= cutoff).at(-1)
-    if (!old7 || old7.price === 0) return null
-    return (latest - old7.price) / old7.price * 100
-  }, [tcgPoints])
+    const sorted = [...tcgPoints].sort((a, b) => a.date.localeCompare(b.date))
+    const latest = sorted[sorted.length - 1].price
+    const cutoff = Date.now() - trendPeriodDays * 86_400_000
+    const anchor = sorted.filter(p => new Date(p.date).getTime() <= cutoff).at(-1)
+    if (!anchor || anchor.price === 0) return null
+    return (latest - anchor.price) / anchor.price * 100
+  }, [tcgPoints, trendPeriodDays])
+
+  // Keep legacy alias so comparison rows still compile
+  const tcg7dChange = tcgPeriodChange
 
   const ebayRawMed = useMemo(() => {
     const ps = rawPoints.filter(p => Date.now() - new Date(p.date).getTime() <= 30 * 86_400_000).map(p => p.price)
@@ -429,14 +445,18 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
     return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
   }, [rawPoints])
 
-  const ebayRaw7d = useMemo(() => {
+  // eBay raw change for the selected trend period
+  const ebayRawPeriodChange = useMemo(() => {
     const now = Date.now()
-    const r = rawPoints.filter(p => now - new Date(p.date).getTime() <= 7*86_400_000).map(p => p.price)
-    const pr= rawPoints.filter(p => { const a = now - new Date(p.date).getTime(); return a > 7*86_400_000 && a <= 14*86_400_000 }).map(p => p.price)
+    const ms  = trendPeriodDays * 86_400_000
+    const r   = rawPoints.filter(p => now - new Date(p.date).getTime() <= ms).map(p => p.price)
+    const pr  = rawPoints.filter(p => { const a = now - new Date(p.date).getTime(); return a > ms && a <= ms * 2 }).map(p => p.price)
     if (!r.length || !pr.length) return null
     const avg = (xs: number[]) => xs.reduce((s, v) => s + v, 0) / xs.length
     return (avg(r) - avg(pr)) / avg(pr) * 100
-  }, [rawPoints])
+  }, [rawPoints, trendPeriodDays])
+
+  const ebayRaw7d = ebayRawPeriodChange
 
   const p10Med = useMemo(() => {
     const ps = p10Points.map(p => p.price)
@@ -562,16 +582,41 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
             </p>
           </div>
 
-          {/* 7d momentum */}
-          {tcg7dChange != null && (
-            <div className={`flex flex-col items-end gap-0.5 ${tcg7dChange > 2 ? 'text-emerald-400' : tcg7dChange < -2 ? 'text-red-400' : 'text-yellow-400'}`}>
-              <div className="flex items-center gap-1">
-                {tcg7dChange > 0 ? <TrendingUp className="h-4 w-4" /> : tcg7dChange < 0 ? <TrendingDown className="h-4 w-4" /> : <Minus className="h-4 w-4" />}
-                <span className="text-lg font-bold tabular-nums">{pct(tcg7dChange)}</span>
-              </div>
-              <span className="text-[10px] opacity-50">7-day change</span>
+          {/* Period change with toggler */}
+          <div className="flex flex-col items-end gap-1.5">
+            {/* Segmented period selector */}
+            <div className="flex items-center gap-0.5 rounded-lg bg-white/[0.04] p-0.5 border border-white/8">
+              {TREND_PERIODS.map(({ days, label }) => (
+                <button
+                  key={days}
+                  onClick={() => setTrendPeriodDays(days as TrendPeriodDays)}
+                  className={[
+                    'px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wide transition-all',
+                    trendPeriodDays === days
+                      ? 'bg-white/12 text-white'
+                      : 'text-white/30 hover:text-white/60',
+                  ].join(' ')}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
-          )}
+            {/* Change value */}
+            {tcgPeriodChange != null ? (
+              <div className={`flex flex-col items-end gap-0.5 ${tcgPeriodChange > 2 ? 'text-emerald-400' : tcgPeriodChange < -2 ? 'text-red-400' : 'text-yellow-400'}`}>
+                <div className="flex items-center gap-1">
+                  {tcgPeriodChange > 0 ? <TrendingUp className="h-4 w-4" /> : tcgPeriodChange < 0 ? <TrendingDown className="h-4 w-4" /> : <Minus className="h-4 w-4" />}
+                  <span className="text-lg font-bold tabular-nums">{pct(tcgPeriodChange)}</span>
+                </div>
+                <span className="text-[10px] opacity-50">{trendPeriod.desc}</span>
+              </div>
+            ) : (
+              <div className="flex flex-col items-end gap-0.5 text-white/20">
+                <Minus className="h-4 w-4" />
+                <span className="text-[10px]">no {trendPeriod.label} data</span>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Low / Mid / Market / High per finish — collapsible */}
@@ -919,7 +964,7 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
               <div className="grid grid-cols-4 px-3 py-2 text-[10px] uppercase tracking-widest text-muted-foreground/40 bg-muted/8 border-b border-border/20">
                 <span>Market</span>
                 <span className="text-right">Price</span>
-                <span className="text-right">7d Δ</span>
+                <span className="text-right">{trendPeriod.label} Δ</span>
                 <span className="text-right">vs TCGPlayer</span>
               </div>
               {rows.map(row => {
