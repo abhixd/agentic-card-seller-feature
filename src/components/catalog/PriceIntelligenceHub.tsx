@@ -331,10 +331,11 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
   const [fcLoading,    setFcLoading]    = useState(false)
 
   // ── UI state ──────────────────────────────────────────────────────────────────
-  const [duration,      setDuration]      = useState<Duration>('3m')
-  const [fcHorizon,     setFcHorizon]     = useState<FcHorizon>(30)
-  const [showTcgTable,  setShowTcgTable]  = useState(false)
-  const [vis,           setVis]           = useState<Record<string, boolean>>({
+  const [duration,        setDuration]        = useState<Duration>('3m')
+  const [fcHorizon,       setFcHorizon]       = useState<FcHorizon>(30)
+  const [showTcgTable,    setShowTcgTable]    = useState(false)
+  const [trendPeriodDays, setTrendPeriodDays] = useState<7|30|90|180|365>(7)
+  const [vis,             setVis]             = useState<Record<string, boolean>>({
     tcg: true, ebayRaw: true, ebayPsa10: true, forecast: false,
   })
 
@@ -420,8 +421,6 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
     { days: 180, label: '6M',  desc: '6-month change' },
     { days: 365, label: '1Y',  desc: '1-year change'  },
   ] as const
-  type TrendPeriodDays = typeof TREND_PERIODS[number]['days']
-  const [trendPeriodDays, setTrendPeriodDays] = useState<TrendPeriodDays>(7)
   const trendPeriod = TREND_PERIODS.find(p => p.days === trendPeriodDays)!
 
   // Generic TCGPlayer % change for the selected period
@@ -589,7 +588,7 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
               {TREND_PERIODS.map(({ days, label }) => (
                 <button
                   key={days}
-                  onClick={() => setTrendPeriodDays(days as TrendPeriodDays)}
+                  onClick={() => setTrendPeriodDays(days as 7|30|90|180|365)}
                   className={[
                     'px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wide transition-all',
                     trendPeriodDays === days
