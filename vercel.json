@@ -1,6 +1,7 @@
 {
   "crons": [
     { "path": "/api/cron/sync-cards", "schedule": "0 3 * * *" },
-    { "path": "/api/cron/sync-news", "schedule": "0 7 * * *" }
+    { "path": "/api/cron/sync-news", "schedule": "0 7 * * *" },
+    { "path": "/api/cron/sync-price-history", "schedule": "0 3 * * *" }
   ]
 }

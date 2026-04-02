@@ -28,6 +28,17 @@ function mergePoints(existing: JustTcgPoint[], fresh: JustTcgPoint[]): JustTcgPo
     .map(([date, price]) => ({ date, price }))
 }
 
+/** Compute percentage change from N days ago to the most recent point. */
+function trendPct(points: { date: string; price: number }[], days: number): number | null {
+  if (points.length < 2) return null
+  const now    = new Date(points[points.length - 1].date).getTime()
+  const cutoff = now - days * 24 * 60 * 60 * 1000
+  const anchor = [...points].reverse().find(p => new Date(p.date).getTime() <= cutoff)
+  if (!anchor || anchor.price === 0) return null
+  const latest = points[points.length - 1].price
+  return ((latest - anchor.price) / anchor.price) * 100
+}
+
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const catalogId = searchParams.get('catalogId')
@@ -148,8 +159,11 @@ export async function GET(request: NextRequest) {
   }
 
   return NextResponse.json({
-    points:     mergedPoints,
+    points:      mergedPoints,
     keyword,
     rateLimited: apiError && mergedPoints.length === 0,
+    trend7d:     trendPct(mergedPoints, 7),
+    trend30d:    trendPct(mergedPoints, 30),
+    trend90d:    trendPct(mergedPoints, 90),
   })
 }

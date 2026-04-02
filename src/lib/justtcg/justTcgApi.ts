@@ -44,14 +44,31 @@ const CONDITION_RANK: Record<string, number> = {
   'DMG': 1, 'Damaged': 1,
 }
 
-function pickBestVariant(variants: JustTcgVariant[]): JustTcgVariant | null {
-  // Priority: best condition English → best condition any language → first with history
-  // Printing (Normal / Holofoil / Reverse Holofoil) is NOT filtered — include all
+function pickBestVariant(variants: JustTcgVariant[], knownPrinting?: string | null): JustTcgVariant | null {
+  // Map TCGPlayer band names to JustTCG printing keywords
+  const PRINTING_MAP: Record<string, string[]> = {
+    holofoil:             ['holo', 'foil'],
+    '1stEditionHolofoil': ['1st', 'holo'],
+    '1stEditionNormal':   ['1st'],
+    reverseHolofoil:      ['reverse'],
+    unlimitedHolofoil:    ['holo'],
+    normal:               ['normal'],
+  }
+
   const score = (v: JustTcgVariant) => {
     let s = CONDITION_RANK[v.condition] ?? 0
-    if (v.language === 'English') s += 10  // strong preference for English
+    if (v.language === 'English') s += 10
+
+    // Bonus if printing matches the known TCGPlayer band
+    if (knownPrinting) {
+      const keywords = PRINTING_MAP[knownPrinting] ?? []
+      const printingLower = v.printing?.toLowerCase() ?? ''
+      if (keywords.some(kw => printingLower.includes(kw))) s += 20
+    }
+
     return s
   }
+
   const withHistory = variants.filter((v) => (v.priceHistory?.length ?? 0) > 0)
   const pool = withHistory.length ? withHistory : variants
   if (!pool.length) return null
@@ -145,7 +162,7 @@ function findBestCard(
     const cardTokens = normaliseName(c.name).split(' ')
     return queryTokens.every((t) => cardTokens.includes(t))
   })
-  return tokenMatch ?? cards[0]
+  return tokenMatch ?? null
 }
 
 /**
@@ -161,6 +178,7 @@ export async function fetchJustTcgPriceHistory(
   cardNumber: string | null | undefined,
   setName: string | null | undefined,
   force = false,
+  knownPrinting?: string | null,
 ): Promise<JustTcgFetchResult> {
   const apiKey = process.env.JUSTTCG_API_KEY
   if (!apiKey) return { points: [], keyword: cardName, apiError: false }
@@ -203,7 +221,7 @@ export async function fetchJustTcgPriceHistory(
 
     if (!match) return { points: [], keyword, apiError: false }
 
-    const variant = pickBestVariant(match.variants ?? [])
+    const variant = pickBestVariant(match.variants ?? [], knownPrinting)
     if (!variant || !variant.priceHistory?.length) return { points: [], keyword, apiError: false }
 
     const points: JustTcgPoint[] = variant.priceHistory
