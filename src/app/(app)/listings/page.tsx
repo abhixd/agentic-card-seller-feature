@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useCallback, useEffect } from 'react'
+import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -305,11 +306,11 @@ export default function ListingsPage() {
           <p className="text-sm text-white/25 mt-1">
             Go to an inventory card and click <strong className="text-white/40">List on eBay</strong> to get started.
           </p>
-          <a href="/inventory">
+          <Link href="/inventory">
             <Button className="mt-5 bg-white/5 hover:bg-white/10 border border-white/10 text-white/50 hover:text-white text-sm">
               Go to Inventory
             </Button>
-          </a>
+          </Link>
         </div>
       )}
 
