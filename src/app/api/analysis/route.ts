@@ -17,6 +17,7 @@ const AnalysisRequestSchema = z.object({
   platform:         z.enum(['ebay', 'tcgplayer']).default('ebay'),
   shippingCost:     z.number().min(0).default(4.0),
   acquisitionCost:  z.number().min(0).default(0),
+  edition:          z.enum(['1st_edition', 'unlimited', 'reverse_holo']).nullable().optional(),
 })
 
 export async function POST(request: NextRequest) {

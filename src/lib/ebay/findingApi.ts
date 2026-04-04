@@ -66,7 +66,11 @@ function normalizeTerm(s: string): string {
  * lang='jp'  → Japanese card search (prepends "Japanese", drops card number
  *              since JP numbering differs from EN)
  */
-export function buildKeyword(card: CardMeta, lang: 'en' | 'jp' = 'en'): string {
+export function buildKeyword(
+  card: CardMeta,
+  lang: 'en' | 'jp' = 'en',
+  edition?: '1st_edition' | 'unlimited' | 'reverse_holo' | null,
+): string {
   if (lang === 'jp') {
     return [
       'Japanese',
@@ -81,12 +85,18 @@ export function buildKeyword(card: CardMeta, lang: 'en' | 'jp' = 'en'): string {
       .slice(0, 100)
   }
 
+  // Edition keyword qualifiers for more accurate eBay comps
+  const editionTerm = edition === '1st_edition'  ? '1st Edition'
+                    : edition === 'reverse_holo'  ? 'Reverse Holo'
+                    : null   // unlimited = no extra term (most common, no qualifier needed)
+
   return [
     card.year != null && card.year <= 2010 ? card.year.toString() : null,
     card.franchise_or_brand ? normalizeTerm(card.franchise_or_brand) : null,
     card.card_name,
     card.set_name ? getEbaySetTerm(card.set_name) : null,
     card.card_number ? card.card_number.split('/')[0] : null,
+    editionTerm,
   ]
     .filter(Boolean)
     .join(' ')

@@ -198,7 +198,7 @@ function AddCardModal({ onAdd, onClose }: {
                   />
                 </div>
                 <p className="text-[10px] text-white/20">
-                  You'll be able to compare against market price at a glance.
+                  You&apos;ll be able to compare against market price at a glance.
                 </p>
               </div>
 
@@ -269,7 +269,7 @@ export default function WantlistPage() {
             Wantlist
           </h1>
           <p className="text-xs text-muted-foreground/50 mt-1">
-            Track cards you're hunting — monitor price vs your target
+            Track cards you&apos;re hunting — monitor price vs your target
           </p>
         </div>
         <button
@@ -297,7 +297,7 @@ export default function WantlistPage() {
           <Heart className="h-8 w-8 text-rose-400/30 mx-auto" />
           <p className="text-sm font-medium text-white/40">Your wantlist is empty</p>
           <p className="text-xs text-white/20">
-            Add cards you're hunting to track their price vs your target.
+            Add cards you&apos;re hunting to track their price vs your target.
           </p>
           <button
             onClick={() => setShowAdd(true)}

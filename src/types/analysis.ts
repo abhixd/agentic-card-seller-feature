@@ -156,4 +156,5 @@ export interface AnalysisRequest {
   platform?: 'ebay' | 'tcgplayer'
   shippingCost?: number
   acquisitionCost?: number
+  edition?: '1st_edition' | 'unlimited' | 'reverse_holo' | null
 }

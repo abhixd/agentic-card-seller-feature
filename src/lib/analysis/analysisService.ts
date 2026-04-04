@@ -41,6 +41,7 @@ export async function runAnalysis(
     platform = 'ebay',
     shippingCost = 4.0,
     acquisitionCost = 0,
+    edition = null,
   } = request
 
   // ── 1. Fetch card from catalog ───────────────────────────────────────────
@@ -60,7 +61,8 @@ export async function runAnalysis(
   }
 
   // ── 2. Fetch & normalise comps ───────────────────────────────────────────
-  const keyword    = buildKeyword(card)
+  // Pass edition so eBay keyword includes "1st Edition" or "Reverse Holo" qualifiers
+  const keyword    = buildKeyword(card, 'en', edition ?? undefined)
   const { comps: rawComps } = await fetchEbayComps(keyword)
   const comps               = normalizeComps(rawComps)
 
@@ -119,7 +121,6 @@ export async function runAnalysis(
     .insert({
       user_id:                userId,
       catalog_id:             catalogId,
-      intake_type:            'manual_search',
       estimated_market_value: comps.rawEstimate,
       comp_range_low:         comps.compRangeLow,
       comp_range_high:        comps.compRangeHigh,

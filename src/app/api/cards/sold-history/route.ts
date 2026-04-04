@@ -2,7 +2,7 @@
 // Returns up to 90 days of eBay completed-sale data for charting.
 // Results are cached in card metadata_json for 24 hours to protect eBay rate limits.
 
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { fetchEbayComps, buildKeyword } from '@/lib/ebay/findingApi'
 
@@ -135,6 +135,66 @@ export async function GET(request: NextRequest) {
     } catch (err) {
       console.error('[sold-history] Cache write error:', err)
     }
+  }
+
+  // ── Persist sold listings to ebay_sold_history (post-response, non-blocking) ─
+  if (card && catalogIdStr && !apiError && rawComps.length > 0) {
+    const cardName = (card.card_name as string) ?? ''
+    const setName  = (card.set_name  as string) ?? ''
+    after(async () => {
+      try {
+        const svc = createServiceClient()
+        const rows = rawComps
+          .filter((c) => c.soldAt && c.soldPrice > 0)
+          .map((c) => {
+            // Extract eBay item ID from the viewItemURL  e.g. https://www.ebay.com/itm/123456789
+            const itemIdMatch = c.sourceUrl.match(/\/itm\/(\d+)/)
+            const ebayItemId  = itemIdMatch ? itemIdMatch[1] : c.sourceUrl
+
+            // Derive condition label from title keywords
+            const t    = c.title.toLowerCase()
+            const cond = /\b(psa|bgs|sgc|cgc)\b/.test(t)
+              ? 'Graded'
+              : /\bNM\b|near.?mint/i.test(c.title)
+              ? 'Near Mint'
+              : /\bLP\b|lightly.?played/i.test(c.title)
+              ? 'Lightly Played'
+              : /\bMP\b|moderately.?played/i.test(c.title)
+              ? 'Moderately Played'
+              : /\bHP\b|heavily.?played/i.test(c.title)
+              ? 'Heavily Played'
+              : /\bdamaged/i.test(c.title)
+              ? 'Damaged'
+              : 'Unspecified'
+
+            return {
+              catalog_id:   catalogIdStr,
+              card_name:    cardName,
+              set_name:     setName,
+              ebay_item_id: ebayItemId,
+              sold_price:   c.soldPrice,
+              currency:     'USD',
+              condition:    cond,
+              title:        c.title,
+              listing_url:  c.sourceUrl,
+              sold_at:      c.soldAt!.toISOString(),
+            }
+          })
+
+        if (rows.length > 0) {
+          const { error } = await svc
+            .from('ebay_sold_history')
+            .upsert(rows, { onConflict: 'ebay_item_id', ignoreDuplicates: true })
+          if (error) {
+            console.error('[sold-history] ebay_sold_history upsert error:', error.message)
+          } else {
+            console.log(`[sold-history] stored ${rows.length} listings for catalog_id=${catalogIdStr}`)
+          }
+        }
+      } catch (err) {
+        console.error('[sold-history] after() persistence error:', err)
+      }
+    })
   }
 
   return NextResponse.json({

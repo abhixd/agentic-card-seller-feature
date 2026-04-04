@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { StatusBadge } from '@/components/inventory/StatusBadge'
+import { ListOnEbayButton } from '@/components/ebay/ListOnEbayButton'
 import { ArrowLeft, TrendingUp, FileText, Save, ExternalLink, BarChart2, Zap } from 'lucide-react'
 import type { InventoryDetail, InventoryStatus } from '@/types/inventory'
 
@@ -48,6 +49,15 @@ export default function InventoryDetailPage() {
   const [saving, setSaving]       = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+
+  // eBay connection status
+  const [ebayConnected, setEbayConnected] = useState(false)
+  useEffect(() => {
+    fetch('/api/ebay/auth/status')
+      .then(r => r.json())
+      .then(d => setEbayConnected(!!d.connected))
+      .catch(() => setEbayConnected(false))
+  }, [])
 
   const loadItem = useCallback(async () => {
     try {
@@ -183,6 +193,16 @@ export default function InventoryDetailPage() {
           </CardContent>
         </Card>
       </Link>
+
+      {/* List on eBay */}
+      <div className="flex items-center justify-between">
+        <ListOnEbayButton
+          inventoryItemId={itemId}
+          suggestedPrice={item.estimated_market_value ?? null}
+          isConnected={ebayConnected}
+          currentStatus={status}
+        />
+      </div>
 
       {/* Latest analysis summary */}
       {(item.recommendation_type || item.estimated_market_value != null) && (

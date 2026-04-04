@@ -482,6 +482,12 @@ export default function SetDetailPage() {
                 <><span className="text-white/20">·</span><span className="text-white/60">{filter}</span></>
               )}
             </div>
+            <Link
+              href={`/sets/${setId}/investment-report`}
+              className="inline-flex items-center gap-1 mt-2 text-xs text-white/35 hover:text-emerald-400 transition-colors"
+            >
+              View Investment Report →
+            </Link>
           </div>
         </div>
 

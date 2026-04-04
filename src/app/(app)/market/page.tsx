@@ -2,12 +2,13 @@ import { createClient } from '@/lib/supabase/server'
 import Link from 'next/link'
 import Image from 'next/image'
 import {
-  TrendingUp, TrendingDown, Minus, BarChart2, Activity,
-  Zap, ArrowUpRight, ArrowDownRight, Clock, Search,
+  TrendingUp, TrendingDown, Minus, BarChart2,
+  ArrowUpRight, ArrowDownRight, Clock, Search, Flame,
+  Crown, AlertTriangle,
 } from 'lucide-react'
 import { Sparkline } from '@/components/ui/Sparkline'
 
-// ── Shared helpers ────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function extractTcgPrice(meta: any): { market: number; mid: number | null } | null {
   const prices = meta?.tcgplayer?.prices
@@ -26,16 +27,63 @@ function extractTcgPrice(meta: any): { market: number; mid: number | null } | nu
   return null
 }
 
-function extractSparkPoints(meta: any): number[] {
-  const pts: { date: string; price: number }[] = meta?.tcg_history?.points ?? []
-  return pts.slice(-30).map((p: any) => p.price)
+interface HistoryPoint { date: string; price: number }
+
+function extractHistory(meta: any): HistoryPoint[] {
+  const pts: HistoryPoint[] = meta?.tcg_history?.points ?? []
+  return pts
+    .filter((p: any) => typeof p?.date === 'string' && typeof p?.price === 'number')
+    .sort((a: HistoryPoint, b: HistoryPoint) =>
+      new Date(a.date).getTime() - new Date(b.date).getTime()
+    )
+}
+
+function closestPrice(pts: HistoryPoint[], targetMs: number, toleranceDays = 4): number | null {
+  if (pts.length === 0) return null
+  let best: HistoryPoint | null = null
+  let bestDiff = Infinity
+  for (const p of pts) {
+    const diff = Math.abs(new Date(p.date).getTime() - targetMs)
+    if (diff < bestDiff) { bestDiff = diff; best = p }
+  }
+  return bestDiff <= toleranceDays * 86_400_000 ? (best?.price ?? null) : null
 }
 
 function fmtUsd(n: number) {
-  return n >= 1000 ? `$${(n / 1000).toFixed(2)}k` : `$${n.toFixed(2)}`
+  return n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : `$${n.toFixed(2)}`
 }
 function fmtPct(n: number) {
   return `${n >= 0 ? '+' : ''}${n.toFixed(1)}%`
+}
+
+// ── Signal badge logic ────────────────────────────────────────────────────────
+
+type Signal = 'rocket' | 'crash' | 'ath' | 'hot' | 'cooling' | null
+
+function computeSignal(chg7d: number | null, chg30d: number | null, market: number, ath: number | null): Signal {
+  if (chg7d != null && chg7d >= 20)  return 'rocket'
+  if (chg7d != null && chg7d <= -20) return 'crash'
+  if (ath != null && market > 0 && market >= ath * 0.97) return 'ath'
+  if (chg30d != null && chg30d >= 12) return 'hot'
+  if (chg30d != null && chg30d <= -12) return 'cooling'
+  return null
+}
+
+function SignalBadge({ signal }: { signal: Signal }) {
+  if (!signal) return null
+  const map: Record<Exclude<Signal, null>, { icon: string; label: string; cls: string }> = {
+    rocket:  { icon: '🚀', label: '+7d surge',   cls: 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300' },
+    crash:   { icon: '📉', label: '-7d drop',    cls: 'bg-red-500/20    border-red-500/40    text-red-300'     },
+    ath:     { icon: '👑', label: 'Near ATH',    cls: 'bg-amber-500/20  border-amber-500/40  text-amber-300'   },
+    hot:     { icon: '🔥', label: '+30d hot',    cls: 'bg-orange-500/20 border-orange-500/40 text-orange-300'  },
+    cooling: { icon: '❄️', label: '-30d cool',   cls: 'bg-blue-500/20   border-blue-500/40   text-blue-300'    },
+  }
+  const { icon, label, cls } = map[signal]
+  return (
+    <span className={`inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full border ${cls} whitespace-nowrap`}>
+      {icon} {label}
+    </span>
+  )
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
@@ -43,15 +91,18 @@ function fmtPct(n: number) {
 export default async function MarketPage() {
   const supabase = await createClient()
 
-  // Fetch a large batch of catalog cards — order by created_at (no updated_at column exists)
-  // We fetch a large set so the JS-side price filter has enough priced cards to build top-100
+  // Fetch the full catalog (no created_at bias — all cards, large limit)
+  // Order by catalog_id to get a stable, unbiased full-catalog sample
   const { data: rawCards } = await supabase
     .from('card_catalog_items')
     .select('catalog_id, card_name, set_name, card_number, canonical_image_url, metadata_json, franchise_or_brand, year')
-    .order('created_at', { ascending: false })
-    .limit(2000)
+    .limit(10000)
 
-  // ── Process: extract price, compute change proxy ──────────────────────────
+  // ── Process ───────────────────────────────────────────────────────────────
+  const now = Date.now()
+  const ms7d  = now - 7  * 86_400_000
+  const ms30d = now - 30 * 86_400_000
+
   type CardRow = {
     catalog_id:  string
     card_name:   string
@@ -62,8 +113,10 @@ export default async function MarketPage() {
     year:        number | null
     market:      number
     mid:         number | null
-    chgPct:      number    // market vs mid — proxy for recent direction
-    updated_at:  string
+    chg7d:       number | null   // real 7-day % change from history
+    chg30d:      number | null   // real 30-day % change from history
+    ath:         number | null
+    signal:      Signal
     sparkPoints: number[]
   }
 
@@ -71,7 +124,21 @@ export default async function MarketPage() {
     .map((c: any) => {
       const p = extractTcgPrice(c.metadata_json)
       if (!p) return null
-      const chgPct = p.mid && p.mid > 0 ? ((p.market - p.mid) / p.mid) * 100 : 0
+
+      const history = extractHistory(c.metadata_json)
+      const price7d  = closestPrice(history, ms7d,  3)
+      const price30d = closestPrice(history, ms30d, 5)
+
+      const chg7d  = price7d  != null && price7d  > 0 ? ((p.market - price7d)  / price7d  * 100) : null
+      const chg30d = price30d != null && price30d > 0 ? ((p.market - price30d) / price30d * 100) : null
+
+      let ath: number | null = null
+      for (const pt of history) {
+        if (ath === null || pt.price > ath) ath = pt.price
+      }
+
+      const signal = computeSignal(chg7d, chg30d, p.market, ath)
+
       return {
         catalog_id:  c.catalog_id  as string,
         card_name:   c.card_name   as string,
@@ -82,15 +149,16 @@ export default async function MarketPage() {
         year:        c.year as number | null,
         market:      p.market,
         mid:         p.mid,
-        chgPct,
-        updated_at:  (c.metadata_json?.tcgplayer?.updatedAt ?? '') as string,
-        sparkPoints: extractSparkPoints(c.metadata_json),
+        chg7d,
+        chg30d,
+        ath,
+        signal,
+        sparkPoints: history.slice(-30).map(h => h.price),
       } as CardRow
     })
     .filter(Boolean) as CardRow[]
 
-  // Deduplicate: keep only the highest-priced version per unique card name
-  // This prevents one Pokémon (e.g. Charizard) from occupying 20+ slots via set variants
+  // Deduplicate: keep highest-priced version per unique card name
   const seenNames = new Map<string, CardRow>()
   for (const card of processed) {
     const key = card.card_name.toLowerCase().trim()
@@ -101,23 +169,39 @@ export default async function MarketPage() {
   }
   const deduplicated = Array.from(seenNames.values())
 
-  // Top 100 by market price across deduplicated unique card names
+  // Top 100 by market price
   const top100 = [...deduplicated]
     .sort((a, b) => b.market - a.market)
     .slice(0, 100)
 
   // ── Index stats ───────────────────────────────────────────────────────────
-  const indexValue      = top100.reduce((s, c) => s + c.market, 0)
-  const avgPrice        = indexValue / (top100.length || 1)
-  const gainers         = top100.filter(c => c.chgPct > 1)
-  const losers          = top100.filter(c => c.chgPct < -1)
-  const flat            = top100.filter(c => Math.abs(c.chgPct) <= 1)
-  const indexChg        = top100.length > 0
-    ? top100.reduce((s, c) => s + c.chgPct, 0) / top100.length : 0
+  const indexValue = top100.reduce((s, c) => s + c.market, 0)
+  const avgPrice   = indexValue / (top100.length || 1)
 
-  // Top movers
-  const topGainers = [...gainers].sort((a, b) => b.chgPct - a.chgPct).slice(0, 5)
-  const topLosers  = [...losers].sort((a, b) => a.chgPct - b.chgPct).slice(0, 5)
+  // Use real 30d changes for the index direction (fall back to 7d if needed)
+  const cardsWithChg30d  = top100.filter(c => c.chg30d != null)
+  const cardsWithChg7d   = top100.filter(c => c.chg7d  != null)
+  const indexChg30d      = cardsWithChg30d.length > 0
+    ? cardsWithChg30d.reduce((s, c) => s + (c.chg30d ?? 0), 0) / cardsWithChg30d.length
+    : null
+  const indexChg7d       = cardsWithChg7d.length > 0
+    ? cardsWithChg7d.reduce((s, c) => s + (c.chg7d ?? 0), 0) / cardsWithChg7d.length
+    : null
+  const indexChg = indexChg30d ?? indexChg7d ?? 0
+
+  const gainers30d = top100.filter(c => (c.chg30d ?? 0) > 2)
+  const losers30d  = top100.filter(c => (c.chg30d ?? 0) < -2)
+
+  // Notable movers — cards with real historical change data
+  const notable = top100.filter(c => c.signal !== null)
+  const topGainers = [...deduplicated]
+    .filter(c => c.chg30d != null)
+    .sort((a, b) => (b.chg30d ?? 0) - (a.chg30d ?? 0))
+    .slice(0, 5)
+  const topLosers = [...deduplicated]
+    .filter(c => c.chg30d != null)
+    .sort((a, b) => (a.chg30d ?? 0) - (b.chg30d ?? 0))
+    .slice(0, 5)
 
   const isUp = indexChg >= 0
 
@@ -163,24 +247,27 @@ export default async function MarketPage() {
                 </p>
                 <p className="text-[10px] text-white/25 mt-1">Composite market value of top 100 cards</p>
               </div>
-              <div className={`flex flex-col items-end pb-1 ${isUp ? 'text-emerald-400' : 'text-red-400'}`}>
-                <div className="flex items-center gap-1 text-lg font-bold">
-                  {isUp ? <ArrowUpRight className="h-5 w-5" /> : <ArrowDownRight className="h-5 w-5" />}
-                  {fmtPct(indexChg)}
+              {indexChg30d != null || indexChg7d != null ? (
+                <div className={`flex flex-col items-end pb-1 ${isUp ? 'text-emerald-400' : 'text-red-400'}`}>
+                  <div className="flex items-center gap-1 text-lg font-bold">
+                    {isUp ? <ArrowUpRight className="h-5 w-5" /> : <ArrowDownRight className="h-5 w-5" />}
+                    {fmtPct(indexChg)}
+                  </div>
+                  <span className="text-[10px] opacity-50">{indexChg30d != null ? '30d avg' : '7d avg'}</span>
                 </div>
-                <span className="text-[10px] opacity-50">market vs mid avg</span>
-              </div>
+              ) : null}
             </div>
           </div>
 
           {/* Breadth tiles */}
           <div className="flex flex-wrap gap-3">
             {[
-              { label: 'Cards tracked', value: top100.length.toString(), sub: `of ${processed.length} priced`, color: 'text-white/70' },
-              { label: 'Avg price',     value: fmtUsd(avgPrice),         sub: 'top 100 median',               color: 'text-amber-300' },
-              { label: 'Advancing',     value: gainers.length.toString(), sub: 'mkt > mid',                  color: 'text-emerald-300' },
-              { label: 'Declining',     value: losers.length.toString(),  sub: 'mkt < mid',                  color: 'text-red-400'    },
-              { label: 'Unchanged',     value: flat.length.toString(),    sub: '±1%',                        color: 'text-white/30'   },
+              { label: 'Total in catalog',  value: processed.length.toLocaleString(),   sub: 'priced cards',    color: 'text-white/70'   },
+              { label: 'In top 100',        value: top100.length.toString(),             sub: 'unique by name',  color: 'text-amber-300'  },
+              { label: 'Avg price',         value: fmtUsd(avgPrice),                    sub: 'top 100',         color: 'text-amber-300'  },
+              { label: 'Up 30d',            value: gainers30d.length.toString(),         sub: 'in top 100',      color: 'text-emerald-300'},
+              { label: 'Down 30d',          value: losers30d.length.toString(),          sub: 'in top 100',      color: 'text-red-400'    },
+              { label: 'Signals',           value: notable.length.toString(),            sub: 'notable moves',   color: 'text-orange-300' },
             ].map(({ label, value, sub, color }) => (
               <div key={label} className="min-w-[100px] rounded-xl border border-white/8 bg-white/[0.04] px-3 py-2.5">
                 <p className="text-[9px] uppercase tracking-widest text-white/20 font-semibold mb-1">{label}</p>
@@ -192,13 +279,52 @@ export default async function MarketPage() {
         </div>
       </div>
 
+      {/* ══ Notable signals strip (if any) ════════════════════════════════════ */}
+      {notable.length > 0 && (
+        <div className="rounded-xl border border-orange-500/20 overflow-hidden" style={{ background: 'rgba(20,10,5,0.9)' }}>
+          <div className="flex items-center gap-2 px-4 py-2 border-b border-orange-500/10">
+            <Flame className="h-3.5 w-3.5 text-orange-400/60" />
+            <span className="text-[10px] font-bold uppercase tracking-widest text-orange-400/40">
+              Notable Moves · Cards with significant price signals
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2 p-3">
+            {notable.slice(0, 12).map(c => (
+              <Link
+                key={c.catalog_id}
+                href={`/analyze/${c.catalog_id}`}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg border border-white/[0.06] bg-white/[0.03] hover:bg-white/[0.06] transition-colors min-w-0"
+              >
+                {c.image_url
+                  ? <Image src={c.image_url} alt={c.card_name} width={18} height={25}
+                      className="rounded object-cover shrink-0 opacity-70" unoptimized />
+                  : <div className="w-[18px] h-[25px] rounded bg-white/5 shrink-0" />}
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-white/80 truncate max-w-[120px]">{c.card_name}</p>
+                  <div className="flex items-center gap-1 mt-0.5">
+                    <SignalBadge signal={c.signal} />
+                    {c.chg30d != null && (
+                      <span className={`text-[9px] font-bold tabular-nums ${c.chg30d >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {fmtPct(c.chg30d)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ══ Movers row ═══════════════════════════════════════════════════════ */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Top gainers */}
         <div className="rounded-xl border border-emerald-400/12 overflow-hidden" style={{ background: '#080c10' }}>
           <div className="flex items-center gap-2 px-4 py-2.5 border-b border-emerald-400/10">
             <TrendingUp className="h-3.5 w-3.5 text-emerald-400/60" />
-            <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400/40">Top Movers · Up</span>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400/40">
+              Top Gainers · 30-Day
+            </span>
           </div>
           {topGainers.length > 0 ? topGainers.map((c, i) => (
             <Link key={c.catalog_id} href={`/analyze/${c.catalog_id}`}
@@ -213,11 +339,11 @@ export default async function MarketPage() {
               </div>
               <div className="text-right shrink-0">
                 <p className="text-sm font-bold tabular-nums text-white/80">{fmtUsd(c.market)}</p>
-                <p className="text-[10px] font-semibold text-emerald-400 tabular-nums">{fmtPct(c.chgPct)}</p>
+                <p className="text-[10px] font-semibold text-emerald-400 tabular-nums">{fmtPct(c.chg30d ?? 0)}</p>
               </div>
             </Link>
           )) : (
-            <p className="px-4 py-4 text-xs text-white/20 text-center">No movers detected</p>
+            <p className="px-4 py-4 text-xs text-white/20 text-center">Not enough history data yet</p>
           )}
         </div>
 
@@ -225,7 +351,9 @@ export default async function MarketPage() {
         <div className="rounded-xl border border-red-400/10 overflow-hidden" style={{ background: '#080c10' }}>
           <div className="flex items-center gap-2 px-4 py-2.5 border-b border-red-400/8">
             <TrendingDown className="h-3.5 w-3.5 text-red-400/60" />
-            <span className="text-[10px] font-bold uppercase tracking-widest text-red-400/40">Top Movers · Down</span>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-red-400/40">
+              Top Decliners · 30-Day
+            </span>
           </div>
           {topLosers.length > 0 ? topLosers.map((c, i) => (
             <Link key={c.catalog_id} href={`/analyze/${c.catalog_id}`}
@@ -240,11 +368,11 @@ export default async function MarketPage() {
               </div>
               <div className="text-right shrink-0">
                 <p className="text-sm font-bold tabular-nums text-white/80">{fmtUsd(c.market)}</p>
-                <p className="text-[10px] font-semibold text-red-400 tabular-nums">{fmtPct(c.chgPct)}</p>
+                <p className="text-[10px] font-semibold text-red-400 tabular-nums">{fmtPct(c.chg30d ?? 0)}</p>
               </div>
             </Link>
           )) : (
-            <p className="px-4 py-4 text-xs text-white/20 text-center">No movers detected</p>
+            <p className="px-4 py-4 text-xs text-white/20 text-center">Not enough history data yet</p>
           )}
         </div>
       </div>
@@ -259,7 +387,7 @@ export default async function MarketPage() {
           </div>
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-white/15 flex items-center gap-1">
-              <Clock className="h-3 w-3" /> Sorted by TCGPlayer market price
+              <Clock className="h-3 w-3" /> Sorted by TCGPlayer market price · entire catalog
             </span>
           </div>
         </div>
@@ -267,26 +395,28 @@ export default async function MarketPage() {
         {/* Column headers */}
         <div
           className="grid px-4 py-2 border-b border-white/[0.04] text-[9px] uppercase tracking-widest text-white/20 font-semibold"
-          style={{ gridTemplateColumns: '32px 1fr 70px 100px 100px 80px 70px' }}
+          style={{ gridTemplateColumns: '32px 1fr 70px 90px 80px 80px 90px' }}
         >
           <span>#</span>
           <span>Card</span>
           <span>Trend</span>
           <span className="text-right">Market</span>
-          <span className="text-right">Mid</span>
-          <span className="text-right">vs Mid</span>
-          <span className="text-right">Set Year</span>
+          <span className="text-right">7d</span>
+          <span className="text-right">30d</span>
+          <span>Signal</span>
         </div>
 
         {top100.map((c, idx) => {
-          const isUp   = c.chgPct > 1
-          const isDown = c.chgPct < -1
+          const up7   = (c.chg7d  ?? 0) > 1
+          const down7 = (c.chg7d  ?? 0) < -1
+          const up30  = (c.chg30d ?? 0) > 1
+          const down30 = (c.chg30d ?? 0) < -1
           return (
             <Link
               key={c.catalog_id}
               href={`/analyze/${c.catalog_id}`}
               className="grid px-4 py-2.5 border-b border-white/[0.03] last:border-0 hover:bg-white/[0.025] transition-colors items-center group"
-              style={{ gridTemplateColumns: '32px 1fr 70px 100px 100px 80px 70px' }}
+              style={{ gridTemplateColumns: '32px 1fr 70px 90px 80px 80px 90px' }}
             >
               {/* Rank */}
               <span className="text-[11px] font-mono text-white/20">{idx + 1}</span>
@@ -307,7 +437,7 @@ export default async function MarketPage() {
                 </div>
               </div>
 
-              {/* Trend sparkline */}
+              {/* Sparkline */}
               <div className="flex items-center">
                 {c.sparkPoints.length >= 2
                   ? <Sparkline points={c.sparkPoints} width={56} height={22} />
@@ -318,25 +448,38 @@ export default async function MarketPage() {
               {/* Market price */}
               <p className="text-sm font-bold tabular-nums text-right text-white/90">{fmtUsd(c.market)}</p>
 
-              {/* Mid price */}
-              <p className="text-xs tabular-nums text-right text-white/35">
-                {c.mid != null ? fmtUsd(c.mid) : '—'}
-              </p>
-
-              {/* vs Mid */}
+              {/* 7d change */}
               <div className="flex items-center justify-end gap-0.5">
-                {isUp
-                  ? <ArrowUpRight className="h-3 w-3 text-emerald-400 shrink-0" />
-                  : isDown
-                  ? <ArrowDownRight className="h-3 w-3 text-red-400 shrink-0" />
-                  : <Minus className="h-3 w-3 text-white/15 shrink-0" />}
-                <span className={`text-[11px] font-medium tabular-nums ${isUp ? 'text-emerald-400' : isDown ? 'text-red-400' : 'text-white/20'}`}>
-                  {isUp || isDown ? fmtPct(c.chgPct) : '—'}
-                </span>
+                {c.chg7d != null ? (
+                  <>
+                    {up7   ? <ArrowUpRight   className="h-3 w-3 text-emerald-400 shrink-0" />
+                    : down7 ? <ArrowDownRight className="h-3 w-3 text-red-400    shrink-0" />
+                    : <Minus className="h-3 w-3 text-white/15 shrink-0" />}
+                    <span className={`text-[11px] font-medium tabular-nums ${up7 ? 'text-emerald-400' : down7 ? 'text-red-400' : 'text-white/20'}`}>
+                      {fmtPct(c.chg7d)}
+                    </span>
+                  </>
+                ) : <span className="text-[10px] text-white/10">—</span>}
               </div>
 
-              {/* Year */}
-              <p className="text-[10px] tabular-nums text-right text-white/20">{c.year ?? '—'}</p>
+              {/* 30d change */}
+              <div className="flex items-center justify-end gap-0.5">
+                {c.chg30d != null ? (
+                  <>
+                    {up30   ? <ArrowUpRight   className="h-3 w-3 text-emerald-400 shrink-0" />
+                    : down30 ? <ArrowDownRight className="h-3 w-3 text-red-400    shrink-0" />
+                    : <Minus className="h-3 w-3 text-white/15 shrink-0" />}
+                    <span className={`text-[11px] font-medium tabular-nums ${up30 ? 'text-emerald-400' : down30 ? 'text-red-400' : 'text-white/20'}`}>
+                      {fmtPct(c.chg30d)}
+                    </span>
+                  </>
+                ) : <span className="text-[10px] text-white/10">—</span>}
+              </div>
+
+              {/* Signal badge */}
+              <div>
+                <SignalBadge signal={c.signal} />
+              </div>
             </Link>
           )
         })}
@@ -355,9 +498,10 @@ export default async function MarketPage() {
 
       {/* ── Footer note ─────────────────────────────────────────────────────── */}
       <p className="text-[10px] text-white/15 text-center">
-        CSOI 100 — top 100 unique cards by TCGPlayer market price · one entry per card name (highest-priced variant shown) ·
-        &quot;vs Mid&quot; compares market vs TCGPlayer mid price as a momentum proxy ·
-        prices update as cards are analyzed · to track true popularity, integrate TCGPlayer Partner API
+        CSOI 100 — top 100 unique cards by TCGPlayer market price · drawn from the entire catalog ({processed.length.toLocaleString()} priced cards) ·
+        one entry per card name (highest-priced variant shown) ·
+        7d / 30d changes use real price history from tcg_history ·
+        signals: 🚀 +20% in 7d · 📉 −20% in 7d · 👑 near ATH · 🔥 +12% in 30d · ❄️ −12% in 30d
       </p>
     </div>
   )

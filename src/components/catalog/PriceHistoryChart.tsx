@@ -22,7 +22,7 @@ type DataSource      = 'ebay' | 'justtcg'
 type MarketTab       = 'raw' | 'graded' | 'jp'
 type GradeFilter     = 'all' | string
 type TcgDuration     = '1m' | '3m' | '6m' | '1y' | 'all'
-type ForecastHorizon = 7 | 30 | 90 | 180
+type ForecastHorizon = 7 | 30 | 90
 
 interface ForecastPoint  { date: string; yhat: number; lower: number; upper: number }
 interface ChangePoint    { date: string; delta: number }
@@ -844,24 +844,41 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
   return (
     <div className="space-y-4">
 
-      {/* ── Data source toggle ── */}
-      <div className="flex items-center gap-1 bg-white/5 rounded-xl p-1 w-fit">
-        {([
-          { key: 'ebay',     label: 'eBay Sales',       color: '#818cf8' },
-          { key: 'justtcg',  label: 'TCGPlayer Market',  color: '#a78bfa' },
-        ] as { key: DataSource; label: string; color: string }[]).map(({ key, label, color }) => (
-          <button
-            key={key}
-            onClick={() => setSource(key)}
-            className={[
-              'text-xs px-3 py-1.5 rounded-lg font-medium transition-all',
-              source === key ? 'text-black shadow' : 'text-white/40 hover:text-white/70',
-            ].join(' ')}
-            style={source === key ? { backgroundColor: color } : undefined}
-          >
-            {label}
-          </button>
-        ))}
+      {/* ── Data source toggle + refresh ── */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-1 bg-white/5 rounded-xl p-1 w-fit">
+          {([
+            { key: 'ebay',     label: 'eBay Sales',       color: '#818cf8' },
+            { key: 'justtcg',  label: 'TCGPlayer Market',  color: '#a78bfa' },
+          ] as { key: DataSource; label: string; color: string }[]).map(({ key, label, color }) => (
+            <button
+              key={key}
+              onClick={() => setSource(key)}
+              className={[
+                'text-xs px-3 py-1.5 rounded-lg font-medium transition-all',
+                source === key ? 'text-black shadow' : 'text-white/40 hover:text-white/70',
+              ].join(' ')}
+              style={source === key ? { backgroundColor: color } : undefined}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <button
+          onClick={handleForceRefresh}
+          disabled={refreshing}
+          title="Force-reload price data from external sources"
+          className={[
+            'flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all border',
+            refreshing
+              ? 'border-white/10 text-white/30 cursor-not-allowed'
+              : 'border-white/15 text-white/50 hover:border-white/30 hover:text-white/80 hover:bg-white/[0.04]',
+          ].join(' ')}
+        >
+          <RefreshCw className={`h-3 w-3 ${refreshing ? 'animate-spin' : ''}`} />
+          {refreshing ? 'Refreshing…' : 'Refresh data'}
+        </button>
       </div>
 
       {/* ── JustTCG not configured notice ── */}
@@ -944,7 +961,7 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
 
             {showForecast && (
               <div className="flex items-center gap-0.5 bg-white/5 rounded-xl p-1">
-                {([7, 30, 90, 180] as ForecastHorizon[]).map((h) => (
+                {([7, 30, 90] as ForecastHorizon[]).map((h) => (
                   <button key={h} onClick={() => setForecastHorizon(h)}
                     className={[
                       'text-[11px] px-2.5 py-1 rounded-lg font-medium transition-all',

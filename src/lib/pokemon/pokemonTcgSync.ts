@@ -1,9 +1,14 @@
 // ---------------------------------------------------------------
 // Syncs Pokemon TCG API results into card_catalog_items.
 // Deduplication strategy (in priority order):
-//   1. metadata_json.pokemon_tcg_id  (exact)
-//   2. card_name + card_number_prefix (handles seeded cards like "4/102" vs "4")
-// Existing rows are UPDATED with fresh prices on every sync.
+//   1. metadata_json.pokemon_tcg_id  (exact — always wins)
+//   2. card_name + card_number_prefix + set_name
+//      (handles seeded cards without a pokemon_tcg_id)
+//
+// IMPORTANT: the fallback key MUST include set_name.
+// Without it, "Pikachu 025 / Base Set" and "Pikachu 025 / Celebrations"
+// share the same name|number key and collapse into a single row,
+// hiding every set-duplicate from search results.
 // ---------------------------------------------------------------
 
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -83,36 +88,55 @@ export function pokemonCardToRow(card: PokemonTcgCard): Record<string, unknown> 
 // ---------------------------------------------------------------
 
 export async function syncPokemonCards(
-  supabase: SupabaseClient,
-  cards:    PokemonTcgCard[],
+  supabase:  SupabaseClient,
+  cards:     PokemonTcgCard[],
+  nameHint?: string,  // narrows the dedup query to cards matching this name — much faster than loading all Pokemon rows
 ): Promise<CardSearchResult[]> {
   if (cards.length === 0) return []
 
-  // 1. Load ALL existing Pokemon rows to build dedup maps
-  const { data: existing } = await supabase
+  // 1. Load existing Pokemon rows for dedup.
+  //    Scope to matching card names when a hint is provided — avoids loading
+  //    every Pokemon row in the DB (can be 15k+) just to deduplicate a pikachu sync.
+  let existingQuery = supabase
     .from('card_catalog_items')
-    .select('catalog_id, card_name, card_number, metadata_json')
+    .select('catalog_id, card_name, card_number, set_name, metadata_json')  // set_name required for dedup key
     .or('franchise_or_brand.eq.Pokémon,franchise_or_brand.eq.Pokemon')
 
-  // Map 1: pokemon_tcg_id → catalog_id
+  if (nameHint) {
+    existingQuery = existingQuery.ilike('card_name', `%${nameHint}%`)
+  }
+
+  const { data: existing } = await existingQuery
+
+  // Map 1: pokemon_tcg_id → catalog_id  (always authoritative)
   const byTcgId = new Map<string, string>()
-  // Map 2: "name|numPrefix" → catalog_id  (handles seeded cards with "4/102" format)
-  const byNameNum = new Map<string, string>()
+  // Map 2: "name|numPrefix|setName" → catalog_id
+  //   Includes set_name so "Pikachu 025 / Base Set" and "Pikachu 025 / Celebrations"
+  //   are treated as distinct cards rather than collapsing into one row.
+  const byNameNumSet = new Map<string, string>()
 
   for (const row of (existing ?? []) as any[]) {
     if (row.metadata_json?.pokemon_tcg_id) {
       byTcgId.set(row.metadata_json.pokemon_tcg_id, row.catalog_id)
     }
-    const key = `${(row.card_name ?? '').toLowerCase()}|${numPrefix(row.card_number)}`
-    byNameNum.set(key, row.catalog_id)
+    const key = [
+      (row.card_name ?? '').toLowerCase(),
+      numPrefix(row.card_number),
+      (row.set_name  ?? '').toLowerCase(),
+    ].join('|')
+    byNameNumSet.set(key, row.catalog_id)
   }
 
   function findExisting(card: PokemonTcgCard): string | null {
     // Priority 1: exact pokemon_tcg_id match
     if (byTcgId.has(card.id)) return byTcgId.get(card.id)!
-    // Priority 2: name + number prefix (catches seeded cards)
-    const key = `${card.name.toLowerCase()}|${card.number.toLowerCase()}`
-    return byNameNum.get(key) ?? null
+    // Priority 2: name + number + set (catches seeded cards that predate the API sync)
+    const key = [
+      card.name.toLowerCase(),
+      numPrefix(card.number),
+      card.set.name.toLowerCase(),
+    ].join('|')
+    return byNameNumSet.get(key) ?? null
   }
 
   // 2. Split into updates vs inserts
@@ -133,22 +157,23 @@ export async function syncPokemonCards(
     await supabase.from('card_catalog_items').insert(toInsert)
   }
 
-  // 4. Update existing cards with fresh metadata + prices
-  for (const { catalogId, card } of toUpdate) {
-    await supabase
-      .from('card_catalog_items')
-      .update({
-        // Normalise franchise name and image while we're here
-        franchise_or_brand:  'Pokémon',
-        set_name:            card.set.name,
-        year:                toYear(card.set.releaseDate),
-        card_number:         card.number,   // normalise "4/102" → "4"
-        variant:             toVariant(card),
-        canonical_image_url: card.images?.small ?? null,
-        metadata_json:       buildMetadata(card),
-      })
-      .eq('catalog_id', catalogId)
-  }
+  // 4. Update existing cards with fresh metadata + prices — run in parallel
+  await Promise.all(
+    toUpdate.map(({ catalogId, card }) =>
+      supabase
+        .from('card_catalog_items')
+        .update({
+          franchise_or_brand:  'Pokémon',
+          set_name:            card.set.name,
+          year:                toYear(card.set.releaseDate),
+          card_number:         card.number,
+          variant:             toVariant(card),
+          canonical_image_url: card.images?.small ?? null,
+          metadata_json:       buildMetadata(card),
+        })
+        .eq('catalog_id', catalogId),
+    ),
+  )
 
   // 5. Re-fetch the updated rows for all cards in this batch so caller gets fresh data
   const tcgIds = cards.map((c) => c.id)

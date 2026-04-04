@@ -3,3 +3,4 @@ uvicorn[standard]==0.32.0
 prophet==1.1.6
 pandas==2.2.3
 pydantic==2.10.3
+scikit-learn>=1.4.0

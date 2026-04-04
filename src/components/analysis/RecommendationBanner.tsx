@@ -3,54 +3,110 @@ import type { RecommendationType } from '@/types/analysis'
 
 const CONFIG: Record<
   RecommendationType,
-  { label: string; Icon: typeof DollarSign; classes: string; iconClass: string }
+  {
+    label:      string
+    sublabel:   string
+    Icon:       typeof DollarSign
+    bg:         string
+    border:     string
+    iconBg:     string
+    iconColor:  string
+    textColor:  string
+    dot:        string
+  }
 > = {
   SELL_RAW: {
-    label: 'Sell Raw',
-    Icon: DollarSign,
-    classes: 'bg-green-50 border-green-200 text-green-900',
-    iconClass: 'text-green-600',
+    label:     'Sell It',
+    sublabel:  'Best move right now',
+    Icon:      DollarSign,
+    bg:        'rgba(16,185,129,0.08)',
+    border:    'rgba(16,185,129,0.25)',
+    iconBg:    'rgba(16,185,129,0.18)',
+    iconColor: '#34d399',
+    textColor: '#d1fae5',
+    dot:       '#10b981',
   },
   GRADE: {
-    label: 'Submit for Grading',
-    Icon: Award,
-    classes: 'bg-blue-50 border-blue-200 text-blue-900',
-    iconClass: 'text-blue-600',
+    label:     'Send for Grading',
+    sublabel:  'Grading adds meaningful value',
+    Icon:      Award,
+    bg:        'rgba(99,102,241,0.08)',
+    border:    'rgba(99,102,241,0.25)',
+    iconBg:    'rgba(99,102,241,0.18)',
+    iconColor: '#818cf8',
+    textColor: '#e0e7ff',
+    dot:       '#6366f1',
   },
   HOLD: {
-    label: 'Hold',
-    Icon: Clock,
-    classes: 'bg-amber-50 border-amber-200 text-amber-900',
-    iconClass: 'text-amber-600',
+    label:     'Hold It',
+    sublabel:  'Not the right time to sell',
+    Icon:      Clock,
+    bg:        'rgba(245,158,11,0.08)',
+    border:    'rgba(245,158,11,0.25)',
+    iconBg:    'rgba(245,158,11,0.18)',
+    iconColor: '#fbbf24',
+    textColor: '#fef3c7',
+    dot:       '#f59e0b',
   },
   INSUFFICIENT_CONFIDENCE: {
-    label: 'Insufficient Data',
-    Icon: AlertCircle,
-    classes: 'bg-gray-50 border-gray-200 text-gray-800',
-    iconClass: 'text-gray-500',
+    label:     'Not Enough Data',
+    sublabel:  'Hard to make a call right now',
+    Icon:      AlertCircle,
+    bg:        'rgba(113,113,122,0.08)',
+    border:    'rgba(113,113,122,0.20)',
+    iconBg:    'rgba(113,113,122,0.15)',
+    iconColor: '#a1a1aa',
+    textColor: '#d4d4d8',
+    dot:       '#71717a',
   },
 }
 
 interface Props {
-  type: RecommendationType
+  type:      RecommendationType
   rationale: string
 }
 
 export function RecommendationBanner({ type, rationale }: Props) {
-  const { label, Icon, classes, iconClass } = CONFIG[type]
+  const c = CONFIG[type]
 
   return (
     <div
       data-testid="recommendation-banner"
-      className={`rounded-xl border p-4 space-y-2 ${classes}`}
+      className="rounded-2xl border p-5 space-y-3"
+      style={{ background: c.bg, borderColor: c.border }}
     >
-      <div className="flex items-center gap-2">
-        <Icon className={`h-5 w-5 shrink-0 ${iconClass}`} />
-        <span className="font-semibold text-base" data-testid="recommendation-type">
-          {label}
-        </span>
+      {/* Top row: icon + label */}
+      <div className="flex items-center gap-3">
+        <div
+          className="flex items-center justify-center w-10 h-10 rounded-xl shrink-0"
+          style={{ background: c.iconBg }}
+        >
+          <c.Icon className="h-5 w-5" style={{ color: c.iconColor }} />
+        </div>
+        <div>
+          <div className="flex items-center gap-2">
+            {/* Status dot */}
+            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: c.dot }} />
+            <span
+              data-testid="recommendation-type"
+              className="font-bold text-base"
+              style={{ color: c.textColor }}
+            >
+              {c.label}
+            </span>
+          </div>
+          <p className="text-xs mt-0.5" style={{ color: `${c.iconColor}99` }}>
+            {c.sublabel}
+          </p>
+        </div>
       </div>
-      <p className="text-sm leading-relaxed" data-testid="recommendation-rationale">
+
+      {/* Rationale */}
+      <p
+        data-testid="recommendation-rationale"
+        className="text-sm leading-relaxed"
+        style={{ color: `${c.textColor}cc` }}
+      >
         {rationale}
       </p>
     </div>

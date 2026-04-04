@@ -75,27 +75,32 @@ function getBandsForEdition(bands: Record<string, any>, ed: EditionKey) {
   return Object.fromEntries(Object.entries(bands).filter(([k]) => BAND_TO_EDITION[k] === ed))
 }
 function bestMarket(bands: Record<string, any>): number | null {
+  let bestM: number | null = null
+  let bestMid: number | null = null
   for (const b of Object.values(bands)) {
-    const p = (b as any)?.market ?? (b as any)?.mid; if (p != null) return p
+    const m   = typeof (b as any)?.market === 'number' && (b as any).market > 0 ? (b as any).market : null
+    const mid = typeof (b as any)?.mid    === 'number' && (b as any).mid    > 0 ? (b as any).mid    : null
+    if (m   != null && (bestM   == null || m   > bestM))   bestM   = m
+    if (mid != null && (bestMid == null || mid > bestMid)) bestMid = mid
   }
-  return null
+  return bestM ?? bestMid ?? null
 }
 
 // ── Duration ───────────────────────────────────────────────────────────────────
 
-const DURATIONS = ['1m', '3m', '6m', '1y', 'all'] as const
+const DURATIONS = ['1m', '3m', '6m', 'all'] as const
 type Duration = typeof DURATIONS[number]
 const DURATION_DAYS: Record<Duration, number> = {
-  '1m': 30, '3m': 90, '6m': 180, '1y': 365, 'all': 99999,
+  '1m': 30, '3m': 90, '6m': 180, 'all': 99999,
 }
 
 // ── Forecast ───────────────────────────────────────────────────────────────────
 
-type FcHorizon = 7 | 30 | 90 | 180
-const FC_HORIZONS: FcHorizon[] = [7, 30, 90, 180]
+type FcHorizon = 7 | 30 | 90
+const FC_HORIZONS: FcHorizon[] = [7, 30, 90]
 
 // Horizon uncertainty multipliers — how much less reliable vs 7-day baseline
-const FC_PENALTY: Record<FcHorizon, number> = { 7: 1.0, 30: 1.5, 90: 2.6, 180: 4.5 }
+const FC_PENALTY: Record<FcHorizon, number> = { 7: 1.0, 30: 1.5, 90: 2.6 }
 
 interface FcConfidence {
   level:    'High' | 'Good' | 'Moderate' | 'Low' | 'Speculative'
@@ -313,11 +318,15 @@ function ConditionEstimator({ basePrice }: { basePrice: number }) {
 
 // ── Props ──────────────────────────────────────────────────────────────────────
 
-interface Props { catalogId: string; meta: Record<string, any> }
+interface Props {
+  catalogId: string
+  meta: Record<string, any>
+  onEditionChange?: (edition: EditionKey) => void
+}
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function PriceIntelligenceHub({ catalogId, meta }: Props) {
+export function PriceIntelligenceHub({ catalogId, meta, onEditionChange }: Props) {
 
   // ── Data ─────────────────────────────────────────────────────────────────────
   const [tcgPoints,    setTcgPoints]    = useState<JustTcgPoint[]>([])
@@ -328,13 +337,17 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
   const [pcConfigured, setPcConfigured] = useState<boolean | null>(null)
   const [loading,      setLoading]      = useState(true)
   const [refreshing,   setRefreshing]   = useState(false)
+  const [cachedAt,     setCachedAt]     = useState<string | null>(null)
+  const [fromCache,    setFromCache]    = useState(false)
+  const [tcgKeyword,   setTcgKeyword]   = useState<string | null>(null)
+  const [tcgNotFound,  setTcgNotFound]  = useState(false)
   const [fcLoading,    setFcLoading]    = useState(false)
 
   // ── UI state ──────────────────────────────────────────────────────────────────
   const [duration,        setDuration]        = useState<Duration>('3m')
   const [fcHorizon,       setFcHorizon]       = useState<FcHorizon>(30)
   const [showTcgTable,    setShowTcgTable]    = useState(false)
-  const [trendPeriodDays, setTrendPeriodDays] = useState<7|30|90|180|365>(7)
+  const [trendPeriodDays, setTrendPeriodDays] = useState<7|30|90|365>(7)
   const [vis,             setVis]             = useState<Record<string, boolean>>({
     tcg: true, ebayRaw: true, ebayPsa10: true, forecast: false,
   })
@@ -393,13 +406,32 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
         fetch(`/api/cards/sold-history?catalogId=${catalogId}&lang=en${qs}`),
         fetch(`/api/cards/pricecharting?catalogId=${catalogId}`),
       ])
+
+      // Parse each response independently so a single 500 doesn't wipe everything
+      const safeJson = async (res: Response, label: string) => {
+        try {
+          if (!res.ok) { console.error(`[${label}] HTTP ${res.status}`); return {} }
+          return await res.json()
+        } catch (e) {
+          console.error(`[${label}] JSON parse failed:`, e)
+          return {}
+        }
+      }
+
       const [tcgData, ebayData, pcData] = await Promise.all([
-        tcgRes.json(), ebayRes.json(), pcRes.json(),
+        safeJson(tcgRes,  'tcg-price-history'),
+        safeJson(ebayRes, 'sold-history'),
+        safeJson(pcRes,   'pricecharting'),
       ])
+
       setTcgPoints(tcgData.points ?? [])
       setEbayPoints(ebayData.points ?? [])
       setPcSnap(pcData.snapshot ?? null)
       setPcConfigured(pcData.configured ?? false)
+      setFromCache(!!tcgData.fromCache)
+      setCachedAt(tcgData.cachedAt ?? null)
+      setTcgKeyword(tcgData.keyword ?? null)
+      setTcgNotFound(!!tcgData.notFound)
       // Refresh forecast if already loaded
       if (fcFetchedRef.current) fetchForecast(fcHorizon, force)
     } finally { setLoading(false); setRefreshing(false) }
@@ -418,8 +450,7 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
     { days: 7,   label: '7D',  desc: '7-day change'   },
     { days: 30,  label: '30D', desc: '30-day change'  },
     { days: 90,  label: '90D', desc: '90-day change'  },
-    { days: 180, label: '6M',  desc: '6-month change' },
-    { days: 365, label: '1Y',  desc: '1-year change'  },
+    { days: 365, label: 'ALL', desc: 'All available data' },
   ] as const
   const trendPeriod = TREND_PERIODS.find(p => p.days === trendPeriodDays)!
 
@@ -564,11 +595,28 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
             Price Intelligence
           </span>
         </div>
-        <button onClick={handleRefresh} disabled={refreshing}
-          className="flex items-center gap-1.5 text-[10px] text-muted-foreground/35 hover:text-muted-foreground/70 transition-colors">
-          <RefreshCw className={`h-3 w-3 ${refreshing ? 'animate-spin' : ''}`} />
-          Refresh all
-        </button>
+        <div className="flex items-center gap-2">
+          {cachedAt && (
+            <span className="text-[9px] text-white/20 tabular-nums">
+              {fromCache ? 'cached' : 'live'} ·{' '}
+              {new Date(cachedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title="Force-refresh price data from JustTCG and eBay"
+            className={[
+              'flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all border',
+              refreshing
+                ? 'border-white/10 text-white/30 cursor-not-allowed'
+                : 'border-white/15 text-white/50 hover:border-white/30 hover:text-white/80 hover:bg-white/[0.04]',
+            ].join(' ')}
+          >
+            <RefreshCw className={`h-3 w-3 ${refreshing ? 'animate-spin' : ''}`} />
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       {/* ════════════════════════════════════════════════════════════════════════
@@ -580,7 +628,7 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
         {editions.length > 1 && (
           <div className="flex bg-white/[0.05] rounded-lg p-0.5 gap-0.5 w-fit">
             {editions.map(ed => (
-              <button key={ed} onClick={() => setSelEd(ed)}
+              <button key={ed} onClick={() => { setSelEd(ed); onEditionChange?.(ed) }}
                 className={['text-xs px-3 py-1.5 rounded-md font-medium transition-all',
                   activeEd === ed ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'].join(' ')}>
                 {EDITION_LABELS[ed]}
@@ -610,7 +658,7 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
               {TREND_PERIODS.map(({ days, label }) => (
                 <button
                   key={days}
-                  onClick={() => setTrendPeriodDays(days as 7|30|90|180|365)}
+                  onClick={() => setTrendPeriodDays(days as 7|30|90|365)}
                   className={[
                     'px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wide transition-all',
                     trendPeriodDays === days
@@ -970,9 +1018,32 @@ export function PriceIntelligenceHub({ catalogId, meta }: Props) {
         </div>
       ) : (
         tcgPoints.length === 0 && ebayPoints.length === 0 && (
-          <div className="rounded-2xl border border-white/8 p-8 text-center">
-            <p className="text-sm text-muted-foreground">No price history yet</p>
-            <p className="text-[11px] text-muted-foreground/35 mt-1">Data accumulates as you view this card — check back in 24h.</p>
+          <div className="rounded-2xl border border-white/8 p-6 text-center space-y-3">
+            {tcgNotFound ? (
+              <>
+                <p className="text-sm text-white/40">No price history on JustTCG yet</p>
+                <p className="text-[11px] text-white/20 leading-relaxed max-w-sm mx-auto">
+                  This card wasn&apos;t found on JustTCG — it may be too new, or listed under a
+                  different name. Searched for: <span className="text-white/40 font-mono">{tcgKeyword}</span>
+                </p>
+                <p className="text-[10px] text-white/15">TCGPlayer price data updates as JustTCG indexes new sets · check back in a few days</p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-white/40">No price history loaded</p>
+                <p className="text-[11px] text-white/20 leading-relaxed">
+                  History is fetched from JustTCG on first view and cached for 24h.
+                </p>
+              </>
+            )}
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-white/15 text-white/50 hover:border-white/30 hover:text-white/80 hover:bg-white/[0.04] transition-all disabled:opacity-40"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+              {refreshing ? 'Fetching…' : 'Try again'}
+            </button>
           </div>
         )
       )}

@@ -1,21 +1,17 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse, after } from 'next/server'
 import { createClient, createServiceClient } from '@/lib/supabase/server'
 import { searchCatalog } from '@/lib/catalog/searchService'
 import { searchPokemonCards } from '@/lib/pokemon/pokemonTcgApi'
 import { syncPokemonCards } from '@/lib/pokemon/pokemonTcgSync'
 import type { CatalogSearchResponse, CardSearchResult } from '@/types/catalog'
 
-// Trigger a Pokemon TCG API sync if we have fewer than this many local results.
-// 50 is intentionally generous: a common name like "Charizard" has 100+ real
-// variants, so 39 local hits doesn't mean the catalog is complete.
-const LOCAL_THRESHOLD = 50
+// How long a sync log entry is considered fresh (6 hours).
+// Shorter window means new sets (e.g. a brand-new 2026 release) appear
+// within a few hours of being added to the Pokemon TCG API.
+const SYNC_STALE_MS = 6 * 60 * 60 * 1000
 
 function isPokemon(r: CardSearchResult) {
   return r.franchise_or_brand === 'Pokémon' || r.franchise_or_brand === 'Pokemon'
-}
-
-function hasPrices(r: CardSearchResult) {
-  return !!r.metadata_json?.tcgplayer
 }
 
 /**
@@ -36,8 +32,7 @@ function deduplicateResults(results: CardSearchResult[]): CardSearchResult[] {
     if (!existing) {
       seen.set(key, r)
     } else {
-      // Prefer the entry that has a pokemon_tcg_id (synced) over raw seed data
-      const rHasId       = !!(r.metadata_json as any)?.pokemon_tcg_id
+      const rHasId        = !!(r.metadata_json as any)?.pokemon_tcg_id
       const existingHasId = !!(existing.metadata_json as any)?.pokemon_tcg_id
       if (rHasId && !existingHasId) {
         seen.set(key, r)
@@ -50,50 +45,98 @@ function deduplicateResults(results: CardSearchResult[]): CardSearchResult[] {
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
   const q     = searchParams.get('q') ?? ''
-  const limit = Number(searchParams.get('limit') ?? '100')
+  const limit = Number(searchParams.get('limit') ?? '2000')
 
-  // anon client for reads, service client for writes (bypasses RLS insert policy)
+  // anon client for reads, service client for writes (bypasses RLS)
   const supabase      = await createClient()
   const writeSupabase = createServiceClient()
 
-  // 1. Always search local catalog first
-  const { results: localResults, error } = await searchCatalog(supabase, { q, limit })
+  const term = q.trim()
+
+  // 1. Check sync_log FIRST so we can widen the DB fetch to match the known api_total.
+  //    This prevents popular names (Pikachu: 450+ variants) from being silently cut off
+  //    by the default DB_FETCH_MULTIPLIER heuristic.
+  let logEntry: { api_total: number; local_count: number; synced_at: string } | null = null
+  let needsSync = false
+
+  if (term.length >= 2) {
+    const { data } = await writeSupabase
+      .from('catalog_sync_log')
+      .select('api_total, local_count, synced_at')
+      .eq('query_term', term.toLowerCase())
+      .maybeSingle()
+    logEntry = data
+
+    if (!logEntry) {
+      needsSync = true
+    } else {
+      const stale      = Date.now() - new Date(logEntry.synced_at).getTime() > SYNC_STALE_MS
+      // Incomplete: we have fewer DB rows than the API reported (or <95% of expected)
+      const incomplete = logEntry.api_total > 0 && logEntry.local_count < logEntry.api_total
+      needsSync = stale || incomplete
+    }
+  }
+
+  // Use api_total + generous buffer as the DB fetch floor so no variants are missed.
+  // e.g. Pikachu has 450 API cards → dbLimitOverride=650 ensures all 450+ are returned.
+  const dbLimitOverride = logEntry?.api_total
+    ? Math.ceil(logEntry.api_total * 1.5) + 100
+    : undefined
+
+  // 2. Hit local DB — this is the fast path (~50 ms)
+  const { results: localResults, error } = await searchCatalog(supabase, { q, limit, dbLimitOverride })
   if (error) {
     return NextResponse.json({ error }, { status: 500 })
   }
 
-  // 2. Fan out to Pokemon TCG API if:
-  //    a) fewer than threshold results, OR
-  //    b) any Pokemon result is missing TCGPlayer price data, OR
-  //    c) all results are pre-2017 (seed data only — fetch modern sets)
-  const pokemonResults = localResults.filter(isPokemon)
-  const hasModernCards = pokemonResults.some((r) => (r.year ?? 0) >= 2017)
-  const needsSync =
-    q.trim().length >= 2 &&
-    (localResults.length < LOCAL_THRESHOLD ||
-      pokemonResults.some((r) => !hasPrices(r)) ||
-      (pokemonResults.length > 0 && !hasModernCards))
-
-  let results: CardSearchResult[] = localResults
-
+  // 3. Optimistically stamp the log NOW so concurrent requests skip duplicate syncs,
+  //    then schedule the actual work to run after the response is sent.
   if (needsSync) {
-    try {
-      const apiCards = await searchPokemonCards(q)
-      if (apiCards.length > 0) {
-        await syncPokemonCards(writeSupabase, apiCards)
-        // Re-fetch so all results include fresh metadata + prices
-        const { results: refreshed } = await searchCatalog(supabase, { q, limit })
-        results = refreshed ?? localResults
+    await writeSupabase
+      .from('catalog_sync_log')
+      .upsert(
+        {
+          query_term:  term.toLowerCase(),
+          api_total:   0,   // real value written by after() once sync completes
+          local_count: localResults.filter(isPokemon).length,
+          synced_at:   new Date().toISOString(),
+        },
+        { onConflict: 'query_term' },
+      )
+
+    after(async () => {
+      try {
+        const { cards: apiCards, totalCount: apiTotal } = await searchPokemonCards(q)
+        if (apiCards.length > 0) {
+          await syncPokemonCards(writeSupabase, apiCards, term)
+          // Use a high limit to count every synced variant (not just the display limit)
+          const { results: refreshed } = await searchCatalog(writeSupabase, { q, limit: apiCards.length + 200 })
+          const localCount = (refreshed ?? []).filter(isPokemon).length
+          await writeSupabase
+            .from('catalog_sync_log')
+            .upsert(
+              {
+                query_term:  term.toLowerCase(),
+                api_total:   apiTotal,
+                local_count: localCount,
+                synced_at:   new Date().toISOString(),
+              },
+              { onConflict: 'query_term' },
+            )
+        }
+      } catch (err) {
+        console.error('[PokemonTCG] Background sync error:', err)
       }
-    } catch (err) {
-      console.error('[PokemonTCG] Sync error:', err)
-      // Non-fatal — return local results as-is
-    }
+    })
   }
 
-  // Deduplicate and cap at the caller-requested limit (dedup works on the
-  // larger DB batch fetched by searchCatalog, so we have plenty to choose from)
-  const deduped = deduplicateResults(results).slice(0, limit)
-  const body: CatalogSearchResponse = { results: deduped, query: q, count: deduped.length }
+  // 4. Return local results immediately — client re-fetches after sync if syncing=true
+  const deduped = deduplicateResults(localResults)
+  const body: CatalogSearchResponse = {
+    results: deduped,
+    query:   q,
+    count:   deduped.length,
+    syncing: needsSync,
+  }
   return NextResponse.json(body)
 }

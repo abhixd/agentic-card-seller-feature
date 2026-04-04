@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useEffect, useMemo, Suspense } from 'react'
+import { useState, useCallback, useEffect, useMemo, useRef, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { SearchForm } from '@/components/catalog/SearchForm'
 import { CardScanner } from '@/components/analyze/CardScanner'
@@ -286,25 +286,44 @@ function AnalyzePageContent() {
   const [results, setResults]         = useState<CardSearchResult[]>([])
   const [query, setQuery]             = useState(initialQ)
   const [isLoading, setIsLoading]     = useState(!!initialQ)
+  const [isSyncing, setIsSyncing]     = useState(false)
   const [hasSearched, setHasSearched] = useState(!!initialQ)
   const [sortKey, setSortKey]         = useState<SortKey>('price_desc')
   const [filters, setFilters]         = useState<FilterState>(EMPTY_FILTERS)
   const [showFilters, setShowFilters] = useState(false)
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const runSearch = useCallback(async (q: string) => {
-    setQuery(q)
-    router.replace(q ? `/analyze?q=${encodeURIComponent(q)}` : '/analyze', { scroll: false })
-    if (!q) { setResults([]); setHasSearched(false); setFilters(EMPTY_FILTERS); return }
-    setIsLoading(true)
-    setHasSearched(true)
+  const runSearch = useCallback(async (q: string, silent = false) => {
+    if (!silent) {
+      setQuery(q)
+      router.replace(q ? `/analyze?q=${encodeURIComponent(q)}` : '/analyze', { scroll: false })
+    }
+    if (!q) { setResults([]); setHasSearched(false); setFilters(EMPTY_FILTERS); setIsSyncing(false); return }
+    if (!silent) { setIsLoading(true); setHasSearched(true) }
     try {
       const res = await fetch(`/api/catalog/search?q=${encodeURIComponent(q)}`)
       if (!res.ok) throw new Error('Search failed')
       const data = await res.json()
       setResults(data.results ?? [])
-    } catch { setResults([]) }
-    finally { setIsLoading(false) }
+
+      // If the server kicked off a background sync, quietly re-fetch after 4s
+      // to pick up any newly-synced cards (e.g. a brand-new set release).
+      if (data.syncing) {
+        setIsSyncing(true)
+        if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
+        syncTimerRef.current = setTimeout(() => {
+          setIsSyncing(false)
+          runSearch(q, true)
+        }, 4000)
+      } else {
+        setIsSyncing(false)
+      }
+    } catch { if (!silent) setResults([]) }
+    finally  { if (!silent) setIsLoading(false) }
   }, [router])
+
+  // Cleanup timer on unmount
+  useEffect(() => () => { if (syncTimerRef.current) clearTimeout(syncTimerRef.current) }, [])
 
   useEffect(() => {
     if (initialQ) runSearch(initialQ)
@@ -371,8 +390,8 @@ function AnalyzePageContent() {
         <h1 className="text-2xl font-bold tracking-tight">Analyze Card</h1>
         <p className="text-muted-foreground text-sm mt-1">
           Search for a card to see live pricing, eBay comps, and a sell / grade / hold recommendation.
-          Try <span className="text-white/60 font-medium">"Charizard 151"</span> or{' '}
-          <span className="text-white/60 font-medium">"Pikachu Base Set"</span>.
+          Try <span className="text-white/60 font-medium">&quot;Charizard 151&quot;</span> or{' '}
+          <span className="text-white/60 font-medium">&quot;Pikachu Base Set&quot;</span>.
         </p>
       </div>
 
@@ -416,6 +435,14 @@ function AnalyzePageContent() {
           priceRange={filterMeta.priceRange}
           yearRange={filterMeta.yearRange}
         />
+      )}
+
+      {/* Background sync indicator */}
+      {isSyncing && !isLoading && (
+        <p className="text-[11px] text-indigo-400/50 flex items-center gap-1.5 animate-pulse">
+          <span className="inline-block h-1.5 w-1.5 rounded-full bg-indigo-400/60" />
+          Syncing new cards from TCG API…
+        </p>
       )}
 
       {/* Result count summary when filters are active */}

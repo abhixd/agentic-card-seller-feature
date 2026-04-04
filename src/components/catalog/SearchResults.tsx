@@ -68,26 +68,38 @@ function getBandsForEdition(bands: Record<string, any>, edition: EditionKey) {
   )
 }
 
+/**
+ * Returns the highest TCGPlayer market price across all bands in `bands`.
+ * Falls back to highest mid price if no market data exists.
+ *
+ * Rules:
+ *  1. Prefer market over mid — market reflects actual completed sales.
+ *  2. Take the HIGHEST value across all bands — a card with both holofoil
+ *     and normal bands should show the holo price, not the cheaper normal.
+ *  3. Never use a band's mid price when a different band has a market price
+ *     — avoids showing $0.50 mid when holo market is $45.
+ */
 function bestMarket(bands: Record<string, any>): number | null {
+  let bestM: number | null = null
+  let bestMid: number | null = null
   for (const b of Object.values(bands)) {
-    const p = (b as any)?.market ?? (b as any)?.mid
-    if (p != null) return p
+    const m   = typeof (b as any)?.market === 'number' && (b as any).market > 0 ? (b as any).market : null
+    const mid = typeof (b as any)?.mid    === 'number' && (b as any).mid    > 0 ? (b as any).mid    : null
+    if (m   != null && (bestM   == null || m   > bestM))   bestM   = m
+    if (mid != null && (bestMid == null || mid > bestMid)) bestMid = mid
   }
-  return null
+  return bestM ?? bestMid ?? null
 }
 
+/**
+ * Best single price for a card chip/tile.
+ * Scans ALL TCGPlayer price bands, market first, mid as fallback.
+ * Takes the highest price so holo/1st-ed variants aren't hidden by cheaper bands.
+ */
 function getBestPrice(meta: Record<string, any> | null): number | null {
-  if (!meta?.tcgplayer?.prices) return null
-  const prices = meta.tcgplayer.prices
-  const band =
-    prices.holofoil ??
-    prices['1stEditionHolofoil'] ??
-    prices['1stEditionNormal'] ??
-    prices.normal ??
-    prices.reverseHolofoil ??
-    prices.unlimitedHolofoil ??
-    null
-  return band?.market ?? band?.mid ?? null
+  const prices = meta?.tcgplayer?.prices
+  if (!prices || typeof prices !== 'object') return null
+  return bestMarket(prices)
 }
 
 function fmt(n: number | null | undefined): string {

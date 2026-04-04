@@ -112,19 +112,29 @@ export interface PokemonTcgCard {
 // Get the best single market price from TCGPlayer for display
 // ---------------------------------------------------------------
 
+/**
+ * Returns the best single TCGPlayer price for a card.
+ * Scans ALL price bands and returns the highest market price found,
+ * falling back to highest mid price. This ensures holo / 1st-edition
+ * variants are never hidden by a cheaper band (e.g. normal) that happens
+ * to appear first, and stale mid values don't mask a real market price
+ * on another band.
+ */
 export function getBestTcgPlayerPrice(card: PokemonTcgCard): number | null {
   const prices = card.tcgplayer?.prices
   if (!prices) return null
-  // Priority: holofoil > 1st edition holofoil > normal > reverseHolofoil
-  const band =
-    prices.holofoil ??
-    prices['1stEditionHolofoil'] ??
-    prices['1stEditionNormal'] ??
-    prices.normal ??
-    prices.reverseHolofoil ??
-    prices.unlimitedHolofoil ??
-    null
-  return band?.market ?? band?.mid ?? null
+
+  let bestMarket: number | null = null
+  let bestMid:    number | null = null
+
+  for (const band of Object.values(prices) as any[]) {
+    const m   = typeof band?.market === 'number' && band.market > 0 ? band.market : null
+    const mid = typeof band?.mid    === 'number' && band.mid    > 0 ? band.mid    : null
+    if (m   != null && (bestMarket == null || m   > bestMarket)) bestMarket = m
+    if (mid != null && (bestMid    == null || mid > bestMid))    bestMid    = mid
+  }
+
+  return bestMarket ?? bestMid ?? null
 }
 
 // ---------------------------------------------------------------
@@ -151,20 +161,28 @@ function getHeaders(): Record<string, string> {
 }
 
 // Hard cap on total cards fetched per search to avoid runaway API calls.
-// 1,000 covers every realistic Pokémon name (Charizard has ~300 variants).
-const MAX_CARDS_PER_SEARCH = 1000
+// Raised to 3,000 to capture long-tail promos (sorted last by -set.releaseDate):
+// Pikachu Illustrator, Black Star Promos, vintage Wizards cards, etc.
+// With PAGE_SIZE=250 this is at most 12 API requests — fast enough via after().
+const MAX_CARDS_PER_SEARCH = 3000
 
-export async function searchPokemonCards(query: string): Promise<PokemonTcgCard[]> {
-  if (!query || query.trim().length < 2) return []
+export interface PokemonSearchResult {
+  cards:      PokemonTcgCard[]
+  totalCount: number   // total matching cards reported by the API
+}
+
+export async function searchPokemonCards(query: string): Promise<PokemonSearchResult> {
+  if (!query || query.trim().length < 2) return { cards: [], totalCount: 0 }
 
   const headers    = getHeaders()
   const builtQuery = buildQuery(query)
   const allCards:  PokemonTcgCard[] = []
 
-  let page = 1
-  let totalCount = Infinity  // updated after first response
+  let page       = 1
+  let apiTotal   = Infinity  // updated after first response
+  let reportedTotal = 0
 
-  while (allCards.length < Math.min(totalCount, MAX_CARDS_PER_SEARCH)) {
+  while (allCards.length < Math.min(apiTotal, MAX_CARDS_PER_SEARCH)) {
     const params = new URLSearchParams({
       q:        builtQuery,
       pageSize: String(PAGE_SIZE),
@@ -175,6 +193,9 @@ export async function searchPokemonCards(query: string): Promise<PokemonTcgCard[
     try {
       const res = await fetch(`${BASE_URL}/cards?${params}`, {
         headers,
+        // Always fetch fresh — the catalog_sync_log table controls how often
+        // we actually call the API (staleness gate is there, not here).
+        // Using a cached response here would defeat the purpose of re-syncing.
         cache: 'no-store',
       })
       if (!res.ok) {
@@ -185,7 +206,8 @@ export async function searchPokemonCards(query: string): Promise<PokemonTcgCard[
 
       // The API reports the total count in `totalCount`
       if (page === 1) {
-        totalCount = json.totalCount ?? json.data?.length ?? 0
+        reportedTotal = json.totalCount ?? json.data?.length ?? 0
+        apiTotal      = reportedTotal
       }
 
       const pageCards = (json.data ?? []) as PokemonTcgCard[]
@@ -200,7 +222,7 @@ export async function searchPokemonCards(query: string): Promise<PokemonTcgCard[
     }
   }
 
-  return allCards
+  return { cards: allCards, totalCount: reportedTotal }
 }
 
 // ---------------------------------------------------------------

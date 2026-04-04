@@ -2,7 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { CardSearchParams, CardSearchResult, CardCatalogItem } from '@/types/catalog'
 
 const DEFAULT_LIMIT = 200
-const MAX_LIMIT = 500
+const MAX_LIMIT = 3000   // raised — popular names can have 400+ unique variants
 const MIN_QUERY_LENGTH = 2
 
 // We fetch a much larger batch from the DB than the caller requested,
@@ -44,7 +44,12 @@ export async function searchCatalog(
   }
 
   const requestedLimit = Math.min(params.limit ?? DEFAULT_LIMIT, MAX_LIMIT)
-  const dbLimit = Math.min(requestedLimit * DB_FETCH_MULTIPLIER, 2000)
+  // dbLimitOverride lets the caller (e.g. the search route) pass a minimum floor
+  // based on how many cards the API is known to have (from catalog_sync_log.api_total).
+  // Without an override, fall back to the multiplier heuristic, capped at 4000.
+  const dbLimit = params.dbLimitOverride
+    ? Math.max(requestedLimit * DB_FETCH_MULTIPLIER, params.dbLimitOverride)
+    : Math.min(requestedLimit * DB_FETCH_MULTIPLIER, 4000)
 
   // Split into tokens; each must match at least one searchable field
   const tokens = q.split(/\s+/).filter(Boolean)

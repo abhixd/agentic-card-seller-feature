@@ -1,0 +1,11 @@
+-- ---------------------------------------------------------------
+-- Reset catalog_sync_log so every query is re-synced with the
+-- corrected deduplication logic (name|numPrefix|setName key).
+--
+-- Background: the old dedup key was name|numPrefix (without set_name),
+-- which caused cards from different sets to collapse into one DB row.
+-- As a result, sync_log entries had local_count == api_total even though
+-- many variants were missing.  Truncating the log forces a fresh sync
+-- on the next search for each term, inserting the missing rows.
+-- ---------------------------------------------------------------
+TRUNCATE TABLE catalog_sync_log;

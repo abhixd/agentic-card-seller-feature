@@ -22,6 +22,14 @@ export interface CardSearchParams {
   /** Free-text query — matched against card_name, set_name, card_number, franchise_or_brand */
   q: string
   limit?: number
+  /**
+   * Optional floor for the raw DB fetch size.
+   * Pass catalog_sync_log.api_total + buffer so the DB query always returns
+   * at least as many rows as the API is known to have — preventing popular
+   * names (Pikachu: ~450 variants) from being silently cut off by the
+   * default DB_FETCH_MULTIPLIER heuristic.
+   */
+  dbLimitOverride?: number
 }
 
 /** Typed search result row (subset of CardCatalogItem for list display). */
@@ -43,6 +51,8 @@ export interface CatalogSearchResponse {
   results: CardSearchResult[]
   query: string
   count: number
+  /** True when a background catalog sync was kicked off — client may re-fetch after a delay to get fresh results. */
+  syncing?: boolean
 }
 
 /** API response shape for the card detail endpoint. */

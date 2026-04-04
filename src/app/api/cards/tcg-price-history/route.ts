@@ -48,9 +48,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'catalogId required' }, { status: 400 })
   }
 
-  if (!process.env.JUSTTCG_API_KEY) {
-    return NextResponse.json({ points: [], rateLimited: false, configured: false })
-  }
+  const hasApiKey = !!process.env.JUSTTCG_API_KEY
 
   // ── Load card from catalog ────────────────────────────────────────────────
   const supabase = await createClient()
@@ -61,6 +59,9 @@ export async function GET(request: NextRequest) {
     .single()
 
   if (!data) return NextResponse.json({ points: [], rateLimited: false })
+
+  // NOTE: do NOT early-return if API key is missing — we must check the cache
+  // first so previously stored history is always served, even without a key.
 
   const card = data as {
     catalog_id:    string
@@ -98,16 +99,44 @@ export async function GET(request: NextRequest) {
   // Mismatched key = set name wasn't known when data was last fetched → re-fetch.
   const queryKeyMatches = !cached?.query_key || cached.query_key === currentQueryKey
 
-  if (!force && cached?.fetched_at && queryKeyMatches) {
-    // Honour the API-error cool-down period
-    if (cached.empty_until && Date.now() < new Date(cached.empty_until).getTime()) {
-      return NextResponse.json({ points: cached.points ?? [], rateLimited: true, fromCache: true })
+  // All previously stored points regardless of query key — used as fallback
+  // if the live fetch fails so we never blank out real data on a transient error.
+  const anyExistingPoints: JustTcgPoint[] = cached?.points ?? []
+
+  // Serve fresh cached data if we have it
+  if (anyExistingPoints.length > 0 && !force) {
+    const age = cached?.fetched_at
+      ? Date.now() - new Date(cached.fetched_at).getTime()
+      : Infinity
+
+    // Still within TTL — serve directly, don't hit JustTCG at all
+    if (age < CACHE_TTL_MS && queryKeyMatches) {
+      return NextResponse.json({
+        points:      anyExistingPoints,
+        rateLimited: false,
+        fromCache:   true,
+        cachedAt:    cached!.fetched_at,
+        configured:  hasApiKey,
+      })
     }
-    // Serve from cache if still fresh
-    const age = Date.now() - new Date(cached.fetched_at).getTime()
-    if (age < CACHE_TTL_MS && (cached.points?.length ?? 0) > 0) {
-      return NextResponse.json({ points: cached.points, rateLimited: false, fromCache: true })
-    }
+  }
+
+  // Respect empty_until cooldown for ALL cards — including those with no data.
+  // Without this, cards with no history bypass the cooldown and hammer JustTCG
+  // on every page load (e.g. during a 429 quota outage).
+  if (!force && cached?.empty_until && Date.now() < new Date(cached.empty_until).getTime()) {
+    return NextResponse.json({
+      points:      anyExistingPoints,   // may be empty — that's fine, UI shows correct state
+      rateLimited: true,
+      fromCache:   true,
+      cachedAt:    cached.fetched_at ?? null,
+      configured:  hasApiKey,
+    })
+  }
+
+  // No API key — serve whatever we have cached (may be empty)
+  if (!hasApiKey) {
+    return NextResponse.json({ points: anyExistingPoints, rateLimited: false, configured: false })
   }
 
   // ── Live JustTCG fetch (always 180 d — maximum available) ─────────────────
@@ -120,35 +149,33 @@ export async function GET(request: NextRequest) {
   const { points: freshPoints, keyword, apiError } = fetchResult as any
 
   // ── Merge with existing accumulated history ───────────────────────────────
-  // If the query key changed (set name newly known), discard stale points from
-  // the wrong card rather than merging wrong data with correct data.
-  const existingPoints: JustTcgPoint[] =
-    queryKeyMatches ? (cached?.points ?? []) : []
+  // If the query key changed (set name newly known), don't merge old points
+  // (may be wrong card) — but keep them as a fallback if the new fetch fails.
+  const pointsToMergeFrom: JustTcgPoint[] =
+    queryKeyMatches ? anyExistingPoints : []
 
   const mergedPoints = apiError
-    ? existingPoints                            // keep old data on API error
-    : mergePoints(existingPoints, freshPoints)  // extend history with new data
+    ? anyExistingPoints                                    // keep old data on API failure
+    : freshPoints.length === 0
+      ? anyExistingPoints                                  // keep old data if new query found nothing (avoids wiping history on key mismatch)
+      : mergePoints(pointsToMergeFrom, freshPoints)        // extend history with fresh data
 
   // ── Persist accumulated history ───────────────────────────────────────────
   try {
-    const svcClient  = createServiceClient()
-    const now        = new Date()
+    const svcClient = createServiceClient()
+    const now       = new Date()
 
-    const cachePayload: HistoryCache = apiError
-      ? {
-          points:      existingPoints,
-          fetched_at:  now.toISOString(),
-          query_key:   currentQueryKey,
-          empty_until: existingPoints.length === 0
-            ? new Date(Date.now() + CACHE_EMPTY_MS).toISOString()
-            : null,
-        }
-      : {
-          points:      mergedPoints,
-          fetched_at:  now.toISOString(),
-          query_key:   currentQueryKey,
-          empty_until: null,
-        }
+    const cachePayload: HistoryCache = {
+      points:      mergedPoints,
+      fetched_at:  now.toISOString(),
+      query_key:   currentQueryKey,
+      // Set cooldown when we have no data — whether the API errored OR simply
+      // returned nothing (card not found / too new). This prevents hammering
+      // JustTCG on every page load for cards with no history.
+      empty_until: mergedPoints.length === 0
+        ? new Date(Date.now() + CACHE_EMPTY_MS).toISOString()
+        : null,
+    }
 
     await svcClient
       .from('card_catalog_items')
@@ -161,7 +188,10 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({
     points:      mergedPoints,
     keyword,
+    // notFound = API returned successfully but card simply isn't on JustTCG yet
+    notFound:    !apiError && freshPoints.length === 0,
     rateLimited: apiError && mergedPoints.length === 0,
+    fromCache:   false,
     trend7d:     trendPct(mergedPoints, 7),
     trend30d:    trendPct(mergedPoints, 30),
     trend90d:    trendPct(mergedPoints, 90),

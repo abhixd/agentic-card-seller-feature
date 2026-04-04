@@ -13,6 +13,8 @@ import { ArrowLeft, Loader2, ChevronDown, ChevronUp, ChevronRight } from 'lucide
 import type { CardCatalogItem } from '@/types/catalog'
 import type { ConditionRatings } from '@/types/analysis'
 import { AddToInventoryButton } from '@/components/inventory/AddToInventoryButton'
+import { NEXUSCardInsight } from '@/components/catalog/NEXUSCardInsight'
+import { TournamentMetaBadge } from '@/components/catalog/TournamentMetaBadge'
 
 // ── Edition mapping (same as SearchResults) ───────────────────────────────
 
@@ -70,10 +72,15 @@ function getBandsForEdition(bands: Record<string, any>, edition: EditionKey) {
 }
 
 function bestMarket(bands: Record<string, any>): number | null {
+  let bestM: number | null = null
+  let bestMid: number | null = null
   for (const b of Object.values(bands)) {
-    const p = (b as any)?.market ?? (b as any)?.mid; if (p != null) return p
+    const m   = typeof (b as any)?.market === 'number' && (b as any).market > 0 ? (b as any).market : null
+    const mid = typeof (b as any)?.mid    === 'number' && (b as any).mid    > 0 ? (b as any).mid    : null
+    if (m   != null && (bestM   == null || m   > bestM))   bestM   = m
+    if (mid != null && (bestMid == null || mid > bestMid)) bestMid = mid
   }
-  return null
+  return bestM ?? bestMid ?? null
 }
 
 function typeColor(type: string): string {
@@ -193,14 +200,19 @@ function CardMarketSection({ cm, selectedEdition, bands }: { cm: any; selectedEd
 
 const DEFAULT_CONDITION: ConditionRatings = { corners_rating: 3, edges_rating: 3, surface_rating: 3, centering_rating: 3 }
 
-function AnalysisForm({ catalogId }: { catalogId: string }) {
+interface AnalysisFormProps {
+  catalogId: string
+  selectedEdition: string | null
+}
+
+function AnalysisForm({ catalogId, selectedEdition }: AnalysisFormProps) {
   const router = useRouter()
-  const [analyzing, setAnalyzing]   = useState(false)
-  const [error, setError]           = useState<string | null>(null)
-  const [platform, setPlatform]     = useState<'ebay' | 'tcgplayer'>('ebay')
-  const [shippingCost, setShippingCost] = useState('4.00')
+  const [analyzing, setAnalyzing]           = useState(false)
+  const [error, setError]                   = useState<string | null>(null)
+  const [platform, setPlatform]             = useState<'ebay' | 'tcgplayer'>('ebay')
+  const [shippingCost, setShippingCost]     = useState('4.00')
   const [acquisitionCost, setAcquisitionCost] = useState('0')
-  const [showCondition, setShowCondition] = useState(false)
+  const [showCondition, setShowCondition]   = useState(false)
   const [conditionRatings, setConditionRatings] = useState<ConditionRatings | null>(null)
 
   async function handleAnalyze() {
@@ -208,7 +220,14 @@ function AnalysisForm({ catalogId }: { catalogId: string }) {
     try {
       const res = await fetch('/api/analysis', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ catalogId, conditionRatings, platform, shippingCost: parseFloat(shippingCost) || 4, acquisitionCost: parseFloat(acquisitionCost) || 0 }),
+        body: JSON.stringify({
+          catalogId,
+          conditionRatings,
+          platform,
+          shippingCost: parseFloat(shippingCost) || 4,
+          acquisitionCost: parseFloat(acquisitionCost) || 0,
+          edition: selectedEdition ?? null,
+        }),
       })
       if (!res.ok) { const b = await res.json(); throw new Error(b.error ?? 'Analysis failed') }
       const a = await res.json()
@@ -220,59 +239,120 @@ function AnalysisForm({ catalogId }: { catalogId: string }) {
   }
 
   return (
-    <div className="rounded-2xl border border-primary/20 bg-primary/5 p-5 space-y-4">
-      <div>
-        <h3 className="font-semibold text-sm">Run Full Analysis</h3>
-        <p className="text-xs text-muted-foreground mt-0.5">Calculates net proceeds, grading ROI, and a sell / grade / hold recommendation.</p>
+    <div
+      className="rounded-2xl border p-5 space-y-4"
+      style={{
+        background:   'linear-gradient(135deg, rgba(99,102,241,0.08) 0%, rgba(139,92,246,0.05) 100%)',
+        borderColor:  'rgba(99,102,241,0.25)',
+        boxShadow:    '0 0 0 1px rgba(99,102,241,0.10), 0 4px 24px rgba(99,102,241,0.06)',
+      }}
+    >
+      {/* Header */}
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="font-bold text-sm text-white tracking-tight">Run Full Analysis</h3>
+          <p className="text-[11px] text-zinc-500 mt-0.5 leading-snug">
+            Get a sell / grade / hold recommendation with exact net proceeds after all fees.
+          </p>
+        </div>
+        {/* Edition badge — shows which edition will be analyzed */}
+        {selectedEdition && (
+          <span
+            className="shrink-0 text-[10px] font-semibold px-2 py-1 rounded-md uppercase tracking-widest"
+            style={{
+              background:  'rgba(99,102,241,0.18)',
+              border:      '1px solid rgba(99,102,241,0.35)',
+              color:       '#a5b4fc',
+            }}
+          >
+            {EDITION_LABELS[selectedEdition as EditionKey] ?? selectedEdition}
+          </span>
+        )}
       </div>
 
-      <div className="space-y-3">
-        {/* Platform */}
+      <div className="space-y-3.5">
+        {/* Platform selector */}
         <div className="space-y-1.5">
-          <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium">Platform</p>
-          <div className="flex bg-muted/50 rounded-lg p-0.5 gap-0.5 w-fit">
+          <p className="text-[10px] uppercase tracking-widest text-zinc-500 font-medium">Where you&apos;re selling</p>
+          <div className="grid grid-cols-2 gap-1.5">
             {(['ebay', 'tcgplayer'] as const).map((p) => (
-              <button key={p} onClick={() => setPlatform(p)}
-                className={['text-xs px-3 py-1.5 rounded-md font-medium transition-all capitalize',
-                  platform === p ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'].join(' ')}>
+              <button
+                key={p}
+                onClick={() => setPlatform(p)}
+                className={[
+                  'text-xs py-2 rounded-lg font-semibold transition-all border',
+                  platform === p
+                    ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300'
+                    : 'bg-zinc-900/60 border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700',
+                ].join(' ')}
+              >
                 {p === 'ebay' ? 'eBay' : 'TCGPlayer'}
               </button>
             ))}
           </div>
         </div>
 
-        {/* Costs */}
+        {/* Cost inputs */}
         <div className="grid grid-cols-2 gap-3">
-          {[{ id: 'ship', label: 'Shipping Cost', val: shippingCost, set: setShippingCost, step: '0.50' },
-            { id: 'acq',  label: 'Acquired For',  val: acquisitionCost, set: setAcquisitionCost, step: '1' }].map(({ id, label, val, set, step }) => (
-            <div key={id} className="space-y-1.5">
-              <label htmlFor={id} className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium">{label}</label>
+          {([
+            { id: 'ship', label: 'Shipping cost',  val: shippingCost,     set: setShippingCost,     step: '0.50', hint: 'Envelope + postage' },
+            { id: 'acq',  label: 'What you paid',  val: acquisitionCost,  set: setAcquisitionCost,  step: '1',    hint: 'Used for ROI calc' },
+          ] as const).map(({ id, label, val, set, step, hint }) => (
+            <div key={id} className="space-y-1">
+              <label htmlFor={id} className="text-[10px] uppercase tracking-widest text-zinc-500 font-medium block">{label}</label>
               <div className="relative">
-                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">$</span>
-                <input id={id} type="number" min="0" step={step} value={val} onChange={(e) => set(e.target.value)}
-                  className="w-full rounded-lg border border-input bg-background/50 pl-6 pr-3 py-1.5 text-sm focus:outline-none" />
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-600 text-sm select-none">$</span>
+                <input
+                  id={id} type="number" min="0" step={step} value={val}
+                  onChange={(e) => set(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-800 bg-zinc-900/60 pl-6 pr-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-indigo-500/50 transition-colors"
+                />
               </div>
+              <p className="text-[10px] text-zinc-600">{hint}</p>
             </div>
           ))}
         </div>
 
-        {/* Condition */}
-        <button onClick={() => { setShowCondition(v => !v); if (!showCondition) setConditionRatings({...DEFAULT_CONDITION}); else setConditionRatings(null) }}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+        {/* Condition toggle */}
+        <button
+          onClick={() => {
+            setShowCondition(v => !v)
+            if (!showCondition) setConditionRatings({ ...DEFAULT_CONDITION })
+            else setConditionRatings(null)
+          }}
+          className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors w-full"
+        >
           {showCondition ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-          {showCondition ? 'Hide condition details' : 'Add condition details (optional)'}
+          <span>{showCondition ? 'Hide condition details' : 'Add condition details'}</span>
+          {!showCondition && <span className="text-zinc-600 ml-0.5">(optional — improves grading estimate)</span>}
         </button>
         {showCondition && conditionRatings && (
           <ConditionForm value={conditionRatings} onChange={setConditionRatings} />
         )}
       </div>
 
-      {error && <Alert variant="destructive"><AlertDescription className="text-xs">{error}</AlertDescription></Alert>}
+      {error && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+          {error}
+        </div>
+      )}
 
-      <Button className="w-full gap-2 btn-primary-glow" onClick={handleAnalyze} disabled={analyzing}>
+      <Button
+        className="w-full gap-2 h-11 font-semibold text-sm"
+        style={{
+          background: analyzing ? 'rgba(99,102,241,0.3)' : 'linear-gradient(135deg, #4f46e5, #7c3aed)',
+          boxShadow:  analyzing ? 'none' : '0 4px 16px rgba(99,102,241,0.35)',
+        }}
+        onClick={handleAnalyze}
+        disabled={analyzing}
+      >
         {analyzing && <Loader2 className="h-4 w-4 animate-spin" />}
-        {analyzing ? 'Running analysis…' : 'Analyze this card'}
+        {analyzing ? 'Calculating…' : 'Get sell recommendation'}
       </Button>
+
+      <p className="text-[10px] text-zinc-600 text-center leading-relaxed">
+        Pulls recent eBay sold comps · calculates fees, shipping, grading ROI
+      </p>
     </div>
   )
 }
@@ -284,8 +364,10 @@ export default function CardDetailPage() {
   const searchParams  = useSearchParams()
   const backQuery     = searchParams.get('q') ?? ''
 
-  const [card, setCard]     = useState<CardCatalogItem | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [card, setCard]           = useState<CardCatalogItem | null>(null)
+  const [loading, setLoading]     = useState(true)
+  // Lifted from PriceIntelligenceHub so AnalysisForm knows which edition to analyze
+  const [selectedEdition, setSelectedEdition] = useState<string | null>(null)
 
   useEffect(() => {
     fetch(`/api/catalog/${catalogId}`)
@@ -358,6 +440,7 @@ export default function CardDetailPage() {
               ))}
               {meta?.hp && <span className="text-[10px] text-muted-foreground border border-border/30 px-2 py-0.5 rounded-full">HP {meta.hp}</span>}
               {meta?.rarity && <span className="text-[10px] text-muted-foreground">{meta.rarity}</span>}
+              <TournamentMetaBadge catalogId={catalogId} />
             </div>
           </div>
 
@@ -368,18 +451,9 @@ export default function CardDetailPage() {
               tcgPrice={(() => {
                 const prices = meta?.tcgplayer?.prices as Record<string, any> | undefined
                 if (!prices) return null
-                const BANDS = ['holofoil', '1stEditionHolofoil', 'reverseHolofoil', 'normal', 'unlimitedHolofoil', '1stEditionNormal']
-                for (const band of BANDS) {
-                  const p = prices[band]
-                  if (p?.market && p.market > 0) return p.market as number
-                  if (p?.mid && p.mid > 0) return p.mid as number
-                }
-                for (const b of Object.values(prices)) {
-                  const p = b as any
-                  if (p?.market && p.market > 0) return p.market as number
-                  if (p?.mid && p.mid > 0) return p.mid as number
-                }
-                return null
+                // Use bestMarket so expensive cards (1st ed, delta stars, etc.)
+                // aren't underpriced by a cheaper band appearing first.
+                return bestMarket(prices)
               })()}
             />
           )}
@@ -388,8 +462,15 @@ export default function CardDetailPage() {
         {/* ── Right: Price intelligence + analysis ── */}
         <div className="space-y-6">
 
+          {/* ── NEXUS AI Market Insight ── */}
+          <NEXUSCardInsight catalogId={catalogId} />
+
           {/* ── Price Intelligence Hub — unified multi-platform price view ── */}
-          <PriceIntelligenceHub catalogId={catalogId} meta={meta} />
+          <PriceIntelligenceHub
+            catalogId={catalogId}
+            meta={meta}
+            onEditionChange={setSelectedEdition}
+          />
 
           {/* Grading Intelligence */}
           <GradingAdvisor catalogId={catalogId} />
@@ -455,7 +536,7 @@ export default function CardDetailPage() {
           )}
 
           {/* Analysis form */}
-          <AnalysisForm catalogId={catalogId} />
+          <AnalysisForm catalogId={catalogId} selectedEdition={selectedEdition} />
         </div>
       </div>
     </div>

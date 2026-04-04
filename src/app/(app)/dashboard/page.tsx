@@ -3,7 +3,7 @@ import {
   ScanLine, Archive, MessageSquare, TrendingUp, TrendingDown,
   Minus, ArrowRight, Zap, BarChart2, Clock, AlertTriangle,
   Package, DollarSign, Sparkles, ChevronRight, Activity,
-  ArrowUpRight, ArrowDownRight, RefreshCw,
+  ArrowUpRight, ArrowDownRight, RefreshCw, Flame,
 } from 'lucide-react'
 import Link from 'next/link'
 import Image from 'next/image'
@@ -28,6 +28,38 @@ function extractTcgPrice(meta: any): number | null {
     if (b?.market && b.market > 0) return b.market
     if (b?.mid && b.mid > 0) return b.mid
   }
+  return null
+}
+
+// ── History helpers ───────────────────────────────────────────────────────────
+
+interface HistPt { date: string; price: number }
+
+function extractHistoryPts(meta: any): HistPt[] {
+  return ((meta?.tcg_history?.points ?? []) as HistPt[])
+    .filter((p: any) => typeof p?.date === 'string' && typeof p?.price === 'number')
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+}
+
+function closestHistPrice(pts: HistPt[], targetMs: number, toleranceDays = 5): number | null {
+  if (!pts.length) return null
+  let best: HistPt | null = null
+  let bestDiff = Infinity
+  for (const p of pts) {
+    const d = Math.abs(new Date(p.date).getTime() - targetMs)
+    if (d < bestDiff) { bestDiff = d; best = p }
+  }
+  return bestDiff <= toleranceDays * 86_400_000 ? (best?.price ?? null) : null
+}
+
+type TickerSignal = '🚀' | '🔥' | '📉' | '❄️' | '👑' | null
+
+function tickerSignal(chg7d: number | null, chg30d: number | null, mkt: number, ath: number | null): TickerSignal {
+  if (chg7d  != null && chg7d  >= 20)  return '🚀'
+  if (chg7d  != null && chg7d  <= -20) return '📉'
+  if (ath    != null && mkt >= ath * 0.97) return '👑'
+  if (chg30d != null && chg30d >= 12)  return '🔥'
+  if (chg30d != null && chg30d <= -12) return '❄️'
   return null
 }
 
@@ -91,12 +123,12 @@ export default async function DashboardPage() {
     .order('created_at', { ascending: false })
     .limit(100)
 
-  // ── Fetch top-value cards from catalog for the market feed ────────────────
+  // ── Fetch cards from full catalog for the market ticker (no recency bias) ──
+  // We pull a large unordered set then JS-side deduplicate and select a good mix.
   const { data: marketCards } = await supabase
     .from('card_catalog_items')
-    .select('card_name, set_name, metadata_json')
-    .order('created_at', { ascending: false })
-    .limit(40)
+    .select('catalog_id, card_name, set_name, canonical_image_url, metadata_json')
+    .limit(5000)
 
   // ── Process inventory ─────────────────────────────────────────────────────
   const items = (rawItems ?? []).map((row: any) => {
@@ -146,26 +178,67 @@ export default async function DashboardPage() {
 
   const recentAdds = items.slice(0, 5)
 
-  // ── Market ticker from catalog ────────────────────────────────────────────
-  const tickerItems = (marketCards ?? [])
-    .map((c: any) => {
-      const price = extractTcgPrice(c.metadata_json)
-      if (!price) return null
-      // Use market vs mid as a proxy for "change" direction
-      const prices = c.metadata_json?.tcgplayer?.prices as any
-      let mid: number | null = null
-      if (prices) {
-        for (const b of Object.values(prices) as any[]) {
-          if (b?.mid && b.mid > 0) { mid = b.mid; break }
-        }
-      }
-      const chg = mid && mid > 0 ? ((price - mid) / mid) * 100 : (Math.random() * 10 - 4)
-      return { name: c.card_name as string, price, chg }
-    })
-    .filter(Boolean)
-    .slice(0, 16) as Array<{ name: string; price: number; chg: number }>
+  // ── Market ticker — real changes from history, broad catalog mix ─────────
+  const now30ms = Date.now()
+  type TickerCard = {
+    catalog_id: string
+    name: string
+    price: number
+    chg7d:  number | null
+    chg30d: number | null
+    ath:    number | null
+    signal: TickerSignal
+    image_url: string | null
+  }
 
-  const tickerLoop = [...tickerItems, ...tickerItems]
+  const allTickerCandidates: TickerCard[] = []
+
+  for (const c of (marketCards ?? []) as any[]) {
+    const price = extractTcgPrice(c.metadata_json)
+    if (!price) continue
+    const key = (c.card_name as string).toLowerCase().trim()
+    // Keep only the highest-priced version per unique name
+    const existing = allTickerCandidates.findIndex(x => x.name.toLowerCase().trim() === key)
+    const hist = extractHistoryPts(c.metadata_json)
+    const p7d  = closestHistPrice(hist, now30ms - 7  * 86_400_000, 3)
+    const p30d = closestHistPrice(hist, now30ms - 30 * 86_400_000, 5)
+    const chg7d  = p7d  != null && p7d  > 0 ? ((price - p7d)  / p7d  * 100) : null
+    const chg30d = p30d != null && p30d > 0 ? ((price - p30d) / p30d * 100) : null
+    let ath: number | null = null
+    for (const pt of hist) { if (ath === null || pt.price > ath) ath = pt.price }
+    const signal = tickerSignal(chg7d, chg30d, price, ath)
+    const entry: TickerCard = {
+      catalog_id: c.catalog_id as string,
+      name: c.card_name as string,
+      price,
+      chg7d,
+      chg30d,
+      ath,
+      signal,
+      image_url: c.canonical_image_url as string | null,
+    }
+    if (existing >= 0) {
+      if (price > allTickerCandidates[existing].price) allTickerCandidates[existing] = entry
+    } else {
+      allTickerCandidates.push(entry)
+    }
+  }
+
+  // Build a curated mix: top movers with real data + top by value
+  const withRealChg  = allTickerCandidates.filter(c => c.chg30d != null)
+  const topGainers30 = [...withRealChg].sort((a, b) => (b.chg30d ?? 0) - (a.chg30d ?? 0)).slice(0, 6)
+  const topLosers30  = [...withRealChg].sort((a, b) => (a.chg30d ?? 0) - (b.chg30d ?? 0)).slice(0, 4)
+  const topByValue   = [...allTickerCandidates].sort((a, b) => b.price - a.price).slice(0, 8)
+  const tickerSet    = new Map<string, TickerCard>()
+  for (const c of [...topGainers30, ...topLosers30, ...topByValue]) {
+    if (!tickerSet.has(c.catalog_id)) tickerSet.set(c.catalog_id, c)
+  }
+  const tickerItems = Array.from(tickerSet.values()).slice(0, 24)
+  const tickerLoop  = [...tickerItems, ...tickerItems]
+
+  // Market movers for pulse strip (top 3 up + top 3 down by 30d change, from full catalog)
+  const pulseGainers = [...withRealChg].sort((a, b) => (b.chg30d ?? 0) - (a.chg30d ?? 0)).slice(0, 4)
+  const pulseLosers  = [...withRealChg].sort((a, b) => (a.chg30d ?? 0) - (b.chg30d ?? 0)).slice(0, 3)
 
   return (
     <div className="space-y-4 pb-12 max-w-[1400px]">
@@ -234,30 +307,97 @@ export default async function DashboardPage() {
           <div className="flex items-center gap-3 border-b border-white/[0.06] px-4 py-1.5">
             <span className="flex h-1.5 w-1.5 rounded-full bg-green-400 shadow-[0_0_6px_#4ade80]" />
             <span className="text-[10px] font-bold uppercase tracking-widest text-white/30">Live · TCGPlayer Market</span>
+            <span className="ml-auto text-[9px] text-white/15">{allTickerCandidates.length.toLocaleString()} cards tracked · 30d changes</span>
           </div>
           <div className="relative flex overflow-hidden py-2.5" aria-label="Market ticker">
             <div className="flex shrink-0 items-center gap-6 whitespace-nowrap"
-              style={{ animation: 'ticker 32s linear infinite' }}>
+              style={{ animation: 'ticker 40s linear infinite' }}>
               {tickerLoop.map((item, i) => {
-                const up = item.chg > 0.5
-                const dn = item.chg < -0.5
+                const chg = item.chg30d ?? item.chg7d ?? null
+                const up = chg != null && chg > 0.5
+                const dn = chg != null && chg < -0.5
                 return (
-                  <span key={i} className="flex items-center gap-1.5 text-sm">
+                  <Link key={i} href={`/analyze/${item.catalog_id}`}
+                    className="flex items-center gap-1.5 text-sm hover:opacity-80 transition-opacity">
+                    {item.signal && <span className="text-xs">{item.signal}</span>}
                     <span className="font-medium text-white/70">{item.name}</span>
                     <span className="font-mono font-bold text-white">{fmtUsd(item.price)}</span>
-                    <span
-                      className="rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums"
-                      style={{
-                        background: up ? 'rgba(34,197,94,0.15)' : dn ? 'rgba(239,68,68,0.12)' : 'rgba(148,163,184,0.10)',
-                        color:      up ? '#4ade80' : dn ? '#f87171' : '#94a3b8',
-                        border:     `1px solid ${up ? 'rgba(74,222,128,0.25)' : dn ? 'rgba(248,113,113,0.2)' : 'rgba(148,163,184,0.15)'}`,
-                      }}>
-                      {up ? '▲' : dn ? '▼' : '–'} {Math.abs(item.chg).toFixed(1)}%
-                    </span>
+                    {chg != null ? (
+                      <span
+                        className="rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums"
+                        style={{
+                          background: up ? 'rgba(34,197,94,0.15)' : dn ? 'rgba(239,68,68,0.12)' : 'rgba(148,163,184,0.10)',
+                          color:      up ? '#4ade80' : dn ? '#f87171' : '#94a3b8',
+                          border:     `1px solid ${up ? 'rgba(74,222,128,0.25)' : dn ? 'rgba(248,113,113,0.2)' : 'rgba(148,163,184,0.15)'}`,
+                        }}>
+                        {up ? '▲' : dn ? '▼' : '–'} {Math.abs(chg).toFixed(1)}%
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-white/15 font-mono">—</span>
+                    )}
                     <span className="mx-1 text-white/8">|</span>
-                  </span>
+                  </Link>
                 )
               })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══ Market Pulse strip — notable movers from full catalog ════════════ */}
+      {(pulseGainers.length > 0 || pulseLosers.length > 0) && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {/* Gainers */}
+          <div className="rounded-xl border border-emerald-500/15 overflow-hidden" style={{ background: 'rgba(5,20,12,0.9)' }}>
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-emerald-500/10">
+              <TrendingUp className="h-3.5 w-3.5 text-emerald-400/50" />
+              <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-400/35">Market Pulse · Top Gainers · 30d</span>
+            </div>
+            <div className="divide-y divide-white/[0.04]">
+              {pulseGainers.map(c => (
+                <Link key={c.catalog_id} href={`/analyze/${c.catalog_id}`}
+                  className="flex items-center gap-3 px-4 py-2 hover:bg-white/[0.03] transition-colors">
+                  {c.image_url
+                    ? <Image src={c.image_url} alt={c.name} width={18} height={25} className="rounded shrink-0 opacity-70" unoptimized />
+                    : <div className="w-[18px] h-[25px] rounded bg-white/5 shrink-0" />}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-white/75 truncate">{c.name}</p>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="text-xs font-mono text-white/40 tabular-nums">{fmtUsd(c.price)}</span>
+                    <span className="text-xs font-bold tabular-nums text-emerald-400">
+                      ▲ {(c.chg30d ?? 0).toFixed(1)}%
+                    </span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </div>
+
+          {/* Losers */}
+          <div className="rounded-xl border border-red-500/12 overflow-hidden" style={{ background: 'rgba(20,5,5,0.9)' }}>
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-red-500/10">
+              <TrendingDown className="h-3.5 w-3.5 text-red-400/50" />
+              <span className="text-[10px] font-bold uppercase tracking-widest text-red-400/35">Market Pulse · Top Decliners · 30d</span>
+            </div>
+            <div className="divide-y divide-white/[0.04]">
+              {pulseLosers.map(c => (
+                <Link key={c.catalog_id} href={`/analyze/${c.catalog_id}`}
+                  className="flex items-center gap-3 px-4 py-2 hover:bg-white/[0.03] transition-colors">
+                  {c.image_url
+                    ? <Image src={c.image_url} alt={c.name} width={18} height={25} className="rounded shrink-0 opacity-70" unoptimized />
+                    : <div className="w-[18px] h-[25px] rounded bg-white/5 shrink-0" />}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-white/75 truncate">{c.name}</p>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="text-xs font-mono text-white/40 tabular-nums">{fmtUsd(c.price)}</span>
+                    <span className="text-xs font-bold tabular-nums text-red-400">
+                      ▼ {Math.abs(c.chg30d ?? 0).toFixed(1)}%
+                    </span>
+                  </div>
+                </Link>
+              ))}
             </div>
           </div>
         </div>
@@ -593,18 +733,25 @@ export default async function DashboardPage() {
               </div>
               <div className="divide-y divide-white/[0.04]">
                 {tickerItems.slice(0, 8).map((item, i) => {
-                  const up = item.chg > 0.5
-                  const dn = item.chg < -0.5
+                  const chg = item.chg30d ?? item.chg7d ?? null
+                  const up = chg != null && chg > 0.5
+                  const dn = chg != null && chg < -0.5
                   return (
-                    <div key={i} className="flex items-center justify-between px-4 py-2.5">
-                      <p className="text-xs text-white/60 truncate flex-1 min-w-0 pr-2">{item.name}</p>
+                    <Link key={i} href={`/analyze/${item.catalog_id}`}
+                      className="flex items-center justify-between px-4 py-2.5 hover:bg-white/[0.03] transition-colors">
+                      <div className="flex items-center gap-1.5 flex-1 min-w-0 pr-2">
+                        {item.signal && <span className="text-xs shrink-0">{item.signal}</span>}
+                        <p className="text-xs text-white/60 truncate">{item.name}</p>
+                      </div>
                       <div className="flex items-center gap-2 shrink-0">
                         <span className="text-xs font-mono font-bold tabular-nums text-white/80">{fmtUsd(item.price)}</span>
-                        <span className={`text-[10px] font-bold ${up ? 'text-emerald-400' : dn ? 'text-red-400' : 'text-white/20'}`}>
-                          {up ? '▲' : dn ? '▼' : '–'}{Math.abs(item.chg).toFixed(1)}%
-                        </span>
+                        {chg != null ? (
+                          <span className={`text-[10px] font-bold ${up ? 'text-emerald-400' : dn ? 'text-red-400' : 'text-white/20'}`}>
+                            {up ? '▲' : dn ? '▼' : '–'}{Math.abs(chg).toFixed(1)}%
+                          </span>
+                        ) : <span className="text-[10px] text-white/15">—</span>}
                       </div>
-                    </div>
+                    </Link>
                   )
                 })}
               </div>

@@ -39,3 +39,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+.env*.local
+
+# python
+forecast-service/venv/
+forecast-service/__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# local data / scripts output
+data/

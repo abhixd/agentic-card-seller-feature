@@ -136,7 +136,32 @@ export async function fetchAllFeeds(): Promise<RssItem[]> {
     return true
   })
 
+  // Filter: keep only TCG collecting/market-relevant articles.
+  // Drop gameplay walkthroughs, video game news, anime, mobile games,
+  // plushes, Pokémon GO raids, Pokémon Sleep, Pokémon UNITE, etc.
+  const TCG_SIGNAL = [
+    'tcg', 'card', 'pack', 'booster', 'set', 'reprint', 'price', 'market',
+    'collect', 'sealed', 'grading', 'psa', 'bgs', 'alt art', 'illustration rare',
+    'ex ', ' ex', 'vmax', 'vstar', 'tournament', 'championship', 'rotation',
+    'ban list', 'release', 'product', 'preorder', 'pre-order', 'tin', 'etb',
+    'elite trainer', 'promo', 'pikachu', 'charizard', 'mewtwo',
+  ]
+  const NOISE_SIGNAL = [
+    'pokémon go', 'pokemon go', 'pokémon sleep', 'pokemon sleep',
+    'pokémon unite', 'pokemon unite', 'pokémon champions', 'pokemon champions',
+    'tera raid', 'pokopia', 'switch 2', 'video game', 'anime', 'costumed',
+    'community day', 'raid battle', 'pokémon sleep', 'new game',
+  ]
+
+  const relevant = deduped.filter((item) => {
+    const text = (item.title + ' ' + item.summary).toLowerCase()
+    const hasNoise = NOISE_SIGNAL.some((n) => text.includes(n))
+    if (hasNoise) return false
+    const hasSignal = TCG_SIGNAL.some((s) => text.includes(s))
+    return hasSignal
+  })
+
   // Sort by date descending
-  deduped.sort((a, b) => b.pubDate.getTime() - a.pubDate.getTime())
-  return deduped
+  relevant.sort((a, b) => b.pubDate.getTime() - a.pubDate.getTime())
+  return relevant
 }
