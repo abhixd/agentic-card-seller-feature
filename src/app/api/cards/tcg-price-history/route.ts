@@ -84,6 +84,7 @@ export async function GET(request: NextRequest) {
     fetched_at:   string
     empty_until?: string | null
     query_key?:   string   // "${card_name}|${card_number}|${set_name}"
+    was_not_found?: boolean  // true = card not in JustTCG (vs API error)
   }
 
   // Build current query fingerprint
@@ -128,6 +129,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       points:      anyExistingPoints,   // may be empty — that's fine, UI shows correct state
       rateLimited: true,
+      notFound:    cached.was_not_found ?? false,
       fromCache:   true,
       cachedAt:    cached.fetched_at ?? null,
       configured:  hasApiKey,
@@ -166,13 +168,16 @@ export async function GET(request: NextRequest) {
     const now       = new Date()
 
     const cachePayload: HistoryCache = {
-      points:      mergedPoints,
-      fetched_at:  now.toISOString(),
-      query_key:   currentQueryKey,
+      points:        mergedPoints,
+      fetched_at:    now.toISOString(),
+      query_key:     currentQueryKey,
+      // Track whether the card simply isn't in JustTCG (vs a real API error)
+      // so the UI can show a more accurate message.
+      was_not_found: mergedPoints.length === 0 && !apiError,
       // Set cooldown when we have no data — whether the API errored OR simply
       // returned nothing (card not found / too new). This prevents hammering
       // JustTCG on every page load for cards with no history.
-      empty_until: mergedPoints.length === 0
+      empty_until:   mergedPoints.length === 0
         ? new Date(Date.now() + CACHE_EMPTY_MS).toISOString()
         : null,
     }

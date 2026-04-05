@@ -656,6 +656,7 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
   const [loading,     setLoading]     = useState(true)
   const [refreshing,  setRefreshing]  = useState(false)
   const [rateLimited, setRateLimited] = useState(false)
+  const [tcgNotFound, setTcgNotFound] = useState(false)
   const [rangeDays,   setRangeDays]   = useState(90)
 
   // ── eBay fetch ────────────────────────────────────────────────────────────
@@ -703,6 +704,7 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
     let cancelled = false
     setLoading(true)
     setRateLimited(false)
+    setTcgNotFound(false)
 
     loadTcgData()
       .then((res) => {
@@ -710,6 +712,7 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
         setTcgPoints(res.points ?? [])
         setTcgConfigured(res.configured !== false)
         if (res.rateLimited) setRateLimited(true)
+        if (res.notFound) setTcgNotFound(true)
         setLoading(false)
       })
       .catch(() => { if (!cancelled) setLoading(false) })
@@ -736,6 +739,7 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
         const res = await loadTcgData(true)
         setTcgPoints(res.points ?? [])
         setRateLimited(!!res.rateLimited)
+        setTcgNotFound(!!res.notFound)
       }
     } finally {
       setRefreshing(false)
@@ -989,7 +993,7 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
           {rateLimited && (
             <div className="flex items-center gap-2 rounded-xl border border-amber-500/15 bg-amber-500/5 px-3.5 py-2.5">
               <AlertTriangle className="h-3.5 w-3.5 text-amber-400/60 shrink-0" />
-              <p className="text-[11px] text-amber-300/60 flex-1">TCGPlayer price data temporarily unavailable</p>
+              <p className="text-[11px] text-amber-300/60 flex-1">{tcgNotFound ? 'No TCGPlayer price history found for this card' : 'TCGPlayer price data temporarily unavailable'}</p>
               <button onClick={handleForceRefresh} disabled={refreshing}
                 className="shrink-0 flex items-center gap-1 text-[11px] text-amber-400/60 hover:text-amber-400 transition-colors disabled:opacity-40">
                 <RefreshCw className={['h-3 w-3', refreshing ? 'animate-spin' : ''].join(' ')} />

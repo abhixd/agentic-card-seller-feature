@@ -190,7 +190,11 @@ export async function GET(req: NextRequest) {
   // Cache is cold — warm it via the data route then retry
   if (points.length < 10) {
     const origin = req.nextUrl.origin
-    await fetch(`${origin}${extractor.warmPath(catalogId)}`, { cache: 'no-store' })
+    const warmHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (process.env.VERCEL_AUTOMATION_BYPASS_SECRET) {
+      warmHeaders['x-vercel-protection-bypass'] = process.env.VERCEL_AUTOMATION_BYPASS_SECRET
+    }
+    await fetch(`${origin}${extractor.warmPath(catalogId)}`, { cache: 'no-store', headers: warmHeaders })
 
     const { data: refreshed } = await supabase
       .from('card_catalog_items')
