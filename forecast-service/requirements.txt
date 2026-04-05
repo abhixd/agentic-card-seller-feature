@@ -2,6 +2,7 @@ fastapi==0.115.5
 uvicorn[standard]==0.32.0
 gunicorn==23.0.0
 prophet==1.1.6
+cmdstanpy==1.2.4
 pandas==2.2.3
 pydantic==2.10.3
 scikit-learn>=1.4.0
