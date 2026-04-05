@@ -21,6 +21,7 @@ export const EBAY_API_BASE = SANDBOX
 export const EBAY_SCOPES = [
   'https://api.ebay.com/oauth/api_scope',
   'https://api.ebay.com/oauth/api_scope/sell.inventory',
+  'https://api.ebay.com/oauth/api_scope/sell.account',
   'https://api.ebay.com/oauth/api_scope/sell.account.readonly',
   'https://api.ebay.com/oauth/api_scope/sell.analytics.readonly',
 ].join(' ')
