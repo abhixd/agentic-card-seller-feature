@@ -33,6 +33,18 @@ export async function POST(req: NextRequest) {
 
   const results: Record<string, unknown> = {}
 
+  // 0. Opt in to Business Policies first
+  try {
+    const optInRes = await fetch(`${EBAY_API_BASE}/sell/account/v1/program/opt_in`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ programType: 'SELLING_POLICY_MANAGEMENT' }),
+    })
+    results.optIn = { status: optInRes.status, body: await optInRes.text() }
+  } catch (e) {
+    results.optIn = { error: String(e) }
+  }
+
   // 1. Fulfillment policy
   try {
     const res = await fetch(`${EBAY_API_BASE}/sell/account/v1/fulfillment_policy`, {
