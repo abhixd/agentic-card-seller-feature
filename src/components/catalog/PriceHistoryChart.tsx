@@ -899,6 +899,12 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
       {/* ── JustTCG chart ── */}
       {source === 'justtcg' && tcgConfigured && (
         <div className="space-y-4">
+          {/* Raw NM condition badge */}
+          <div className="flex items-center gap-2 rounded-xl border border-violet-500/15 bg-violet-500/5 px-3 py-2">
+            <span className="text-[10px] font-semibold text-violet-300/80 uppercase tracking-wide">Raw · Near Mint (NM)</span>
+            <span className="text-white/20">·</span>
+            <span className="text-[10px] text-white/40">Ungraded cards only. For graded (PSA/BGS) prices, see eBay Sales tab.</span>
+          </div>
           {/* Duration selector + trend badge */}
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="flex flex-col gap-1">
