@@ -15,6 +15,7 @@ import type { ConditionRatings } from '@/types/analysis'
 import { AddToInventoryButton } from '@/components/inventory/AddToInventoryButton'
 import { NEXUSCardInsight } from '@/components/catalog/NEXUSCardInsight'
 import { TournamentMetaBadge } from '@/components/catalog/TournamentMetaBadge'
+import { PsaCertPanel } from '@/components/catalog/PsaCertPanel'
 
 // ── Edition mapping (same as SearchResults) ───────────────────────────────
 
@@ -474,6 +475,18 @@ export default function CardDetailPage() {
 
           {/* Grading Intelligence */}
           <GradingAdvisor catalogId={catalogId} />
+
+          {/* PSA Cert Lookup + Population Report */}
+          <div
+            className="rounded-2xl border p-5 space-y-4"
+            style={{
+              background:  'linear-gradient(135deg, rgba(5,150,105,0.07) 0%, rgba(16,185,129,0.03) 100%)',
+              borderColor: 'rgba(16,185,129,0.20)',
+              boxShadow:   '0 0 0 1px rgba(16,185,129,0.08), 0 4px 24px rgba(16,185,129,0.04)',
+            }}
+          >
+            <PsaCertPanel />
+          </div>
 
           {/* Card Details collapsible */}
           {(meta.attacks?.length > 0 || meta.abilities?.length > 0 || meta.weaknesses?.length > 0 || meta.flavor_text || meta.artist) && (
