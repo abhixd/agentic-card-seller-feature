@@ -28,8 +28,10 @@ export function CardScanner() {
 
       setResult({ cardName: data.card_name, confidence: data.confidence })
 
-      // Navigate to analyze search with identified card name
-      router.push(`/analyze?q=${encodeURIComponent(data.card_name)}`)
+      // Build search query using all available fields for better accuracy
+      const parts = [data.card_name, data.set_name, data.card_number].filter(Boolean)
+      const q = parts.join(' ')
+      router.push(`/analyze?q=${encodeURIComponent(q)}`)
     } catch (e: any) {
       setError(e.message ?? 'Scan failed')
       setScanning(false)

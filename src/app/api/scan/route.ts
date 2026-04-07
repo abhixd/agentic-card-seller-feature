@@ -24,7 +24,7 @@ export async function POST(req: Request) {
     const mediaType  = (file.type || 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
 
     const message = await anthropic.messages.create({
-      model:      'claude-opus-4-5',
+      model:      'claude-haiku-4-5',
       max_tokens: 256,
       messages: [
         {
