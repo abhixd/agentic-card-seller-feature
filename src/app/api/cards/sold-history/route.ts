@@ -72,12 +72,10 @@ export async function GET(request: NextRequest) {
       if (cached.empty_until && Date.now() < new Date(cached.empty_until).getTime()) {
         return NextResponse.json({ points: [], keyword, lang, total: 0, fromCache: true, rateLimited: true })
       }
-      // Successful cache hit — return if still fresh
-      if (cached.points.length > 0) {
-        const age = Date.now() - new Date(cached.fetched_at).getTime()
-        if (age < CACHE_TTL_MS) {
-          return NextResponse.json({ points: cached.points, keyword, lang, total: cached.points.length, fromCache: true })
-        }
+      // Successful cache hit — return if still fresh (even if 0 results)
+      const age = Date.now() - new Date(cached.fetched_at).getTime()
+      if (age < CACHE_TTL_MS) {
+        return NextResponse.json({ points: cached.points, keyword, lang, total: cached.points.length, fromCache: true })
       }
     }
   }
