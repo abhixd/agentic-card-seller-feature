@@ -3,7 +3,7 @@ import {
   ScanLine, Archive, MessageSquare, TrendingUp, TrendingDown,
   Minus, ArrowRight, Zap, BarChart2, Clock, AlertTriangle,
   Package, DollarSign, Sparkles, ChevronRight, Activity,
-  ArrowUpRight, ArrowDownRight, RefreshCw, Flame,
+  ArrowUpRight, ArrowDownRight, RefreshCw, Flame, Layers2,
 } from 'lucide-react'
 import Link from 'next/link'
 import Image from 'next/image'
@@ -177,6 +177,24 @@ export default async function DashboardPage() {
     .slice(0, 6)
 
   const recentAdds = items.slice(0, 5)
+
+  // ROI leaderboard — best & worst performers by %
+  const roiItems = activeItems
+    .filter(i => i.cur_val != null && i.cost > 0)
+    .map(i => ({ ...i, roiPct: ((i.cur_val! - i.cost) / i.cost) * 100 }))
+  const topROI  = [...roiItems].sort((a, b) => b.roiPct - a.roiPct).slice(0, 3)
+  const worstROI = [...roiItems].sort((a, b) => a.roiPct - b.roiPct).slice(0, 3)
+
+  // Set performance breakdown
+  type SetPerf = { set: string; count: number; value: number; cost: number; gain: number }
+  const setMap = new Map<string, SetPerf>()
+  for (const item of activeItems) {
+    const key = item.set_name || 'Unknown'
+    const s = setMap.get(key)
+    if (s) { s.count++; s.value += item.cur_val ?? 0; s.cost += item.cost; s.gain += item.cur_val != null ? item.cur_val - item.cost : 0 }
+    else setMap.set(key, { set: key, count: 1, value: item.cur_val ?? 0, cost: item.cost, gain: item.cur_val != null ? item.cur_val - item.cost : 0 })
+  }
+  const setBreakdown = [...setMap.values()].filter(s => s.value > 0).sort((a, b) => b.value - a.value).slice(0, 6)
 
   // ── Market ticker — real changes from history, broad catalog mix ─────────
   const now30ms = Date.now()
@@ -428,10 +446,14 @@ export default async function DashboardPage() {
                   </Link>
                 </div>
 
-                {/* Table header */}
-                <div className="grid grid-cols-[1fr_90px_90px_80px_80px] gap-0 px-4 py-2 border-b border-white/[0.04]">
-                  {['Card', 'Value', 'Cost', 'P&L', 'Signal'].map(h => (
-                    <span key={h} className="text-[9px] uppercase tracking-widest text-white/20 font-semibold text-right first:text-left">{h}</span>
+                {/* Table header — 3 cols on mobile, 5 on sm+ */}
+                <div className="grid grid-cols-[1fr_80px_70px] sm:grid-cols-[1fr_90px_90px_80px_80px] gap-0 px-4 py-2 border-b border-white/[0.04]">
+                  {['Card', 'Value', 'P&L', 'Cost', 'Signal'].map((h, i) => (
+                    <span key={h} className={[
+                      'text-[9px] uppercase tracking-widest text-white/20 font-semibold text-right first:text-left',
+                      // Hide Cost and Signal on mobile (indices 3 & 4)
+                      i >= 3 ? 'hidden sm:block' : '',
+                    ].join(' ')}>{h}</span>
                   ))}
                 </div>
 
@@ -445,10 +467,10 @@ export default async function DashboardPage() {
                     <Link
                       key={item.item_id}
                       href={`/inventory/${item.item_id}`}
-                      className="grid grid-cols-[1fr_90px_90px_80px_80px] gap-0 px-4 py-3 border-b border-white/[0.04] hover:bg-white/[0.025] transition-colors items-center group"
+                      className="grid grid-cols-[1fr_80px_70px] sm:grid-cols-[1fr_90px_90px_80px_80px] gap-0 px-4 py-3 border-b border-white/[0.04] hover:bg-white/[0.025] transition-colors items-center group"
                     >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <span className="text-[10px] font-mono text-white/20 w-4 text-center shrink-0">{idx + 1}</span>
+                      <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
+                        <span className="hidden sm:block text-[10px] font-mono text-white/20 w-4 text-center shrink-0">{idx + 1}</span>
                         {item.image_url ? (
                           <Image src={item.image_url} alt={item.card_name} width={20} height={28}
                             className="rounded object-cover shrink-0 opacity-80 group-hover:opacity-100 transition-opacity" unoptimized />
@@ -460,13 +482,12 @@ export default async function DashboardPage() {
                           <p className="text-[10px] text-white/30 truncate leading-tight">
                             {item.set_name}
                             {item.card_number ? ` · #${item.card_number}` : ''}
-                            {' · '}
-                            <span className={st.color}>{st.label}</span>
+                            <span className="hidden sm:inline"> · <span className={st.color}>{st.label}</span></span>
                           </p>
                         </div>
                       </div>
                       <p className="text-sm font-bold tabular-nums text-right text-white/90">{fmtUsd(item.cur_val!)}</p>
-                      <p className="text-xs tabular-nums text-right text-white/40">{fmtUsd(item.cost)}</p>
+                      {/* P&L — visible on mobile */}
                       <div className="flex items-center justify-end gap-1">
                         {isPos
                           ? <ArrowUpRight className="h-3 w-3 text-emerald-400 shrink-0" />
@@ -475,7 +496,10 @@ export default async function DashboardPage() {
                           {fmtPct(gainPct)}
                         </span>
                       </div>
-                      <div className="flex justify-end">
+                      {/* Cost — hidden on mobile */}
+                      <p className="hidden sm:block text-xs tabular-nums text-right text-white/40">{fmtUsd(item.cost)}</p>
+                      {/* Signal — hidden on mobile */}
+                      <div className="hidden sm:flex justify-end">
                         {rec ? (
                           <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${rec.color} ${rec.bg} ${rec.border}`}>
                             {rec.label}
@@ -514,6 +538,99 @@ export default async function DashboardPage() {
                   </div>
                 ))}
               </div>
+
+              {/* Set performance breakdown */}
+              {setBreakdown.length > 0 && (
+                <div className="rounded-xl border border-white/8 overflow-hidden" style={{ background: '#080c10' }}>
+                  <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/[0.06]">
+                    <Layers2 className="h-3.5 w-3.5 text-fuchsia-400/60" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-white/35">Set Breakdown</span>
+                  </div>
+                  <div className="divide-y divide-white/[0.04]">
+                    {setBreakdown.map((s) => {
+                      const gainPct = s.cost > 0 ? (s.gain / s.cost) * 100 : 0
+                      const isPos   = s.gain >= 0
+                      // Value bar width relative to max set value
+                      const maxVal  = setBreakdown[0].value
+                      const barPct  = maxVal > 0 ? (s.value / maxVal) * 100 : 0
+                      return (
+                        <div key={s.set} className="px-4 py-2.5 space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="text-xs font-medium text-white/75 truncate">{s.set}</span>
+                              <span className="text-[10px] text-white/25 shrink-0">{s.count}×</span>
+                            </div>
+                            <div className="flex items-center gap-3 shrink-0">
+                              <span className="text-xs font-mono font-bold tabular-nums text-white/70">{fmtUsd(s.value)}</span>
+                              <span className={`text-[10px] font-bold tabular-nums w-14 text-right ${isPos ? 'text-emerald-400' : 'text-red-400'}`}>
+                                {isPos ? '+' : ''}{gainPct.toFixed(1)}%
+                              </span>
+                            </div>
+                          </div>
+                          {/* Mini value bar */}
+                          <div className="h-0.5 rounded-full bg-white/5 overflow-hidden">
+                            <div
+                              className="h-full rounded-full transition-all duration-500"
+                              style={{
+                                width: `${barPct}%`,
+                                background: isPos
+                                  ? 'linear-gradient(90deg, #34d399, #6366f1)'
+                                  : 'linear-gradient(90deg, #f87171, #ef4444)',
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* ROI leaderboard */}
+              {(topROI.length > 0 || worstROI.length > 0) && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Top gainers */}
+                  {topROI.length > 0 && (
+                    <div className="rounded-xl border border-emerald-500/15 overflow-hidden" style={{ background: 'rgba(5,20,12,0.8)' }}>
+                      <div className="flex items-center gap-2 px-3 py-2 border-b border-emerald-500/10">
+                        <ArrowUpRight className="h-3 w-3 text-emerald-400/60" />
+                        <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-400/40">Best ROI</span>
+                      </div>
+                      <div className="divide-y divide-white/[0.04]">
+                        {topROI.map(item => (
+                          <Link key={item.item_id} href={`/inventory/${item.item_id}`}
+                            className="flex items-center justify-between px-3 py-2 hover:bg-white/[0.03] transition-colors">
+                            <p className="text-xs text-white/65 truncate flex-1 mr-2">{item.card_name}</p>
+                            <span className="text-xs font-bold text-emerald-400 tabular-nums shrink-0">
+                              +{item.roiPct.toFixed(0)}%
+                            </span>
+                          </Link>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {/* Worst performers */}
+                  {worstROI.length > 0 && (
+                    <div className="rounded-xl border border-red-500/12 overflow-hidden" style={{ background: 'rgba(20,5,5,0.8)' }}>
+                      <div className="flex items-center gap-2 px-3 py-2 border-b border-red-500/10">
+                        <ArrowDownRight className="h-3 w-3 text-red-400/60" />
+                        <span className="text-[9px] font-bold uppercase tracking-widest text-red-400/40">Needs Attention</span>
+                      </div>
+                      <div className="divide-y divide-white/[0.04]">
+                        {worstROI.map(item => (
+                          <Link key={item.item_id} href={`/inventory/${item.item_id}`}
+                            className="flex items-center justify-between px-3 py-2 hover:bg-white/[0.03] transition-colors">
+                            <p className="text-xs text-white/65 truncate flex-1 mr-2">{item.card_name}</p>
+                            <span className="text-xs font-bold text-red-400 tabular-nums shrink-0">
+                              {item.roiPct.toFixed(0)}%
+                            </span>
+                          </Link>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* RIGHT: Signals + Recent activity */}
