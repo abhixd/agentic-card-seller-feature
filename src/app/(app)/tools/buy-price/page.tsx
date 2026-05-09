@@ -36,7 +36,8 @@ function getBestPrice(meta: Record<string, any> | null): number | null {
   return band?.market ?? band?.mid ?? null
 }
 
-function getImageUrl(card: CardSearchResult): string | null {
+function getImageUrl(card: CardSearchResult | null): string | null {
+  if (!card) return null
   const meta = card.metadata_json as any
   return meta?.images?.small ?? meta?.images?.large ?? card.canonical_image_url ?? null
 }
@@ -148,7 +149,7 @@ export default function BuyPriceCalculator() {
 
   const meta      = (card?.metadata_json ?? {}) as Record<string, any>
   const fairValue = getBestPrice(meta)
-  const imageUrl  = getImageUrl(card as any)
+  const imageUrl  = card ? getImageUrl(card) : null
 
   // ── Calculator logic ────────────────────────────────────────────────────────
   const sellPrice    = fairValue
