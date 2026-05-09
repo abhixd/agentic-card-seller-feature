@@ -177,7 +177,7 @@ export default function BuyPriceCalculator() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Buy Price Calculator</h1>
         <p className="text-sm text-white/40 mt-1">
-          Find a card → set your margin → know instantly if it's worth buying.
+          Find a card → set your margin → know instantly if it&apos;s worth buying.
         </p>
       </div>
 
@@ -398,7 +398,7 @@ export default function BuyPriceCalculator() {
           <div>
             <p className="text-sm font-medium text-white/40">Search a card above</p>
             <p className="text-xs text-white/20 mt-1">
-              Enter the asking price → instantly see if it's worth buying at your target margin
+              Enter the asking price → instantly see if it&apos;s worth buying at your target margin
             </p>
           </div>
           <div className="flex flex-wrap gap-2 justify-center pt-2">
