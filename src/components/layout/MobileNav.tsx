@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation'
 import {
   LayoutDashboard, ScanLine, Archive, BookOpen,
   Newspaper, Users, ArrowLeftRight, TrendingUp, Heart, ShoppingBag, CalendarDays,
-  ShoppingCart, Settings,
+  ShoppingCart, Settings, Calculator,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -15,6 +15,7 @@ const navItems = [
   { href: '/analyze',   label: 'Analyze', icon: ScanLine,        grad: ['#8b5cf6','#6d28d9'], glow: 'rgba(139,92,246,0.75)', text: 'text-violet-300' },
   { href: '/inventory', label: 'Cards',   icon: Archive,         grad: ['#10b981','#047857'], glow: 'rgba(16,185,129,0.75)', text: 'text-emerald-300' },
   { href: '/market',    label: 'Market',  icon: TrendingUp,      grad: ['#f59e0b','#b45309'], glow: 'rgba(245,158,11,0.75)', text: 'text-amber-300' },
+  { href: '/tools/buy-price', label: 'Buy Calc', icon: Calculator,    grad: ['#06b6d4','#0e7490'], glow: 'rgba(6,182,212,0.75)',  text: 'text-cyan-300'   },
   { href: '/trade',       label: 'Trade',   icon: ArrowLeftRight, grad: ['#f97316','#c2410c'], glow: 'rgba(249,115,22,0.75)', text: 'text-orange-300' },
   { href: '/wantlist',    label: 'Wants',   icon: Heart,          grad: ['#ec4899','#be185d'], glow: 'rgba(236,72,153,0.75)', text: 'text-pink-300' },
   { href: '/marketplace', label: 'P2P',     icon: ShoppingBag,    grad: ['#6366f1','#4338ca'], glow: 'rgba(99,102,241,0.75)', text: 'text-indigo-300' },

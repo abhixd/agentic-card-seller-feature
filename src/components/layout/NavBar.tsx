@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, ScanLine, Archive, LogOut, Layers,
   BookOpen, Newspaper, Users, ArrowLeftRight, TrendingUp, Heart, ShoppingBag, CalendarDays,
-  ShoppingCart, Settings,
+  ShoppingCart, Settings, Calculator,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -46,6 +46,14 @@ const navItems = [
     grad:  ['#f59e0b', '#b45309'],   // amber
     glow:  'rgba(245,158,11,0.7)',
     text:  'text-amber-300',
+  },
+  {
+    href:  '/tools/buy-price',
+    label: 'Buy Calculator',
+    icon:  Calculator,
+    grad:  ['#06b6d4', '#0e7490'],   // cyan
+    glow:  'rgba(6,182,212,0.7)',
+    text:  'text-cyan-300',
   },
   {
     href:  '/trade',
