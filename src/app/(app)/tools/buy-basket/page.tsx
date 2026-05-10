@@ -328,7 +328,7 @@ export default function BuyBasketPage() {
             <h1 className="text-xl font-bold text-white">Buy Basket Optimizer</h1>
           </div>
           <p className="text-sm text-white/40 ml-12">
-            At a show or shop? Add cards you're considering and find the optimal buy list within your budget.
+            At a show or shop? Add cards you&apos;re considering and find the optimal buy list within your budget.
           </p>
         </div>
         <button
