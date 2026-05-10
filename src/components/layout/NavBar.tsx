@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, ScanLine, Archive, LogOut, Layers,
   BookOpen, Newspaper, Users, ArrowLeftRight, TrendingUp, Heart, ShoppingBag, CalendarDays,
-  ShoppingCart, Settings, Calculator,
+  ShoppingCart, Settings, Calculator, Star,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -54,6 +54,14 @@ const navItems = [
     grad:  ['#06b6d4', '#0e7490'],   // cyan
     glow:  'rgba(6,182,212,0.7)',
     text:  'text-cyan-300',
+  },
+  {
+    href:  '/tools/grading-optimizer',
+    label: 'Grade Optimizer',
+    icon:  Star,
+    grad:  ['#a855f7', '#7e22ce'],   // purple
+    glow:  'rgba(168,85,247,0.7)',
+    text:  'text-purple-300',
   },
   {
     href:  '/trade',
