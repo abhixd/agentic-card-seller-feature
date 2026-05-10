@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, ScanLine, Archive, LogOut, Layers,
   BookOpen, Newspaper, Users, ArrowLeftRight, TrendingUp, Heart, ShoppingBag, CalendarDays,
-  ShoppingCart, Settings, Calculator, Star,
+  ShoppingCart, Settings, Calculator, Star, Layers2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -62,6 +62,14 @@ const navItems = [
     grad:  ['#a855f7', '#7e22ce'],   // purple
     glow:  'rgba(168,85,247,0.7)',
     text:  'text-purple-300',
+  },
+  {
+    href:  '/tools/triage',
+    label: 'Bulk Triage',
+    icon:  Layers2,
+    grad:  ['#f59e0b', '#b45309'],   // amber
+    glow:  'rgba(245,158,11,0.7)',
+    text:  'text-amber-300',
   },
   {
     href:  '/trade',
