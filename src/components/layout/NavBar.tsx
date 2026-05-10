@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, ScanLine, Archive, LogOut, Layers,
   BookOpen, Newspaper, Users, ArrowLeftRight, TrendingUp, Heart, ShoppingBag, CalendarDays,
-  ShoppingCart, Settings, Calculator, Star, Layers2, PackagePlus,
+  ShoppingCart, Settings, Calculator, Star, Layers2, PackagePlus, PieChart,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -78,6 +78,14 @@ const navItems = [
     grad:  ['#10b981', '#047857'],   // emerald
     glow:  'rgba(16,185,129,0.7)',
     text:  'text-emerald-300',
+  },
+  {
+    href:  '/tools/rebalance',
+    label: 'Rebalance',
+    icon:  PieChart,
+    grad:  ['#6366f1', '#4338ca'],   // indigo
+    glow:  'rgba(99,102,241,0.7)',
+    text:  'text-indigo-300',
   },
   {
     href:  '/trade',
