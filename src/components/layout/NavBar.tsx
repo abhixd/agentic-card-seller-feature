@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, ScanLine, Archive, LogOut, Layers,
   BookOpen, Newspaper, Users, ArrowLeftRight, TrendingUp, Heart, ShoppingBag, CalendarDays,
-  ShoppingCart, Settings, Calculator, Star, Layers2, PackagePlus, PieChart, Tag,
+  ShoppingCart, Settings, Calculator, Star, Layers2, PackagePlus, PieChart, Tag, Handshake,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -94,6 +94,14 @@ const navItems = [
     grad:  ['#f97316', '#c2410c'],   // orange
     glow:  'rgba(249,115,22,0.7)',
     text:  'text-orange-300',
+  },
+  {
+    href:  '/tools/offer',
+    label: 'Offer Advisor',
+    icon:  Handshake,
+    grad:  ['#8b5cf6', '#6d28d9'],   // violet
+    glow:  'rgba(139,92,246,0.7)',
+    text:  'text-violet-300',
   },
   {
     href:  '/trade',
