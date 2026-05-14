@@ -2,22 +2,22 @@
  * POST /api/grade/analyze
  *
  * Chrome extension entry point — orchestrates:
- *   1. Python inference backend  → grade distribution + CV issues
- *   2. eBay completed sales      → real PSA 8/9/10 sold prices
- *   3. ROI engine                → max buy price + Buy/Maybe/Skip
+ *   1. Claude Vision  → grade distribution, issues, card identity
+ *   2. eBay completed sales → real PSA 8/9/10 sold prices
+ *   3. ROI engine     → max buy price + Buy/Maybe/Skip
  *
  * Requires env vars:
- *   GRADING_API_URL   — Python backend URL (default: http://localhost:8000)
- *   EBAY_APP_ID       — eBay Finding API key (already set for existing app)
+ *   ANTHROPIC_API_KEY — for Claude Vision grading
+ *   EBAY_APP_ID       — eBay Finding API key (optional, improves price comps)
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { fetchEbayComps } from '@/lib/ebay/findingApi'
+import { gradeWithClaude } from '@/lib/grading/claudeVision'
 
 export const runtime = 'nodejs'
 
 // ── CORS ──────────────────────────────────────────────────────────
-// Allow Chrome extensions and localhost callers
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin':  '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -29,20 +29,19 @@ export async function OPTIONS() {
 }
 
 // ── Config ────────────────────────────────────────────────────────
-const GRADING_API_URL = process.env.GRADING_API_URL ?? 'http://localhost:8000'
-const GRADING_FEE     = 25     // PSA standard tier (USD)
-const SELL_FEE        = 0.1295 // eBay ~12.95% final value fee
-const TARGET_MARGIN   = 0.20   // 20% net margin target for "buy"
+const GRADING_FEE   = 25      // PSA standard tier (USD)
+const SELL_FEE      = 0.1295  // eBay ~12.95% final value fee
+const TARGET_MARGIN = 0.20    // 20% net margin target for "buy"
 
 const GRADE_RE = /\bPSA\s*(\d+(?:\.\d)?)\b/i
 
-// ── Types (mirrors Python backend schemas.py) ─────────────────────
+// ── Types ─────────────────────────────────────────────────────────
 export interface GradeAnalysisRequest {
   listing_url?: string
-  title: string
-  price: number
-  shipping?: number
-  image_urls: string[]
+  title:        string
+  price:        number
+  shipping?:    number
+  image_urls:   string[]
   marketplace?: string
   card_category?: string
 }
@@ -62,10 +61,6 @@ function median(arr: number[]): number | null {
   return s[Math.floor(s.length / 2)]
 }
 
-/**
- * Parse PSA grade from an eBay listing title.
- * "1999 Pokemon Base Set PSA 9 Charizard" → 9
- */
 function parseGradeFromTitle(title: string): number | null {
   const m = GRADE_RE.exec(title)
   if (!m) return null
@@ -73,9 +68,6 @@ function parseGradeFromTitle(title: string): number | null {
   return g >= 1 && g <= 10 ? Math.round(g) : null
 }
 
-/**
- * Compute grade-segmented prices from raw eBay completed sales.
- */
 function computeGradePrices(
   comps: Array<{ title: string; soldPrice: number }>,
 ): GradePrices {
@@ -99,18 +91,14 @@ function computeGradePrices(
   }
 }
 
-/**
- * Compute ROI: EV, max buy prices, decision label.
- */
 function computeROI(
   listingTotal: number,
-  gradeDist: Record<string, number>,
-  prices: GradePrices,
+  gradeDist:   Record<string, number>,
+  prices:      GradePrices,
 ) {
   const { raw = 20, psa8 = 0, psa9 = 0, psa10 = 0 } = prices
   const net = (p: number) => p * (1 - SELL_FEE) - GRADING_FEE
 
-  // Weighted expected value
   let ev = 0
   for (const [gradeStr, prob] of Object.entries(gradeDist)) {
     const g = parseInt(gradeStr, 10)
@@ -127,20 +115,20 @@ function computeROI(
   const maxPsa8 = psa8 ? Math.max(0, net(psa8) * (1 - TARGET_MARGIN * 0.6)) : null
 
   return {
-    listing_price:                round2(listingTotal),
-    grading_fee:                  GRADING_FEE,
-    raw_estimate:                 raw  ? round2(raw)   : null,
-    psa8_estimate:                psa8 ? round2(psa8)  : null,
-    psa9_estimate:                psa9 ? round2(psa9)  : null,
-    psa10_estimate:               psa10? round2(psa10) : null,
+    listing_price:                 round2(listingTotal),
+    grading_fee:                   GRADING_FEE,
+    raw_estimate:                  raw   ? round2(raw)   : null,
+    psa8_estimate:                 psa8  ? round2(psa8)  : null,
+    psa9_estimate:                 psa9  ? round2(psa9)  : null,
+    psa10_estimate:                psa10 ? round2(psa10) : null,
     max_buy_price_for_psa8_target: maxPsa8 ? round2(maxPsa8) : null,
     max_buy_price_for_psa9_target: maxPsa9 ? round2(maxPsa9) : null,
-    expected_value:               round2(ev),
+    expected_value:                round2(ev),
   }
 }
 
 function computeDecision(
-  economics: ReturnType<typeof computeROI>,
+  economics:  ReturnType<typeof computeROI>,
   confidence: string,
 ) {
   if (confidence === 'low') {
@@ -182,38 +170,23 @@ export async function POST(req: NextRequest) {
 
   const listingTotal = body.price + (body.shipping ?? 0)
 
-  // ── 1. Call Python inference backend ─────────────────────────
-  let inference: Record<string, unknown>
+  // ── 1. Claude Vision grading ──────────────────────────────────
+  let inference: Awaited<ReturnType<typeof gradeWithClaude>>
   try {
-    const resp = await fetch(`${GRADING_API_URL}/analyze-listing`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(body),
-      signal:  AbortSignal.timeout(30_000),
-    })
-    if (!resp.ok) {
-      const txt = await resp.text()
-      return NextResponse.json(
-        { error: `Grading backend error (${resp.status}): ${txt}` },
-        { status: 502, headers: CORS_HEADERS },
-      )
-    }
-    inference = await resp.json()
+    inference = await gradeWithClaude(body.image_urls, body.title)
   } catch (err) {
     return NextResponse.json(
-      { error: `Could not reach grading backend at ${GRADING_API_URL}. Is it running?` },
+      { error: `Claude Vision grading failed: ${err instanceof Error ? err.message : 'Unknown error'}` },
       { status: 503, headers: CORS_HEADERS },
     )
   }
 
-  // ── 2. Fetch eBay sold comps for this title ───────────────────
-  const gradeDist = (inference.grade_estimate as { distribution: Record<string, number> }).distribution
+  // ── 2. Fetch eBay sold comps ──────────────────────────────────
   let prices: GradePrices = { raw: null, psa8: null, psa9: null, psa10: null }
   let compsSource = 'none'
 
   if (process.env.EBAY_APP_ID) {
     try {
-      // Strip PSA grade prefix from title to get the card name for comps search
       const keyword = body.title
         .replace(/\bPSA\s*\d+\b/gi, '')
         .replace(/\s+/g, ' ')
@@ -226,18 +199,19 @@ export async function POST(req: NextRequest) {
         compsSource = `ebay (${comps.length} sales)`
       }
     } catch {
-      // Non-fatal — fall through to backend comps
+      // Non-fatal — fall through with null prices
     }
   }
 
-  // ── 3. Compute ROI + decision ─────────────────────────────────
+  // ── 3. ROI + decision ─────────────────────────────────────────
+  const gradeDist = inference.grade_estimate.distribution
   const economics = computeROI(listingTotal, gradeDist, prices)
-  const decision  = computeDecision(economics, (inference.grade_estimate as { confidence: string }).confidence)
+  const decision  = computeDecision(economics, inference.grade_estimate.confidence)
 
   return NextResponse.json({
     ...inference,
     economics,
     decision,
-    _meta: { comps_source: compsSource, grading_backend: GRADING_API_URL },
+    _meta: { comps_source: compsSource, grading_backend: 'claude-vision' },
   }, { headers: CORS_HEADERS })
 }
