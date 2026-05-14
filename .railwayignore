@@ -1,0 +1,42 @@
+# .railwayignore — keep Railway upload small
+# Only backend/ source + models + Dockerfile are needed
+
+node_modules/
+.next/
+.vercel/
+coverage/
+data/
+notebooks/
+backend/venv/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Next.js source (not needed for grading service)
+src/
+public/
+supabase/
+scripts/
+docs/
+extension/
+forecast-service/
+optimize-service/
+
+# Misc
+*.log
+*.pem
+*.tsbuildinfo
+.env*
+.DS_Store
+package.json
+package-lock.json
+tsconfig*.json
+next.config.ts
+postcss.config.mjs
+eslint.config.mjs
+components.json
+vitest.config.ts
+vitest.setup.ts
+vercel.json
+README.md

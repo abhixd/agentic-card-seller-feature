@@ -1,0 +1,7 @@
+[build]
+dockerfilePath = "Dockerfile.grading"
+
+[deploy]
+healthcheckPath    = "/health"
+healthcheckTimeout = 120
+restartPolicyType  = "on_failure"

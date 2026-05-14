@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "Card Grade Analyzer",
+  "version": "0.1.0",
+  "description": "Instant PSA grade viability + ROI for eBay Pokémon listings.",
+
+  "permissions": [
+    "activeTab",
+    "storage",
+    "sidePanel"
+  ],
+
+  "host_permissions": [
+    "https://www.ebay.com/*",
+    "https://agentic-card-seller-os.vercel.app/*",
+    "http://localhost/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://www.ebay.com/itm/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+
+  "action": {
+    "default_title": "Card Grade Analyzer",
+    "default_icon": {
+      "16":  "icons/icon16.png",
+      "48":  "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "icons": {
+    "16":  "icons/icon16.png",
+    "48":  "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

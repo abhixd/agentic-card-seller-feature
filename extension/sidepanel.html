@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Card Grade Analyzer</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <!-- ── Header ── -->
+  <header>
+    <div class="header-inner">
+      <img src="icons/icon48.png" alt="" class="logo" />
+      <div class="header-text">
+        <h1>Card Grader</h1>
+        <p class="subtitle">PSA grade viability + ROI</p>
+      </div>
+      <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
+    </div>
+  </header>
+
+  <!-- ── Settings panel (hidden by default) ── -->
+  <section id="settings-panel" class="panel hidden">
+    <label for="backend-url-input">Backend URL</label>
+    <input id="backend-url-input" type="url" placeholder="http://localhost:3000" />
+    <div class="settings-actions">
+      <button id="save-settings-btn" class="btn-primary">Save</button>
+      <button id="cancel-settings-btn" class="btn-ghost">Cancel</button>
+    </div>
+    <p id="settings-msg" class="settings-msg"></p>
+  </section>
+
+  <!-- ── Main content ── -->
+  <main id="main-content">
+
+    <!-- Idle / welcome state -->
+    <div id="state-idle" class="state">
+      <div class="idle-icon">🃏</div>
+      <p class="idle-heading">Ready to analyze</p>
+      <p class="idle-sub">
+        Navigate to an eBay Pokémon listing and click <strong>Analyze Card</strong> to get started.
+      </p>
+    </div>
+
+    <!-- Loading state -->
+    <div id="state-loading" class="state hidden">
+      <div class="spinner-wrap">
+        <div class="spinner"></div>
+      </div>
+      <p id="loading-title" class="loading-title"></p>
+      <p id="loading-step"  class="loading-step">Initializing…</p>
+    </div>
+
+    <!-- Error state -->
+    <div id="state-error" class="state hidden">
+      <div class="error-icon">⚠️</div>
+      <p id="error-message" class="error-message"></p>
+      <p id="error-hint"    class="error-hint"></p>
+      <button id="error-retry-btn" class="btn-primary">Try Again</button>
+    </div>
+
+    <!-- Results state -->
+    <div id="state-result" class="state hidden">
+
+      <!-- Card identity -->
+      <section class="card-id-section">
+        <p id="res-title" class="res-title"></p>
+        <div class="card-meta">
+          <span id="res-set"  class="tag tag--set"></span>
+          <span id="res-year" class="tag tag--year"></span>
+          <span id="res-num"  class="tag tag--num"></span>
+        </div>
+      </section>
+
+      <!-- Decision banner -->
+      <section id="decision-banner" class="decision-banner">
+        <div class="decision-label">
+          <span id="dec-emoji"></span>
+          <span id="dec-label"></span>
+        </div>
+        <p id="dec-reason" class="dec-reason"></p>
+      </section>
+
+      <!-- Grade estimate -->
+      <section class="result-section">
+        <h2 class="section-title">Grade Estimate</h2>
+        <div class="grade-row">
+          <span class="grade-range" id="res-grade-range"></span>
+          <span class="grade-conf"  id="res-grade-conf"></span>
+        </div>
+        <!-- Probability bars -->
+        <div id="grade-bars" class="grade-bars"></div>
+      </section>
+
+      <!-- Issues -->
+      <section class="result-section" id="issues-section">
+        <h2 class="section-title">Issues Detected</h2>
+        <ul id="issues-list" class="issues-list"></ul>
+      </section>
+
+      <!-- Economics -->
+      <section class="result-section">
+        <h2 class="section-title">Market Prices</h2>
+        <div class="price-grid">
+          <div class="price-cell">
+            <span class="price-label">Raw</span>
+            <span class="price-val" id="price-raw">—</span>
+          </div>
+          <div class="price-cell">
+            <span class="price-label">PSA 8</span>
+            <span class="price-val" id="price-psa8">—</span>
+          </div>
+          <div class="price-cell">
+            <span class="price-label">PSA 9</span>
+            <span class="price-val" id="price-psa9">—</span>
+          </div>
+          <div class="price-cell highlight">
+            <span class="price-label">PSA 10</span>
+            <span class="price-val" id="price-psa10">—</span>
+          </div>
+        </div>
+
+        <h2 class="section-title" style="margin-top:14px">ROI</h2>
+        <table class="roi-table">
+          <tbody>
+            <tr>
+              <td>Listing price</td>
+              <td id="roi-listing">—</td>
+            </tr>
+            <tr>
+              <td>Grading fee</td>
+              <td id="roi-grade-fee">—</td>
+            </tr>
+            <tr>
+              <td>Expected value</td>
+              <td id="roi-ev">—</td>
+            </tr>
+            <tr class="roi-highlight">
+              <td>Max buy (PSA 9 target)</td>
+              <td id="roi-max9">—</td>
+            </tr>
+            <tr class="roi-highlight">
+              <td>Max buy (PSA 8 target)</td>
+              <td id="roi-max8">—</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- Comps source note -->
+      <p id="comps-note" class="comps-note"></p>
+
+      <!-- Analyze another -->
+      <button id="reset-btn" class="btn-ghost reset-btn">← Analyze another card</button>
+
+    </div><!-- /state-result -->
+  </main>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+# Dockerfile.grading — Python grading API for Railway
+# Build context: repo root (so we can COPY model files from notebooks/)
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System deps required by OpenCV headless
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install CPU-only PyTorch first — avoids pulling the 2 GB CUDA wheel
+RUN pip install --no-cache-dir \
+    torch==2.3.0+cpu \
+    torchvision==0.18.0+cpu \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# Copy and install remaining deps (skip torch/torchvision — already installed)
+COPY backend/requirements.txt /tmp/requirements.txt
+RUN grep -vE "^torch|^torchvision" /tmp/requirements.txt \
+    | sed 's/opencv-python/opencv-python-headless/' \
+    | pip install --no-cache-dir -r /dev/stdin
+
+# Copy backend source
+COPY backend/main.py backend/inference.py backend/schemas.py backend/comps.py ./
+
+# Copy model artefacts (pre-staged in backend/models/ to avoid uploading 872 MB datasets dir)
+COPY backend/models/grade_mlp_best.pt   ./models/grade_mlp_best.pt
+COPY backend/models/features_cache.pkl  ./models/features_cache.pkl
+
+# Default env — Railway overrides PORT at runtime
+ENV MODEL_PATH=/app/models/grade_mlp_best.pt
+ENV CACHE_PATH=/app/models/features_cache.pkl
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8000
+
+EXPOSE 8000
+
+# Use shell form so Railway's $PORT is expanded at runtime
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT}
