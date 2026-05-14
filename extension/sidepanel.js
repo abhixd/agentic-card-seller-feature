@@ -118,23 +118,44 @@ function renderResult(payload) {
   document.getElementById('res-grade-range').textContent = gradeRange
   document.getElementById('res-grade-conf').textContent  = `(${confidence} confidence)`
 
-  // Probability bars
+  // Probability bars — support both numeric PSA keys ("1"–"10") and legacy bucket names
   const barsContainer = document.getElementById('grade-bars')
   barsContainer.innerHTML = ''
-  const bucketOrder = ['poor', 'vg', 'excellent', 'nm', 'mint']
-  bucketOrder.forEach(bucket => {
-    const prob = dist[bucket] ?? dist[bucket.toLowerCase()] ?? 0
-    const row = document.createElement('div')
-    row.className = 'grade-bar-row'
-    row.innerHTML = `
-      <span class="grade-bar-label">${BUCKET_LABELS[bucket] ?? bucket}</span>
-      <div class="grade-bar-track">
-        <div class="grade-bar-fill" style="width:${Math.round(prob * 100)}%"></div>
-      </div>
-      <span class="grade-bar-pct">${pct(prob)}</span>
-    `
-    barsContainer.appendChild(row)
-  })
+
+  const isNumeric = Object.keys(dist).some(k => !isNaN(Number(k)))
+
+  if (isNumeric) {
+    // Claude Vision: show PSA 10 → 1 (highest first)
+    for (let g = 10; g >= 1; g--) {
+      const prob = dist[String(g)] ?? 0
+      const row = document.createElement('div')
+      row.className = 'grade-bar-row'
+      row.innerHTML = `
+        <span class="grade-bar-label">PSA ${g}</span>
+        <div class="grade-bar-track">
+          <div class="grade-bar-fill" style="width:${Math.round(prob * 100)}%"></div>
+        </div>
+        <span class="grade-bar-pct">${pct(prob)}</span>
+      `
+      barsContainer.appendChild(row)
+    }
+  } else {
+    // Legacy bucket names from Python backend
+    const bucketOrder = ['poor', 'vg', 'excellent', 'nm', 'mint']
+    bucketOrder.forEach(bucket => {
+      const prob = dist[bucket] ?? 0
+      const row = document.createElement('div')
+      row.className = 'grade-bar-row'
+      row.innerHTML = `
+        <span class="grade-bar-label">${BUCKET_LABELS[bucket] ?? bucket}</span>
+        <div class="grade-bar-track">
+          <div class="grade-bar-fill" style="width:${Math.round(prob * 100)}%"></div>
+        </div>
+        <span class="grade-bar-pct">${pct(prob)}</span>
+      `
+      barsContainer.appendChild(row)
+    })
+  }
 
   // Issues
   const issuesList = document.getElementById('issues-list')
