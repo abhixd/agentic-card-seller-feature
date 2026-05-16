@@ -21,44 +21,71 @@ chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch(() => {})
 
-// ── One-time stale-state cleanup ─────────────────────────────────
-// Wipe any persisted setOptions(enabled:false) or path-less state from
-// previous buggy builds. The `path` is REQUIRED — without it, Chrome
-// throws "No active side panel for tabId" even when enabled is true.
+// ── Per-tab panel restriction ────────────────────────────────────
+//
+// Side panels in Chrome are window-level by default — once opened in
+// any tab, they show across every tab in that window. To make the
+// panel tab-scoped, we use setOptions({ tabId, enabled }) so Chrome
+// shows it only for tabs we've enabled.
+//
+// Rules learned from earlier bugs:
+//  • `path: 'sidepanel.html'` MUST be included alongside enabled:true
+//    or Chrome throws "No active side panel for tabId".
+//  • Use changeInfo.url in onUpdated — it's always the real new URL
+//    when defined. tab.url can be transiently undefined for the eBay
+//    tab itself, which would false-disable it.
+//  • For non-eBay URLs, changeInfo.url is undefined (we lack host
+//    permission). onActivated picks up those tabs instead.
+
+function isEbayListing(url) {
+  return typeof url === 'string' && url.includes('ebay.com/itm/')
+}
+
+function syncPanelForTab(tabId, url) {
+  if (isEbayListing(url)) {
+    chrome.sidePanel
+      .setOptions({ tabId, enabled: true, path: 'sidepanel.html' })
+      .catch(() => {})
+  } else {
+    // url is either undefined (non-eBay we can't read — host_permissions
+    // would surface it otherwise) or a known non-listing URL.
+    chrome.sidePanel
+      .setOptions({ tabId, enabled: false })
+      .catch(() => {})
+  }
+}
+
+// On install/update: sync every existing tab so stale state from
+// previous builds (any persisted enabled:false / path-less options)
+// is corrected based on the tab's current URL.
 chrome.runtime.onInstalled.addListener(async () => {
-  console.log('[CGA] onInstalled — resetting side-panel options')
-  // Reset the default (all tabs without specific overrides)
-  chrome.sidePanel
-    .setOptions({ enabled: true, path: 'sidepanel.html' })
-    .catch(() => {})
-  // Reset every known tab individually (override persisted per-tab state)
+  console.log('[CGA] onInstalled — syncing per-tab panel state')
   try {
     const tabs = await chrome.tabs.query({})
     for (const tab of tabs) {
-      if (tab.id != null) {
-        chrome.sidePanel
-          .setOptions({ tabId: tab.id, enabled: true, path: 'sidepanel.html' })
-          .catch(() => {})
-      }
+      if (tab.id != null) syncPanelForTab(tab.id, tab.url ?? '')
     }
-    console.log(`[CGA] reset ${tabs.length} tabs`)
+    console.log(`[CGA] synced ${tabs.length} tabs`)
   } catch (e) {
     console.warn('[CGA] tabs.query failed:', e)
   }
 })
 
-// ── Tab-change notifications for UI context only ─────────────────
-// (No setOptions here — we never disable per-tab. The panel UI shows
-// "Not on an eBay listing" instead of being hidden.)
+// User switches tabs — enable for eBay, disable otherwise
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-  const tab = await chrome.tabs.get(tabId).catch(() => ({}))
-  broadcast({ type: 'TAB_CHANGED', payload: { url: tab.url ?? '' } })
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    const url = tab.url ?? ''
+    syncPanelForTab(tabId, url)
+    broadcast({ type: 'TAB_CHANGED', payload: { url } })
+  } catch {}
 })
 
+// Tab navigates — only fires for URLs we have permission to read
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.url) {
-    broadcast({ type: 'TAB_CHANGED', payload: { url: changeInfo.url } })
-  }
+  if (changeInfo.url === undefined) return
+  syncPanelForTab(tabId, changeInfo.url)
+  broadcast({ type: 'TAB_CHANGED', payload: { url: changeInfo.url } })
 })
 
 // ── Message router ───────────────────────────────────────────────
