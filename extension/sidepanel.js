@@ -242,21 +242,64 @@ function renderResult(payload) {
     })
   }
 
-  // Issues
+  // Issues — categorized object { centering, corners, edges, surface, other }
   const issuesList = document.getElementById('issues-list')
   issuesList.innerHTML = ''
-  if (issues.length === 0) {
-    const li = document.createElement('li')
-    li.className = 'no-issues'
-    li.textContent = '✓ No significant issues detected'
-    li.style.listStyle = 'none'
-    issuesList.appendChild(li)
-  } else {
-    issues.forEach(issue => {
+
+  // Support both legacy flat array and new categorized object
+  const ISSUE_CATEGORY_LABELS = {
+    centering: 'Centering',
+    corners:   'Corners',
+    edges:     'Edges',
+    surface:   'Surface',
+    other:     'Other',
+  }
+
+  let hasAnyIssue = false
+
+  if (Array.isArray(issues)) {
+    // Legacy flat array fallback
+    if (issues.length === 0) {
       const li = document.createElement('li')
-      li.textContent = issue
+      li.className = 'no-issues'
+      li.textContent = '✓ No significant issues detected'
+      li.style.listStyle = 'none'
       issuesList.appendChild(li)
+    } else {
+      issues.forEach(issue => {
+        const li = document.createElement('li')
+        li.textContent = issue
+        issuesList.appendChild(li)
+        hasAnyIssue = true
+      })
+    }
+  } else if (issues && typeof issues === 'object') {
+    // New categorized format
+    Object.entries(ISSUE_CATEGORY_LABELS).forEach(([key, label]) => {
+      const items = issues[key]
+      if (!Array.isArray(items) || items.length === 0) return
+      hasAnyIssue = true
+
+      const header = document.createElement('li')
+      header.className = 'issue-category-header'
+      header.textContent = label
+      issuesList.appendChild(header)
+
+      items.forEach(issue => {
+        const li = document.createElement('li')
+        li.className = 'issue-item'
+        li.textContent = issue
+        issuesList.appendChild(li)
+      })
     })
+
+    if (!hasAnyIssue) {
+      const li = document.createElement('li')
+      li.className = 'no-issues'
+      li.textContent = '✓ No significant issues detected'
+      li.style.listStyle = 'none'
+      issuesList.appendChild(li)
+    }
   }
 
   // Prices

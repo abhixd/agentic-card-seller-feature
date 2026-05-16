@@ -343,6 +343,23 @@ main { padding: 16px 14px 32px; }
   color: var(--buy);
 }
 
+.issue-category-header {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-top: 6px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.issue-category-header::before { content: none !important; }
+
+.issue-item {
+  padding-left: 10px;
+}
+
 /* Price grid */
 .price-grid {
   display: grid;

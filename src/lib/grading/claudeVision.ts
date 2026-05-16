@@ -42,10 +42,18 @@ export interface ImageQuality {
   warnings: string[]
 }
 
+export interface CardIssues {
+  centering: string[]
+  corners:   string[]
+  edges:     string[]
+  surface:   string[]
+  other:     string[]
+}
+
 export interface ClaudeGradingResult {
   card_identity:  CardIdentity
   grade_estimate: GradeEstimate
-  issues:         string[]
+  issues:         CardIssues
   image_quality:  ImageQuality
 }
 
@@ -98,10 +106,13 @@ const USER_PROMPT = `Analyze this Pokémon card and return your assessment as JS
       "6": 0.08, "7": 0.30, "8": 0.40, "9": 0.12, "10": 0.03
     }
   },
-  "issues": [
-    "Light corner whitening on top-left and top-right",
-    "Minor edge nick on right edge"
-  ],
+  "issues": {
+    "centering": ["60/40 L/R, slight off-center"],
+    "corners":   ["Light whitening on top-left", "Light whitening on top-right"],
+    "edges":     ["Minor nick on right edge"],
+    "surface":   [],
+    "other":     []
+  },
   "image_quality": {
     "status":   "good",
     "warnings": []
@@ -113,7 +124,9 @@ Rules:
 - confidence is "high" when top-2 PSA grades account for >60% probability
 - confidence is "medium" when top-2 grades account for 40-60%
 - confidence is "low" when image is blurry, small, or too angled to assess
-- issues should be specific and actionable (mention which corner/edge)
+- issues must use exactly the five keys: centering, corners, edges, surface, other
+- each key maps to an array of strings; use [] when nothing to report for that category
+- be specific and actionable within each category (mention TL/TR/BL/BR for corners, L/R/T/B for edges)
 - if the back image is missing add "back image missing — confidence reduced" to warnings
 - if you cannot read the card identity from the image use empty strings`
 
