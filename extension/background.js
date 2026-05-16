@@ -78,13 +78,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ── Step 1: Images extracted — open panel and show picker ────────
 async function handleImagesReady(listing, tabId) {
-  // Do NOT call setOptions here — syncPanelForTab already enabled this tab
-  // when onUpdated fired for the ebay.com/itm/* URL. Touching setOptions
-  // here would create a race window where another onUpdated call could
-  // re-disable the tab before open() completes.
-  try { await chrome.sidePanel.open({ tabId }) } catch (e) {
-    console.warn('[CGA] sidePanel.open failed:', e)
-  }
+  // IMPORTANT: both calls must be fired synchronously before any `await`.
+  //
+  // Why setOptions first (no await): Chrome persists setOptions state across
+  // service-worker restarts. If a previous buggy build set enabled:false for
+  // this tab, open() would fail. Firing setOptions here resets that stale state.
+  // Chrome processes API calls in queue order, so the enable is applied before
+  // open() is evaluated.
+  //
+  // Why no await before open(): sidePanel.open() requires a user-gesture context.
+  // `await sleep()` or `await setOptions()` both yield to the macrotask queue
+  // which drops the gesture token. Firing synchronously preserves the context.
+  chrome.sidePanel.setOptions({ tabId, enabled: true }).catch(() => {})
+  chrome.sidePanel.open({ tabId }).catch(e => console.warn('[CGA] open failed:', e))
+
   // Give the panel DOM time to mount before we broadcast
   await sleep(350)
   broadcast({ type: 'IMAGES_LOADED', payload: listing })
