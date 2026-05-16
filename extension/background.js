@@ -22,18 +22,23 @@ chrome.sidePanel
   .catch(() => {})
 
 // ── One-time stale-state cleanup ─────────────────────────────────
-// Wipe any persisted setOptions(enabled:false) from previous buggy builds.
-// Runs on install/update; best-effort, no permissions beyond what we have.
+// Wipe any persisted setOptions(enabled:false) or path-less state from
+// previous buggy builds. The `path` is REQUIRED — without it, Chrome
+// throws "No active side panel for tabId" even when enabled is true.
 chrome.runtime.onInstalled.addListener(async () => {
   console.log('[CGA] onInstalled — resetting side-panel options')
   // Reset the default (all tabs without specific overrides)
-  chrome.sidePanel.setOptions({ enabled: true }).catch(() => {})
+  chrome.sidePanel
+    .setOptions({ enabled: true, path: 'sidepanel.html' })
+    .catch(() => {})
   // Reset every known tab individually (override persisted per-tab state)
   try {
     const tabs = await chrome.tabs.query({})
     for (const tab of tabs) {
       if (tab.id != null) {
-        chrome.sidePanel.setOptions({ tabId: tab.id, enabled: true }).catch(() => {})
+        chrome.sidePanel
+          .setOptions({ tabId: tab.id, enabled: true, path: 'sidepanel.html' })
+          .catch(() => {})
       }
     }
     console.log(`[CGA] reset ${tabs.length} tabs`)
@@ -72,7 +77,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     console.log('[CGA] CARD_IMAGES_READY tab', tabId)
 
     // Both calls fired synchronously, side by side — no chaining.
-    chrome.sidePanel.setOptions({ tabId, enabled: true }).catch(() => {})
+    // `path` is required: Chrome throws "No active side panel for tabId"
+    // if the tab has setOptions state without an explicit path.
+    chrome.sidePanel
+      .setOptions({ tabId, enabled: true, path: 'sidepanel.html' })
+      .catch(() => {})
     const openPromise = chrome.sidePanel.open({ tabId })
 
     openPromise
