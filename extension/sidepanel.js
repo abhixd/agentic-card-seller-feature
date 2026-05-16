@@ -95,7 +95,9 @@ function buildThumbGrid(imageUrls) {
     const img = document.createElement('img')
     img.alt = `Card image ${i + 1}`
     img.loading = 'lazy'
-    img.src = url
+    // Show a small preview (s-l300) for fast load; full-res s-l1600 URL is
+    // stored in item.dataset.url and sent to the backend for analysis.
+    img.src = url.replace(/s-l\d+/g, 's-l300')
     img.onerror = () => {
       img.remove()
       const err = document.createElement('div')
