@@ -75,9 +75,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ── Step 1: Images extracted — open panel and show picker ────────
 async function handleImagesReady(listing, tabId) {
-  try {
-    await chrome.sidePanel.open({ tabId })
-  } catch {}
+  // Explicitly enable the panel for this tab before opening.
+  // This guards against any earlier setOptions({ enabled: false }) call
+  // (e.g. from onActivated firing before tab.url was readable after a
+  // service-worker restart). Content.js is only injected on eBay listing
+  // pages, so enabling here is always correct.
+  try { await chrome.sidePanel.setOptions({ tabId, enabled: true }) } catch {}
+  try { await chrome.sidePanel.open({ tabId }) } catch {}
   // Give the panel DOM time to mount before we broadcast
   await sleep(350)
   broadcast({ type: 'IMAGES_LOADED', payload: listing })
