@@ -1,12 +1,26 @@
 /**
  * claudeVision.ts
  *
- * Replaces the Python MLP backend for grade estimation.
- * Sends card images to Claude Vision and parses a structured
- * JSON response that matches the existing AnalyzeListingResponse schema.
+ * Phase 1 CV-assisted grading pipeline:
+ *
+ *  1. runCVDetectors()   — download first image, compute blur/glare/brightness
+ *  2. fetchResized()     — download + sharp-resize first image to ≤1024px
+ *     (runs in parallel with step 1 — same network cost, no extra round-trip)
+ *  3. Build Claude prompt — CV measurements injected before grading instructions
+ *  4. gradeWithClaude()  — Claude Haiku sees CV data + image, returns structured JSON
+ *
+ * Why resize?
+ *   Anthropic caps images at 1568px internally; eBay photos are often 1600–3000px.
+ *   Resizing to ≤1024px cuts input tokens ~50–70% with no grading-relevant detail loss.
+ *
+ * Why not white-balance?
+ *   Gray-world WB destroys diagnostic colour info (yellowing, fading, staining).
+ *   Claude should see the card's actual colour, not a normalised version.
  */
 
 import Anthropic from '@anthropic-ai/sdk'
+import sharp from 'sharp'
+import { runCVDetectors, formatCVSection } from './cvDetectors'
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -103,6 +117,30 @@ Rules:
 - if the back image is missing add "back image missing — confidence reduced" to warnings
 - if you cannot read the card identity from the image use empty strings`
 
+// ── Image fetch + resize helper ───────────────────────────────────
+
+/**
+ * Download one image URL and resize to ≤1024px (longest edge), JPEG q85.
+ * Returns null on any failure — caller falls back to passing the URL to Claude.
+ *
+ * Why not white-balance: see module docstring.
+ * Why not aspect-pad: adds black bars, wastes tokens, assumes card is cropped.
+ */
+async function fetchResized(url: string): Promise<{ base64: string; mimeType: 'image/jpeg' } | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(8_000) })
+    if (!res.ok) return null
+    const raw     = Buffer.from(await res.arrayBuffer())
+    const resized = await sharp(raw)
+      .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 85 })
+      .toBuffer()
+    return { base64: resized.toString('base64'), mimeType: 'image/jpeg' }
+  } catch {
+    return null
+  }
+}
+
 // ── Main function ─────────────────────────────────────────────────
 
 export async function gradeWithClaude(
@@ -114,18 +152,43 @@ export async function gradeWithClaude(
 
   const client = new Anthropic({ apiKey })
 
-  // Build image content blocks — Claude accepts up to 20 images
-  const imageBlocks: Anthropic.ImageBlockParam[] = imageUrls
-    .slice(0, 6)
-    .map(url => ({
-      type:   'image',
-      source: { type: 'url', url },
-    }))
+  // ── Step 1 + 2: CV detectors & image resize run in parallel ──────
+  // Both need to download image[0]; running concurrently avoids a second
+  // sequential network round-trip.
+  const [cv, resized] = await Promise.all([
+    runCVDetectors(imageUrls),
+    fetchResized(imageUrls[0]),
+  ])
 
-  // Include the listing title as a hint for card identity
+  // ── Step 3: Build image content blocks ───────────────────────────
+  // Image 0: use resized base64 if available (fewer tokens), else URL.
+  // Images 1-5: pass as URLs (Claude resizes them internally).
+  const imageBlocks: Anthropic.ImageBlockParam[] = []
+
+  if (resized) {
+    imageBlocks.push({
+      type:   'image',
+      source: { type: 'base64', media_type: resized.mimeType, data: resized.base64 },
+    })
+  } else if (imageUrls[0]) {
+    imageBlocks.push({
+      type:   'image',
+      source: { type: 'url', url: imageUrls[0] },
+    })
+  }
+
+  for (const url of imageUrls.slice(1, 6)) {
+    imageBlocks.push({ type: 'image', source: { type: 'url', url } })
+  }
+
+  // ── Step 4: Build prompt — CV section prepended ───────────────────
+  // formatCVSection() returns '' when cv is null (soft failure), so the
+  // prompt degrades gracefully with no CV data.
+  const cvSection = formatCVSection(cv)
+
   const textHint: Anthropic.TextBlockParam = {
     type: 'text',
-    text: `Listing title (use as identity hint, but trust the image over the title): "${title}"\n\n${USER_PROMPT}`,
+    text: `${cvSection}Listing title (use as identity hint, but trust the image over the title): "${title}"\n\n${USER_PROMPT}`,
   }
 
   const response = await client.messages.create({
