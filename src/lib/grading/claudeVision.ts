@@ -87,9 +87,10 @@ Important notes:
 - Pokémon cards from 1999-2003 (Base Set through Skyridge) are printed differently from modern cards; adjust expectations accordingly
 - Holo cards must have intact holo pattern with no scratches to achieve PSA 9+
 
-Respond ONLY with a single valid JSON object — no markdown, no explanation, no extra text.`
+Respond ONLY with a single valid JSON object — no markdown, no explanation, no extra text.
+The "issues" field MUST be an object with keys centering/corners/edges/surface/other, each an array of strings. Never return issues as a flat array.`
 
-const USER_PROMPT = `Analyze this Pokémon card and return your assessment as JSON with exactly this structure:
+const USER_PROMPT = `Analyze this Pokémon card and return your assessment as JSON with EXACTLY this structure — do not deviate from it in any way. CRITICAL: "issues" MUST be a JSON object with five keys (centering, corners, edges, surface, other), each mapping to an array of strings. Do NOT return issues as a flat array.
 
 {
   "card_identity": {
