@@ -171,15 +171,21 @@
     try {
       chrome.runtime.sendMessage({ type: 'CARD_IMAGES_READY', payload }, (resp) => {
         if (chrome.runtime.lastError) {
-          setStatus('Extension error — try reloading.', 'error')
+          setStatus('Ext error: ' + chrome.runtime.lastError.message, 'error')
+          btn.disabled = false
+          return
+        }
+        // Surface whatever the background tells us so we can see open() failures
+        if (resp && resp.ok === false) {
+          setStatus('Panel open failed: ' + (resp.error || 'unknown'), 'error')
           btn.disabled = false
           return
         }
         setStatus('Select images in the side panel ↗', 'ok')
-        setTimeout(() => { setStatus(''); btn.disabled = false }, 3000)
+        setTimeout(() => { setStatus(''); btn.disabled = false }, 4000)
       })
     } catch (err) {
-      setStatus('Could not reach extension background.', 'error')
+      setStatus('Could not reach extension background: ' + err.message, 'error')
       btn.disabled = false
     }
   }

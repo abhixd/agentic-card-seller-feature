@@ -1,103 +1,113 @@
 /**
  * background.js — Manifest V3 service worker
  *
- * Responsibilities:
- *  - Open side panel when user clicks the extension action icon
- *  - Receive ANALYZE_CARD messages from content script
- *  - POST to /api/grade/analyze on the configured backend
- *  - Broadcast ANALYSIS_RESULT / ANALYSIS_ERROR to the side panel
+ * Side-panel-opening notes:
+ *  • chrome.sidePanel.open() requires a user-gesture context.
+ *  • Gesture context propagates from content-script messages into
+ *    chrome.runtime.onMessage handlers IF open() is called inside the
+ *    synchronous portion of the handler (no awaits before it).
+ *  • chrome.sidePanel.setOptions({tabId, enabled}) is PERSISTED across
+ *    extension reloads. A previous build that mistakenly set enabled:false
+ *    for a tab will keep that state until we explicitly re-enable it.
+ *  • onInstalled clears stale per-tab options to recover from past bugs.
  */
 
 'use strict'
 
 const DEFAULT_BACKEND = 'https://agentic-card-seller-os.vercel.app'
 
-// ── Side panel behaviour ─────────────────────────────────────────
+// ── Side panel default behaviour ─────────────────────────────────
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch(() => {})
 
-// ── Restrict panel to eBay listing tabs ──────────────────────────
-//
-// Rules:
-//  • Only disable when we KNOW the URL is non-eBay (url is a non-empty
-//    string that doesn't match). If url is unavailable, leave state alone.
-//  • Use changeInfo.url in onUpdated (always the real new URL).
-//  • Use chrome.tabs.get in onActivated for the just-activated tab.
-//  • handleImagesReady never touches setOptions — calling open() directly
-//    is sufficient; there is no race because content.js only runs on
-//    ebay.com/itm/* pages so the tab is always a valid listing.
-
-function isEbayListing(url) {
-  return typeof url === 'string' && url.includes('ebay.com/itm/')
-}
-
-async function syncPanelForTab(tabId, url) {
-  if (!url) return                          // unknown URL — don't touch state
+// ── One-time stale-state cleanup ─────────────────────────────────
+// Wipe any persisted setOptions(enabled:false) from previous buggy builds.
+// Runs on install/update; best-effort, no permissions beyond what we have.
+chrome.runtime.onInstalled.addListener(async () => {
+  console.log('[CGA] onInstalled — resetting side-panel options')
+  // Reset the default (all tabs without specific overrides)
+  chrome.sidePanel.setOptions({ enabled: true }).catch(() => {})
+  // Reset every known tab individually (override persisted per-tab state)
   try {
-    await chrome.sidePanel.setOptions({ tabId, enabled: isEbayListing(url) })
-  } catch {}
-}
-
-// User switches tabs
-chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-  const tab = await chrome.tabs.get(tabId).catch(() => ({}))
-  syncPanelForTab(tabId, tab.url)           // tab.url readable via host_permissions
+    const tabs = await chrome.tabs.query({})
+    for (const tab of tabs) {
+      if (tab.id != null) {
+        chrome.sidePanel.setOptions({ tabId: tab.id, enabled: true }).catch(() => {})
+      }
+    }
+    console.log(`[CGA] reset ${tabs.length} tabs`)
+  } catch (e) {
+    console.warn('[CGA] tabs.query failed:', e)
+  }
 })
 
-// Tab navigates — use changeInfo.url (never undefined when key is present)
+// ── Tab-change notifications for UI context only ─────────────────
+// (No setOptions here — we never disable per-tab. The panel UI shows
+// "Not on an eBay listing" instead of being hidden.)
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  const tab = await chrome.tabs.get(tabId).catch(() => ({}))
+  broadcast({ type: 'TAB_CHANGED', payload: { url: tab.url ?? '' } })
+})
+
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.url) {
-    syncPanelForTab(tabId, changeInfo.url)
+    broadcast({ type: 'TAB_CHANGED', payload: { url: changeInfo.url } })
   }
 })
 
 // ── Message router ───────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // Content script sends all extracted images → open panel, show picker
-  if (msg.type === 'CARD_IMAGES_READY') {
-    handleImagesReady(msg.payload, sender.tab?.id)
-    sendResponse({ ok: true })
+  // CRITICAL PATH: sidePanel.open MUST be in the synchronous portion of
+  // the message handler so the user-gesture token from the content-script
+  // click survives the IPC hop.
+  if (msg.type === 'CARD_IMAGES_READY' && sender.tab?.id != null) {
+    const tabId = sender.tab.id
+    console.log('[CGA] CARD_IMAGES_READY tab', tabId)
+
+    // Fire setOptions → open in a .then() chain. The chain runs in
+    // microtasks (not macrotasks), preserving user-gesture context.
+    chrome.sidePanel
+      .setOptions({ tabId, enabled: true })
+      .then(() => chrome.sidePanel.open({ tabId }))
+      .then(() => {
+        console.log('[CGA] side panel opened')
+        sendResponse({ ok: true })
+      })
+      .catch((e) => {
+        console.error('[CGA] open failed:', e)
+        sendResponse({ ok: false, error: String(e) })
+      })
+
+    // Send the payload to the panel after a short delay (lets DOM mount)
+    setTimeout(() => {
+      broadcast({ type: 'IMAGES_LOADED', payload: msg.payload })
+    }, 400)
+
+    return true // tells Chrome we'll call sendResponse asynchronously
   }
-  // Side panel sends user-selected images → run grading
+
   if (msg.type === 'ANALYZE_SELECTED') {
     handleAnalyze(msg.payload)
     sendResponse({ ok: true })
+    return
   }
+
   if (msg.type === 'GET_SETTINGS') {
     chrome.storage.local.get(['backendUrl'], (data) => {
       sendResponse({ backendUrl: data.backendUrl ?? DEFAULT_BACKEND })
     })
-    return true // async
+    return true
   }
+
   if (msg.type === 'SAVE_SETTINGS') {
     chrome.storage.local.set({ backendUrl: msg.payload.backendUrl })
     sendResponse({ ok: true })
+    return
   }
 })
 
-// ── Step 1: Images extracted — open panel and show picker ────────
-async function handleImagesReady(listing, tabId) {
-  // IMPORTANT: both calls must be fired synchronously before any `await`.
-  //
-  // Why setOptions first (no await): Chrome persists setOptions state across
-  // service-worker restarts. If a previous buggy build set enabled:false for
-  // this tab, open() would fail. Firing setOptions here resets that stale state.
-  // Chrome processes API calls in queue order, so the enable is applied before
-  // open() is evaluated.
-  //
-  // Why no await before open(): sidePanel.open() requires a user-gesture context.
-  // `await sleep()` or `await setOptions()` both yield to the macrotask queue
-  // which drops the gesture token. Firing synchronously preserves the context.
-  chrome.sidePanel.setOptions({ tabId, enabled: true }).catch(() => {})
-  chrome.sidePanel.open({ tabId }).catch(e => console.warn('[CGA] open failed:', e))
-
-  // Give the panel DOM time to mount before we broadcast
-  await sleep(350)
-  broadcast({ type: 'IMAGES_LOADED', payload: listing })
-}
-
-// ── Step 2: User selected images — run grading ───────────────────
+// ── Grading flow ─────────────────────────────────────────────────
 async function handleAnalyze(listing) {
   broadcast({ type: 'ANALYSIS_START', payload: { title: listing.title } })
 
