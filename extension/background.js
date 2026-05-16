@@ -13,24 +13,42 @@
 const DEFAULT_BACKEND = 'https://agentic-card-seller-os.vercel.app'
 
 // ── Side panel behaviour ─────────────────────────────────────────
-// Open when the user clicks the extension action icon.
-// The panel itself shows an "idle" state with instructions when no
-// listing is loaded — no need to disable it per-tab.
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch(() => {})
 
-// Tell the side panel when the active tab changes so it can show
-// context-appropriate UI (e.g. "navigate to an eBay listing" on
-// non-listing tabs rather than stale results from a previous page).
+// ── Restrict panel to eBay listing tabs ──────────────────────────
+//
+// Rules:
+//  • Only disable when we KNOW the URL is non-eBay (url is a non-empty
+//    string that doesn't match). If url is unavailable, leave state alone.
+//  • Use changeInfo.url in onUpdated (always the real new URL).
+//  • Use chrome.tabs.get in onActivated for the just-activated tab.
+//  • handleImagesReady never touches setOptions — calling open() directly
+//    is sufficient; there is no race because content.js only runs on
+//    ebay.com/itm/* pages so the tab is always a valid listing.
+
+function isEbayListing(url) {
+  return typeof url === 'string' && url.includes('ebay.com/itm/')
+}
+
+async function syncPanelForTab(tabId, url) {
+  if (!url) return                          // unknown URL — don't touch state
+  try {
+    await chrome.sidePanel.setOptions({ tabId, enabled: isEbayListing(url) })
+  } catch {}
+}
+
+// User switches tabs
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   const tab = await chrome.tabs.get(tabId).catch(() => ({}))
-  broadcast({ type: 'TAB_CHANGED', payload: { url: tab.url ?? '' } })
+  syncPanelForTab(tabId, tab.url)           // tab.url readable via host_permissions
 })
 
+// Tab navigates — use changeInfo.url (never undefined when key is present)
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.url !== undefined) {
-    broadcast({ type: 'TAB_CHANGED', payload: { url: changeInfo.url } })
+  if (changeInfo.url) {
+    syncPanelForTab(tabId, changeInfo.url)
   }
 })
 
@@ -60,7 +78,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ── Step 1: Images extracted — open panel and show picker ────────
 async function handleImagesReady(listing, tabId) {
-  try { await chrome.sidePanel.open({ tabId }) } catch {}
+  // Do NOT call setOptions here — syncPanelForTab already enabled this tab
+  // when onUpdated fired for the ebay.com/itm/* URL. Touching setOptions
+  // here would create a race window where another onUpdated call could
+  // re-disable the tab before open() completes.
+  try { await chrome.sidePanel.open({ tabId }) } catch (e) {
+    console.warn('[CGA] sidePanel.open failed:', e)
+  }
   // Give the panel DOM time to mount before we broadcast
   await sleep(350)
   broadcast({ type: 'IMAGES_LOADED', payload: listing })
