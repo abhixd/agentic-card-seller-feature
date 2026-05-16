@@ -9,8 +9,30 @@
       padding: 0;
       height: 100%;
       background: #0f0f1a;
+      color: #6b6b8a;
+      font: 11px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     }
+    .hint {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 80%;
+      text-align: center;
+      line-height: 1.5;
+    }
+    .hint b { color: #9090b8; }
   </style>
 </head>
-<body></body>
+<body>
+  <div class="hint">
+    Tap the <b>×</b> in the panel header to close,<br/>
+    or switch back to your eBay tab.
+  </div>
+  <script>
+    // Chrome has no chrome.sidePanel.close() API. Try window.close()
+    // (works for some extension contexts) — silent failure if it doesn't.
+    try { window.close() } catch {}
+  </script>
+</body>
 </html>
