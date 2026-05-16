@@ -81,23 +81,43 @@
     <!-- Results state -->
     <div id="state-result" class="state hidden">
 
-      <!-- Card identity -->
+      <!-- Card identity + analysis mode -->
       <section class="card-id-section">
-        <p id="res-title" class="res-title"></p>
+        <div class="card-title-row">
+          <p id="res-title" class="res-title"></p>
+          <span id="res-mode" class="mode-badge"></span>
+        </div>
         <div class="card-meta">
           <span id="res-set"  class="tag tag--set"></span>
           <span id="res-year" class="tag tag--year"></span>
           <span id="res-num"  class="tag tag--num"></span>
+          <span id="res-id-conf" class="tag tag--id-conf"></span>
         </div>
       </section>
 
-      <!-- Decision banner -->
+      <!-- Image quality -->
+      <section class="result-section iq-section">
+        <h2 class="section-title">Image Quality</h2>
+        <div id="iq-chips" class="iq-chips"></div>
+        <ul id="iq-warnings" class="iq-warnings"></ul>
+      </section>
+
+      <!-- Economic decision banner -->
       <section id="decision-banner" class="decision-banner">
         <div class="decision-label">
           <span id="dec-emoji"></span>
           <span id="dec-label"></span>
         </div>
         <p id="dec-reason" class="dec-reason"></p>
+      </section>
+
+      <!-- Grading candidate (Claude visual viability) -->
+      <section id="grading-decision-banner" class="grading-decision-banner">
+        <div class="gd-label">
+          <span id="gd-emoji"></span>
+          <span id="gd-label"></span>
+        </div>
+        <p id="gd-reason" class="gd-reason"></p>
       </section>
 
       <!-- Grade estimate -->

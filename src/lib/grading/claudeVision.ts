@@ -25,10 +25,11 @@ import { runCVDetectors, formatCVSection } from './cvDetectors'
 // ── Types ─────────────────────────────────────────────────────────
 
 export interface CardIdentity {
-  name:   string
-  set:    string
-  year:   string
-  number: string
+  name:       string | null
+  set:        string | null
+  year:       string | null
+  number:     string | null
+  confidence: 'high' | 'medium' | 'low'
 }
 
 export interface GradeEstimate {
@@ -38,8 +39,14 @@ export interface GradeEstimate {
 }
 
 export interface ImageQuality {
-  status:   'good' | 'fair' | 'poor'
-  warnings: string[]
+  status:            'good' | 'partial' | 'poor'
+  warnings:          string[]
+  front_present:     boolean
+  back_present:      boolean
+  centering_visible: boolean
+  corners_visible:   boolean
+  edges_visible:     boolean
+  surface_visible:   boolean
 }
 
 export interface CardIssues {
@@ -50,86 +57,129 @@ export interface CardIssues {
   other:     string[]
 }
 
+export interface GradingDecision {
+  gradable_candidate: 'yes' | 'maybe' | 'no'
+  reason:             string
+}
+
 export interface ClaudeGradingResult {
-  card_identity:  CardIdentity
-  grade_estimate: GradeEstimate
-  issues:         CardIssues
-  image_quality:  ImageQuality
+  analysis_mode:    'front_only' | 'front_back'
+  card_identity:    CardIdentity
+  image_quality:    ImageQuality
+  grade_estimate:   GradeEstimate
+  issues:           CardIssues
+  grading_decision: GradingDecision
 }
 
 // ── Prompt ────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are an expert PSA card grader specializing in Pokémon trading cards.
-Your job is to examine card images and estimate what PSA grade the card would receive.
+const SYSTEM_PROMPT = `You are an expert PSA pre-grading assistant specializing in Pokémon trading cards.
 
-PSA Grade Reference:
-- PSA 10 Gem Mint:   Perfect centering (55/45 or better), four razor-sharp corners, no print defects, full original gloss
-- PSA 9  Mint:       Near-perfect, slight wear allowed on 1-2 corners, well-centred, minor print spots
-- PSA 8  NM-MT:      Light wear on 3+ corners or edges, may have very light scratches
-- PSA 7  NM:         Slight corner/edge wear visible, possible light scratches, minor print defects
-- PSA 6  EX-MT:      Moderate corner wear, light scratches, slight edge fraying
-- PSA 5  EX:         Heavy corner wear, noticeable scratches, obvious edge nicks
-- PSA 4  VG-EX:      Obvious wear throughout, possible light crease
-- PSA 3  VG:         Heavy wear, possible creases, staining
-- PSA 2  Good:       Creases, heavy staining, major defects
-- PSA 1  Poor:       Severe damage, missing pieces, heavy creases
+Your task is to estimate the plausible PSA grade range supported by the visible evidence in the provided images. You are not guaranteeing a final PSA grade.
 
-Examine these areas in order:
-1. CORNERS — check each corner (TL, TR, BL, BR) for whitening, fraying, rounding
-2. EDGES   — check all four edges for nicks, chips, whitening
-3. CENTERING — estimate left/right and top/bottom split (e.g. "60/40 L/R")
-4. SURFACE — scratches, print lines, holo damage, staining, indentations
-5. CARD IDENTITY — read the card name, set, year, and collector number from the image
+Core principles:
+- Base your assessment only on what is actually visible in the images.
+- Never assume unseen areas are clean.
+- If the back is missing, explicitly note that rear whitening / edge wear / back centering cannot be fully assessed.
+- If glare, blur, angle, cropping, sleeve reflections, compression, or low resolution hide details, reduce confidence and mention the limitation.
+- When evidence is incomplete, prefer a wider grade range and lower confidence.
+- Distinguish between: (1) visible defects and (2) unknowns caused by image limitations.
 
-Important notes:
-- If only one image is provided assume it is the front; note missing back reduces confidence
-- eBay listing photos are often taken at an angle or with slight glare; account for this
-- Pokémon cards from 1999-2003 (Base Set through Skyridge) are printed differently from modern cards; adjust expectations accordingly
-- Holo cards must have intact holo pattern with no scratches to achieve PSA 9+
+Evaluate in this order:
+1. IMAGE ASSESSABILITY — determine whether front/back are present and whether corners, edges, centering, and surface can be evaluated reliably
+2. CORNERS — top-left, top-right, bottom-left, bottom-right for whitening, fraying, rounding
+3. EDGES — all four edges for nicks, chips, whitening
+4. CENTERING — estimate left/right and top/bottom split only if visible enough
+5. SURFACE — scratches, print lines, holo damage, staining, indentations, gloss loss, only if visible enough
+6. CARD IDENTITY — identify card name/set/year/number only if reasonably supported by the image
 
-Respond ONLY with a single valid JSON object — no markdown, no explanation, no extra text.
-The "issues" field MUST be an object with keys centering/corners/edges/surface/other, each an array of strings. Never return issues as a flat array.`
+PSA grade guidance:
+- PSA 10 Gem Mint: near-perfect visible condition, centering roughly 55/45 or better on front, four sharp corners, no visible print/surface defects, full gloss
+- PSA 9  Mint: slight visible wear allowed, minor print/surface issues possible, strong overall presentation
+- PSA 8  NM-MT: light visible corner/edge wear, possible very light scratches or print issues
+- PSA 7  NM: visible but not severe corner/edge wear, possible light scratches or minor print defects
+- PSA 6  EX-MT and below: increasingly obvious wear, scratches, edge damage, staining, creasing, or major defects
 
-const USER_PROMPT = `Analyze this Pokémon card and return your assessment as JSON with EXACTLY this structure — do not deviate from it in any way. CRITICAL: "issues" MUST be a JSON object with five keys (centering, corners, edges, surface, other), each mapping to an array of strings. Do NOT return issues as a flat array.
+Special instructions:
+- If only one image is provided, assume it is probably the front unless the image clearly shows the back.
+- If multiple images are provided, use all of them but do not double-count the same evidence.
+- Vintage Pokémon cards (1999–2003) and modern cards should be judged with awareness of era, but never use era to override visible evidence.
+- Holo surface must be treated conservatively when glare or angle prevents reliable inspection.
+- Do not overclaim PSA 10 or PSA 9 when image quality is limited.
+- If evidence is poor, say so explicitly and lower confidence.
+
+Respond ONLY with one valid JSON object. No markdown, no prose outside JSON.
+
+The "issues" field must be an object with exactly these keys: centering, corners, edges, surface, other.
+Each key must map to an array of strings. Use [] when nothing is visible for that category.
+Use "warnings" in image_quality for image-level limitations (glare, blur, missing back).
+Use "issues.other" for card-level unknowns that don't fit another category.
+
+Allowed values:
+- "analysis_mode": "front_only" or "front_back"
+- "image_quality.status": "good", "partial", or "poor"
+- "card_identity.confidence": "high", "medium", or "low"
+- "grade_estimate.confidence": "high", "medium", or "low"
+- "grading_decision.gradable_candidate": "yes", "maybe", or "no"
+
+If a card_identity field is uncertain, use null rather than guessing.`
+
+const USER_PROMPT = `Analyze this Pokémon card from the provided image set and return JSON with EXACTLY this structure:
 
 {
+  "analysis_mode": "front_only",
   "card_identity": {
-    "name":   "Charizard",
-    "set":    "Base Set",
-    "year":   "1999",
-    "number": "4"
+    "name":       null,
+    "set":        null,
+    "year":       null,
+    "number":     null,
+    "confidence": "low"
+  },
+  "image_quality": {
+    "status":            "partial",
+    "warnings":          [],
+    "front_present":     true,
+    "back_present":      false,
+    "centering_visible": true,
+    "corners_visible":   true,
+    "edges_visible":     true,
+    "surface_visible":   false
   },
   "grade_estimate": {
-    "grade_range":  "PSA 7-8",
-    "confidence":   "high",
+    "grade_range":  "PSA 7-9",
+    "confidence":   "low",
     "distribution": {
-      "1": 0.00, "2": 0.00, "3": 0.01, "4": 0.02, "5": 0.04,
-      "6": 0.08, "7": 0.30, "8": 0.40, "9": 0.12, "10": 0.03
+      "1": 0.00, "2": 0.00, "3": 0.01, "4": 0.02, "5": 0.05,
+      "6": 0.10, "7": 0.22, "8": 0.30, "9": 0.22, "10": 0.08
     }
   },
   "issues": {
-    "centering": ["60/40 L/R, slight off-center"],
-    "corners":   ["Light whitening on top-left", "Light whitening on top-right"],
-    "edges":     ["Minor nick on right edge"],
+    "centering": [],
+    "corners":   [],
+    "edges":     [],
     "surface":   [],
     "other":     []
   },
-  "image_quality": {
-    "status":   "good",
-    "warnings": []
+  "grading_decision": {
+    "gradable_candidate": "maybe",
+    "reason": "Front appears reasonably strong, but back is missing and surface visibility is limited."
   }
 }
 
 Rules:
-- distribution values must sum to 1.0 (±0.01)
-- confidence is "high" when top-2 PSA grades account for >60% probability
-- confidence is "medium" when top-2 grades account for 40-60%
-- confidence is "low" when image is blurry, small, or too angled to assess
-- issues must use exactly the five keys: centering, corners, edges, surface, other
-- each key maps to an array of strings; use [] when nothing to report for that category
-- be specific and actionable within each category (mention TL/TR/BL/BR for corners, L/R/T/B for edges)
-- if the back image is missing add "back image missing — confidence reduced" to warnings
-- if you cannot read the card identity from the image use empty strings`
+- Output exactly one JSON object. Use exactly the top-level keys shown above.
+- "issues" must use exactly these keys: centering, corners, edges, surface, other. Each maps to an array of strings.
+- Do not guess hidden defects. Only report what is actually visible.
+- If the back is missing, use "analysis_mode": "front_only" and set "back_present": false.
+- If the back is present and usable, use "analysis_mode": "front_back".
+- If glare, blur, angle, cropping, or compression limit a category, mention that in "warnings" and/or in issues.surface or issues.other.
+- If card identity is uncertain, use null fields and lower confidence.
+- Use a wider grade range and lower confidence when evidence is incomplete.
+- Be conservative about PSA 9 and PSA 10 if surface visibility is limited.
+- The distribution values must be plausible probabilities summing approximately to 1.00.
+- confidence is "high" when top-2 PSA grades account for >60% of probability mass.
+- confidence is "medium" when top-2 grades account for 40–60%.
+- confidence is "low" when image quality is too limited for reliable assessment.`
 
 // ── Image fetch + resize helper ───────────────────────────────────
 

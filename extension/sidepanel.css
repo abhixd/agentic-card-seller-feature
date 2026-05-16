@@ -203,13 +203,34 @@ main { padding: 16px 14px 32px; }
 /* Card identity */
 .card-id-section { margin-bottom: 12px; }
 
+.card-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
 .res-title {
+  flex: 1;
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
   line-height: 1.4;
-  margin-bottom: 6px;
 }
+
+/* Analysis mode badge */
+.mode-badge {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 20px;
+  margin-top: 2px;
+}
+.mode-badge--full    { background: rgba(5,150,105,0.15);  color: #6ee7b7; border: 1px solid rgba(5,150,105,0.35); }
+.mode-badge--partial { background: rgba(245,158,11,0.15); color: #fcd34d; border: 1px solid rgba(245,158,11,0.35); }
 
 .card-meta { display: flex; gap: 6px; flex-wrap: wrap; }
 
@@ -222,9 +243,81 @@ main { padding: 16px 14px 32px; }
   border: 1px solid transparent;
 }
 .tag:empty { display: none; }
-.tag--set  { background: rgba(79,70,229,0.18); border-color: rgba(79,70,229,0.4); color: var(--accent-lt); }
-.tag--year { background: rgba(16,185,129,0.15); border-color: rgba(16,185,129,0.35); color: #6ee7b7; }
-.tag--num  { background: rgba(245,158,11,0.15); border-color: rgba(245,158,11,0.35); color: #fcd34d; }
+.tag--set     { background: rgba(79,70,229,0.18);  border-color: rgba(79,70,229,0.4);   color: var(--accent-lt); }
+.tag--year    { background: rgba(16,185,129,0.15); border-color: rgba(16,185,129,0.35); color: #6ee7b7; }
+.tag--num     { background: rgba(245,158,11,0.15); border-color: rgba(245,158,11,0.35); color: #fcd34d; }
+.tag--id-conf { background: rgba(220,38,38,0.10);  border-color: rgba(220,38,38,0.3);   color: #fca5a5; }
+.tag--id-conf:empty { display: none; }
+
+/* Image quality section */
+.iq-section { margin-bottom: 14px; }
+
+.iq-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+
+.iq-chip {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 20px;
+  border: 1px solid transparent;
+}
+.iq-chip--ok   { background: rgba(5,150,105,0.13);  border-color: rgba(5,150,105,0.3);  color: #6ee7b7; }
+.iq-chip--warn { background: rgba(220,38,38,0.10);  border-color: rgba(220,38,38,0.3);  color: #fca5a5; }
+
+.iq-warnings {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.iq-warnings li {
+  font-size: 11px;
+  color: var(--maybe);
+  padding-left: 14px;
+  position: relative;
+  line-height: 1.4;
+}
+.iq-warnings li::before {
+  content: '⚠';
+  position: absolute;
+  left: 0;
+  font-size: 10px;
+}
+
+/* Grading decision banner (Claude visual viability) */
+.grading-decision-banner {
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border: 1px solid currentColor;
+}
+.grading-decision-banner.gd-yes   { background: rgba(5,150,105,0.08);  color: var(--buy); }
+.grading-decision-banner.gd-maybe { background: rgba(217,119,6,0.08);  color: var(--maybe); }
+.grading-decision-banner.gd-no    { background: rgba(220,38,38,0.08);  color: var(--skip); }
+
+.gd-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-bottom: 3px;
+}
+
+.gd-reason {
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.85;
+  line-height: 1.5;
+}
 
 /* Decision banner */
 .decision-banner {

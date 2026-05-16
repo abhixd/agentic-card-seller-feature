@@ -168,34 +168,103 @@ const DECISION_META = {
 
 // ── Render results ─────────────────────────────────────────────────
 
+const ISSUE_CATEGORY_LABELS = {
+  centering: 'Centering',
+  corners:   'Corners',
+  edges:     'Edges',
+  surface:   'Surface',
+  other:     'Other',
+}
+
+const GD_META = {
+  yes:   { emoji: '✅', css: 'gd-yes',   label: 'Gradable' },
+  maybe: { emoji: '🤔', css: 'gd-maybe', label: 'Possibly Gradable' },
+  no:    { emoji: '❌', css: 'gd-no',    label: 'Not Recommended' },
+}
+
+const IQ_CHIP_DEFS = [
+  { key: 'front_present',     label: 'Front' },
+  { key: 'back_present',      label: 'Back' },
+  { key: 'centering_visible', label: 'Centering' },
+  { key: 'corners_visible',   label: 'Corners' },
+  { key: 'edges_visible',     label: 'Edges' },
+  { key: 'surface_visible',   label: 'Surface' },
+]
+
 function renderResult(payload) {
   const {
+    analysis_mode   = 'front_only',
     card_identity   = {},
+    image_quality   = {},
     grade_estimate  = {},
-    issues          = [],
+    issues          = {},
+    grading_decision = {},
     economics       = {},
     decision        = {},
     _meta           = {},
   } = payload
 
-  // Card identity
+  // ── Card identity + mode badge ──────────────────────────────────
   document.getElementById('res-title').textContent =
     card_identity.name || payload.title || 'Unknown card'
-  document.getElementById('res-set').textContent  = card_identity.set  || ''
-  document.getElementById('res-year').textContent = card_identity.year || ''
-  const numStr = card_identity.number ? `#${card_identity.number}` : ''
-  document.getElementById('res-num').textContent = numStr
+  document.getElementById('res-set').textContent  = card_identity.set    ?? ''
+  document.getElementById('res-year').textContent = card_identity.year   ?? ''
+  document.getElementById('res-num').textContent  = card_identity.number ? `#${card_identity.number}` : ''
 
-  // Decision banner
+  const modeEl = document.getElementById('res-mode')
+  modeEl.textContent = analysis_mode === 'front_back' ? 'FRONT + BACK' : 'FRONT ONLY'
+  modeEl.className   = `mode-badge mode-badge--${analysis_mode === 'front_back' ? 'full' : 'partial'}`
+
+  const idConf = card_identity.confidence ?? null
+  const idConfEl = document.getElementById('res-id-conf')
+  if (idConf && idConf !== 'high') {
+    idConfEl.textContent = `ID: ${idConf} confidence`
+    idConfEl.className = 'tag tag--id-conf'
+  } else {
+    idConfEl.textContent = ''
+  }
+
+  // ── Image quality chips + warnings ─────────────────────────────
+  const iqChips = document.getElementById('iq-chips')
+  iqChips.innerHTML = ''
+  IQ_CHIP_DEFS.forEach(({ key, label }) => {
+    const val = image_quality[key]
+    if (val === undefined) return
+    const chip = document.createElement('span')
+    chip.className = `iq-chip ${val ? 'iq-chip--ok' : 'iq-chip--warn'}`
+    chip.textContent = `${val ? '✓' : '✗'} ${label}`
+    iqChips.appendChild(chip)
+  })
+
+  const iqWarnings = document.getElementById('iq-warnings')
+  iqWarnings.innerHTML = ''
+  const warnings = image_quality.warnings ?? []
+  warnings.forEach(w => {
+    const li = document.createElement('li')
+    li.textContent = w
+    iqWarnings.appendChild(li)
+  })
+  iqWarnings.classList.toggle('hidden', warnings.length === 0)
+
+  // ── Economic decision banner ────────────────────────────────────
   const dec    = decision.label ?? 'skip'
-  const meta   = DECISION_META[dec] ?? DECISION_META.skip
-  const banner = document.getElementById('decision-banner')
-  banner.className = `decision-banner ${meta.css}`
-  document.getElementById('dec-emoji').textContent  = meta.emoji
+  const decMeta = DECISION_META[dec] ?? DECISION_META.skip
+  const banner  = document.getElementById('decision-banner')
+  banner.className = `decision-banner ${decMeta.css}`
+  document.getElementById('dec-emoji').textContent  = decMeta.emoji
   document.getElementById('dec-label').textContent  = dec.toUpperCase()
   document.getElementById('dec-reason').textContent = decision.reason ?? ''
 
-  // Grade estimate
+  // ── Grading candidate banner (Claude visual viability) ─────────
+  const gdc   = grading_decision.gradable_candidate ?? 'maybe'
+  const gdMeta = GD_META[gdc] ?? GD_META.maybe
+  const gdBanner = document.getElementById('grading-decision-banner')
+  gdBanner.className = `grading-decision-banner ${gdMeta.css}`
+  document.getElementById('gd-emoji').textContent  = gdMeta.emoji
+  document.getElementById('gd-label').textContent  = gdMeta.label
+  document.getElementById('gd-reason').textContent = grading_decision.reason ?? ''
+
+  // ── Grade estimate ──────────────────────────────────────────────
   const dist       = grade_estimate.distribution ?? {}
   const gradeRange = grade_estimate.grade_range   ?? '?'
   const confidence = grade_estimate.confidence    ?? 'unknown'
@@ -203,78 +272,28 @@ function renderResult(payload) {
   document.getElementById('res-grade-range').textContent = gradeRange
   document.getElementById('res-grade-conf').textContent  = `(${confidence} confidence)`
 
-  // Probability bars — support both numeric PSA keys ("1"–"10") and legacy bucket names
   const barsContainer = document.getElementById('grade-bars')
   barsContainer.innerHTML = ''
-
-  const isNumeric = Object.keys(dist).some(k => !isNaN(Number(k)))
-
-  if (isNumeric) {
-    // Claude Vision: show PSA 10 → 1 (highest first)
-    for (let g = 10; g >= 1; g--) {
-      const prob = dist[String(g)] ?? 0
-      const row = document.createElement('div')
-      row.className = 'grade-bar-row'
-      row.innerHTML = `
-        <span class="grade-bar-label">PSA ${g}</span>
-        <div class="grade-bar-track">
-          <div class="grade-bar-fill" style="width:${Math.round(prob * 100)}%"></div>
-        </div>
-        <span class="grade-bar-pct">${pct(prob)}</span>
-      `
-      barsContainer.appendChild(row)
-    }
-  } else {
-    // Legacy bucket names from Python backend
-    const bucketOrder = ['poor', 'vg', 'excellent', 'nm', 'mint']
-    bucketOrder.forEach(bucket => {
-      const prob = dist[bucket] ?? 0
-      const row = document.createElement('div')
-      row.className = 'grade-bar-row'
-      row.innerHTML = `
-        <span class="grade-bar-label">${BUCKET_LABELS[bucket] ?? bucket}</span>
-        <div class="grade-bar-track">
-          <div class="grade-bar-fill" style="width:${Math.round(prob * 100)}%"></div>
-        </div>
-        <span class="grade-bar-pct">${pct(prob)}</span>
-      `
-      barsContainer.appendChild(row)
-    })
+  for (let g = 10; g >= 1; g--) {
+    const prob = dist[String(g)] ?? 0
+    const row  = document.createElement('div')
+    row.className = 'grade-bar-row'
+    row.innerHTML = `
+      <span class="grade-bar-label">PSA ${g}</span>
+      <div class="grade-bar-track">
+        <div class="grade-bar-fill" style="width:${Math.round(prob * 100)}%"></div>
+      </div>
+      <span class="grade-bar-pct">${pct(prob)}</span>
+    `
+    barsContainer.appendChild(row)
   }
 
-  // Issues — categorized object { centering, corners, edges, surface, other }
+  // ── Issues (categorized) ────────────────────────────────────────
   const issuesList = document.getElementById('issues-list')
   issuesList.innerHTML = ''
-
-  // Support both legacy flat array and new categorized object
-  const ISSUE_CATEGORY_LABELS = {
-    centering: 'Centering',
-    corners:   'Corners',
-    edges:     'Edges',
-    surface:   'Surface',
-    other:     'Other',
-  }
-
   let hasAnyIssue = false
 
-  if (Array.isArray(issues)) {
-    // Legacy flat array fallback
-    if (issues.length === 0) {
-      const li = document.createElement('li')
-      li.className = 'no-issues'
-      li.textContent = '✓ No significant issues detected'
-      li.style.listStyle = 'none'
-      issuesList.appendChild(li)
-    } else {
-      issues.forEach(issue => {
-        const li = document.createElement('li')
-        li.textContent = issue
-        issuesList.appendChild(li)
-        hasAnyIssue = true
-      })
-    }
-  } else if (issues && typeof issues === 'object') {
-    // New categorized format
+  if (issues && typeof issues === 'object' && !Array.isArray(issues)) {
     Object.entries(ISSUE_CATEGORY_LABELS).forEach(([key, label]) => {
       const items = issues[key]
       if (!Array.isArray(items) || items.length === 0) return
@@ -292,36 +311,32 @@ function renderResult(payload) {
         issuesList.appendChild(li)
       })
     })
-
-    if (!hasAnyIssue) {
-      const li = document.createElement('li')
-      li.className = 'no-issues'
-      li.textContent = '✓ No significant issues detected'
-      li.style.listStyle = 'none'
-      issuesList.appendChild(li)
-    }
   }
 
-  // Prices
+  if (!hasAnyIssue) {
+    const li = document.createElement('li')
+    li.className = 'no-issues'
+    li.textContent = '✓ No significant issues detected'
+    li.style.listStyle = 'none'
+    issuesList.appendChild(li)
+  }
+
+  // ── Economics ───────────────────────────────────────────────────
   document.getElementById('price-raw').textContent   = fmt(economics.raw_estimate)
   document.getElementById('price-psa8').textContent  = fmt(economics.psa8_estimate)
   document.getElementById('price-psa9').textContent  = fmt(economics.psa9_estimate)
   document.getElementById('price-psa10').textContent = fmt(economics.psa10_estimate)
 
-  // ROI table
   document.getElementById('roi-listing').textContent   = fmt(economics.listing_price)
   document.getElementById('roi-grade-fee').textContent = fmt(economics.grading_fee)
   document.getElementById('roi-ev').textContent        = fmt(economics.expected_value)
   document.getElementById('roi-max9').textContent      = fmt(economics.max_buy_price_for_psa9_target)
   document.getElementById('roi-max8').textContent      = fmt(economics.max_buy_price_for_psa8_target)
 
-  // Comps source
   const compsNote = document.getElementById('comps-note')
-  if (_meta.comps_source && _meta.comps_source !== 'none') {
-    compsNote.textContent = `Prices from: ${_meta.comps_source}`
-  } else {
-    compsNote.textContent = 'Prices: estimated (no live comps)'
-  }
+  compsNote.textContent = (_meta.comps_source && _meta.comps_source !== 'none')
+    ? `Prices from: ${_meta.comps_source}`
+    : 'Prices: estimated (no live comps)'
 
   showState('result')
 }

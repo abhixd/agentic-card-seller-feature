@@ -203,30 +203,6 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // ── 2b. Normalise issues — coerce flat array → categorized object ──
-  // Claude occasionally ignores the schema and returns a flat string[].
-  // Parse each string into the most likely category so the UI always
-  // receives the structured shape it expects.
-  if (Array.isArray(inference.issues)) {
-    const flat = inference.issues as unknown as string[]
-    const categorized = { centering: [] as string[], corners: [] as string[], edges: [] as string[], surface: [] as string[], other: [] as string[] }
-    for (const item of flat) {
-      const lower = item.toLowerCase()
-      if (lower.includes('center') || lower.includes('tilt') || lower.includes('off-center') || lower.includes('left/right') || lower.includes('top/bottom')) {
-        categorized.centering.push(item)
-      } else if (lower.includes('corner')) {
-        categorized.corners.push(item)
-      } else if (lower.includes('edge')) {
-        categorized.edges.push(item)
-      } else if (lower.includes('scratch') || lower.includes('holo') || lower.includes('surface') || lower.includes('print') || lower.includes('stain') || lower.includes('crease') || lower.includes('indent')) {
-        categorized.surface.push(item)
-      } else {
-        categorized.other.push(item)
-      }
-    }
-    ;(inference as unknown as Record<string, unknown>).issues = categorized
-  }
-
   // ── 3. ROI + decision ─────────────────────────────────────────
   const gradeDist = inference.grade_estimate.distribution
   const economics = computeROI(listingTotal, gradeDist, prices)
