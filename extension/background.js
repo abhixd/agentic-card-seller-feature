@@ -58,18 +58,24 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 // ── Message router ───────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // CRITICAL PATH: sidePanel.open MUST be in the synchronous portion of
-  // the message handler so the user-gesture token from the content-script
-  // click survives the IPC hop.
+  // CRITICAL: sidePanel.open() MUST be invoked synchronously in this
+  // handler — NOT inside a .then() callback. A .then() runs in a
+  // microtask after the handler returns, and Chrome strips the
+  // user-gesture token at that point ("may only be called in response
+  // to a user gesture" error).
+  //
+  // Pattern: fire setOptions and open both synchronously, side by side.
+  // Chrome processes extension IPCs in order, so setOptions(enabled:true)
+  // is applied before open() is evaluated on the browser side.
   if (msg.type === 'CARD_IMAGES_READY' && sender.tab?.id != null) {
     const tabId = sender.tab.id
     console.log('[CGA] CARD_IMAGES_READY tab', tabId)
 
-    // Fire setOptions → open in a .then() chain. The chain runs in
-    // microtasks (not macrotasks), preserving user-gesture context.
-    chrome.sidePanel
-      .setOptions({ tabId, enabled: true })
-      .then(() => chrome.sidePanel.open({ tabId }))
+    // Both calls fired synchronously, side by side — no chaining.
+    chrome.sidePanel.setOptions({ tabId, enabled: true }).catch(() => {})
+    const openPromise = chrome.sidePanel.open({ tabId })
+
+    openPromise
       .then(() => {
         console.log('[CGA] side panel opened')
         sendResponse({ ok: true })
@@ -79,12 +85,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, error: String(e) })
       })
 
-    // Send the payload to the panel after a short delay (lets DOM mount)
+    // Push the listing payload to the panel after the DOM mounts
     setTimeout(() => {
       broadcast({ type: 'IMAGES_LOADED', payload: msg.payload })
     }, 400)
 
-    return true // tells Chrome we'll call sendResponse asynchronously
+    return true // async sendResponse
   }
 
   if (msg.type === 'ANALYZE_SELECTED') {
