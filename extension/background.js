@@ -17,8 +17,13 @@
 const DEFAULT_BACKEND = 'https://agentic-card-seller-os.vercel.app'
 
 // ── Side panel default behaviour ─────────────────────────────────
+// IMPORTANT: openPanelOnActionClick is false.
+// The toolbar icon must NOT open the panel directly — if it did, users
+// could open the panel on any tab and bypass our per-tab gating.
+// The panel only opens via chrome.sidePanel.open() from our message
+// handler when the "Select & Analyze" button is clicked on an eBay tab.
 chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: true })
+  .setPanelBehavior({ openPanelOnActionClick: false })
   .catch(() => {})
 
 // ── Per-tab panel restriction ────────────────────────────────────
@@ -49,8 +54,15 @@ function syncPanelForTab(tabId, url) {
   } else {
     // url is either undefined (non-eBay we can't read — host_permissions
     // would surface it otherwise) or a known non-listing URL.
+    //
+    // Two-pronged disable: enabled:false stops the toolbar icon from
+    // opening the panel; path:'blank.html' ensures that if Chrome
+    // chooses to keep the panel slot visible across the tab switch
+    // (a quirk in some Chrome versions when a panel was already open
+    // in the window) the user sees an empty dark area instead of the
+    // sidepanel.html "Not on an eBay listing" message.
     chrome.sidePanel
-      .setOptions({ tabId, enabled: false })
+      .setOptions({ tabId, enabled: false, path: 'blank.html' })
       .catch(() => {})
   }
 }
