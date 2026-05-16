@@ -288,6 +288,25 @@ function renderResult(payload) {
 chrome.runtime.onMessage.addListener((msg) => {
   switch (msg.type) {
 
+    case 'TAB_CHANGED': {
+      const url = msg.payload?.url ?? ''
+      const onEbay = url.startsWith('https://www.ebay.com/itm/')
+      // Only reset to idle if we're not already showing a result/analysis
+      const currentlyActive = !document.getElementById('state-idle').classList.contains('hidden') ||
+                              !document.getElementById('state-select').classList.contains('hidden')
+      if (!onEbay && currentlyActive) {
+        document.getElementById('idle-heading').textContent = 'Not on an eBay listing'
+        document.getElementById('idle-sub').innerHTML =
+          'Navigate to an eBay Pokémon listing and click <strong>Select &amp; Analyze</strong> to get started.'
+        showState('idle')
+      } else if (onEbay) {
+        document.getElementById('idle-heading').textContent = 'Ready to analyze'
+        document.getElementById('idle-sub').innerHTML =
+          'Click <strong>Select &amp; Analyze</strong> on the listing to pick images.'
+      }
+      break
+    }
+
     case 'IMAGES_LOADED': {
       const listing = msg.payload ?? {}
       _pendingListing = listing
