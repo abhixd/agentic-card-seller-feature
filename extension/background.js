@@ -19,8 +19,14 @@ chrome.sidePanel
 
 // ── Message router ───────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === 'ANALYZE_CARD') {
-    handleAnalyze(msg.payload, sender.tab?.id)
+  // Content script sends all extracted images → open panel, show picker
+  if (msg.type === 'CARD_IMAGES_READY') {
+    handleImagesReady(msg.payload, sender.tab?.id)
+    sendResponse({ ok: true })
+  }
+  // Side panel sends user-selected images → run grading
+  if (msg.type === 'ANALYZE_SELECTED') {
+    handleAnalyze(msg.payload)
     sendResponse({ ok: true })
   }
   if (msg.type === 'GET_SETTINGS') {
@@ -35,22 +41,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 })
 
-// ── Core analysis flow ───────────────────────────────────────────
-async function handleAnalyze(listing, tabId) {
-  // Open the side panel for this tab
+// ── Step 1: Images extracted — open panel and show picker ────────
+async function handleImagesReady(listing, tabId) {
   try {
     await chrome.sidePanel.open({ tabId })
   } catch {}
+  // Give the panel DOM time to mount before we broadcast
+  await sleep(350)
+  broadcast({ type: 'IMAGES_LOADED', payload: listing })
+}
 
-  // Let the panel render before streaming progress
-  await sleep(300)
+// ── Step 2: User selected images — run grading ───────────────────
+async function handleAnalyze(listing) {
   broadcast({ type: 'ANALYSIS_START', payload: { title: listing.title } })
 
   const { backendUrl = DEFAULT_BACKEND } = await chrome.storage.local.get('backendUrl')
   const endpoint = `${backendUrl.replace(/\/$/, '')}/api/grade/analyze`
 
   try {
-    broadcast({ type: 'ANALYSIS_PROGRESS', payload: { step: 'Fetching images & running model…' } })
+    broadcast({ type: 'ANALYSIS_PROGRESS', payload: { step: 'Running CV detectors…' } })
 
     const resp = await fetch(endpoint, {
       method:  'POST',
@@ -74,7 +83,7 @@ async function handleAnalyze(listing, tabId) {
       payload: {
         message: err.message ?? 'Unknown error',
         hint:    endpoint.includes('localhost')
-          ? 'Make sure the grading backend is running: ./backend/start.sh'
+          ? 'Make sure the grading backend is running locally.'
           : null,
       },
     })

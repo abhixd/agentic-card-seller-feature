@@ -51,33 +51,50 @@
   }
 
   function getImageUrls() {
-    // eBay stores full-res URLs in data-zoom-src or data-src attributes
     const imgs = new Set()
 
-    // Primary image carousel
-    document.querySelectorAll('.ux-image-carousel-item img, .filmstrip img, .vi-image-hero img').forEach(img => {
-      const src = img.getAttribute('data-zoom-src') || img.getAttribute('data-src') || img.src
-      if (src && src.startsWith('http') && !src.includes('s-l64')) {
-        imgs.add(src.replace(/s-l\d+\./, 's-l1600.'))
-      }
-    })
-
-    // Thumbnail strip — grab original resolution equivalents
-    document.querySelectorAll('[data-idx] img').forEach(img => {
-      const src = img.getAttribute('data-zoom-src') || img.getAttribute('data-src') || img.src
-      if (src && src.startsWith('http')) {
-        imgs.add(src.replace(/s-l\d+\./, 's-l1600.'))
-      }
-    })
-
-    // Fallback: all visible listing images
-    if (imgs.size === 0) {
-      document.querySelectorAll('.vi_main_img_fs img, #icImg').forEach(img => {
-        if (img.src && img.src.startsWith('http')) imgs.add(img.src)
+    // ── 1. Thumbnail filmstrip (always loaded eagerly by eBay) ─────
+    // Modern eBay (2023+) renders thumbnails with several possible selectors.
+    // We collect every thumbnail src and upscale to s-l1600 by replacing the
+    // size token (s-l64, s-l140, s-l500, etc.) — this gives us ALL images
+    // regardless of which one is currently visible in the hero carousel.
+    const thumbSelectors = [
+      '.ux-image-filmstrip-item img',   // current eBay redesign
+      '.ux-image-carousel-item img',    // some listing layouts
+      '[data-idx] img',                 // older eBay layout
+      '.filmstrip img',                 // legacy
+      '.tdThumb img',                   // very old layout
+    ]
+    thumbSelectors.forEach(sel => {
+      document.querySelectorAll(sel).forEach(img => {
+        // Prefer data-src / data-zoom-src if set; fall back to visible src
+        const raw = img.getAttribute('data-zoom-src')
+                 || img.getAttribute('data-src')
+                 || img.src
+        if (raw && raw.startsWith('http')) {
+          // Upscale: replace any s-l<number> size token with s-l1600
+          imgs.add(raw.replace(/s-l\d+/g, 's-l1600'))
+        }
       })
-    }
+    })
 
-    return [...imgs].slice(0, 8) // cap at 8 images
+    // ── 2. Hero / main image (catches the currently zoomed image) ──
+    document.querySelectorAll('.vi-image-hero img, #icImg, .vi_main_img_fs img').forEach(img => {
+      const raw = img.getAttribute('data-zoom-src') || img.getAttribute('data-src') || img.src
+      if (raw && raw.startsWith('http')) {
+        imgs.add(raw.replace(/s-l\d+/g, 's-l1600'))
+      }
+    })
+
+    // ── 3. Filter out obvious non-card images ──────────────────────
+    // eBay sometimes injects icon/sprite URLs into carousel containers.
+    const filtered = [...imgs].filter(url =>
+      !url.includes('s.yimg.com') &&
+      !url.includes('ir.ebaystatic.com') &&
+      !url.includes('svgs.ebayimg.com')
+    )
+
+    return filtered.slice(0, 8) // cap at 8 — Claude accepts up to 20, but 8 is plenty
   }
 
   function buildPayload() {
@@ -112,9 +129,9 @@
     const wrapper = document.createElement('div')
     wrapper.id = 'cga-wrapper'
     wrapper.innerHTML = `
-      <button id="cga-analyze-btn" title="Analyze grading potential + ROI">
-        <span class="cga-icon">🔍</span>
-        <span class="cga-label">Analyze Card</span>
+      <button id="cga-analyze-btn" title="Select images and analyze grading potential + ROI">
+        <span class="cga-icon">🖼</span>
+        <span class="cga-label">Select &amp; Analyze</span>
       </button>
       <div id="cga-status"></div>
     `
@@ -136,7 +153,7 @@
     if (!btn) return
 
     btn.disabled = true
-    setStatus('Sending to analyzer…', 'info')
+    setStatus('Opening image picker…', 'info')
 
     const payload = buildPayload()
 
@@ -152,15 +169,14 @@
     }
 
     try {
-      chrome.runtime.sendMessage({ type: 'ANALYZE_CARD', payload }, (resp) => {
+      chrome.runtime.sendMessage({ type: 'CARD_IMAGES_READY', payload }, (resp) => {
         if (chrome.runtime.lastError) {
           setStatus('Extension error — try reloading.', 'error')
           btn.disabled = false
           return
         }
-        setStatus('Analysis started — check the side panel ↗', 'ok')
-        setTimeout(() => setStatus(''), 4000)
-        btn.disabled = false
+        setStatus('Select images in the side panel ↗', 'ok')
+        setTimeout(() => { setStatus(''); btn.disabled = false }, 3000)
       })
     } catch (err) {
       setStatus('Could not reach extension background.', 'error')

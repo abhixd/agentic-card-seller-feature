@@ -416,3 +416,139 @@ main { padding: 16px 14px 32px; }
   text-align: center;
   margin-top: 6px;
 }
+
+/* ── Select / image-picker state ─────────────────────────────── */
+.select-header { margin-bottom: 8px; }
+
+.select-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.4;
+  margin-bottom: 3px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.select-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.select-actions-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.select-sep {
+  color: var(--border);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--accent-lt);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.btn-link:hover { color: var(--text); }
+
+/* Thumbnail grid */
+.thumb-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 70px; /* leave room for sticky footer */
+}
+
+.thumb-item {
+  position: relative;
+  aspect-ratio: 3 / 4;
+  border-radius: 7px;
+  overflow: hidden;
+  cursor: pointer;
+  border: 2.5px solid transparent;
+  background: var(--surface2);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.thumb-item:hover { border-color: rgba(79,70,229,0.45); }
+
+.thumb-item.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+/* Checkmark badge for selected thumbnails */
+.thumb-item.selected::after {
+  content: '✓';
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 20px;
+  height: 20px;
+  background: var(--accent);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 20px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.thumb-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.15s;
+}
+
+/* Dim unselected images once ≥1 is selected */
+.has-selection .thumb-item:not(.selected) img { opacity: 0.45; }
+.has-selection .thumb-item:not(.selected):hover img { opacity: 0.7; }
+
+/* Image-load error fallback */
+.thumb-item .thumb-err {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  color: var(--text-dim);
+  background: var(--surface2);
+}
+
+/* Sticky analyze footer */
+.select-footer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: var(--bg);
+  padding: 10px 14px 14px;
+  border-top: 1px solid var(--border);
+  z-index: 5;
+}
+
+.btn-full { width: 100%; }
+
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}

@@ -12,7 +12,7 @@
 'use strict'
 
 // ── State ──────────────────────────────────────────────────────────
-const STATES = ['idle', 'loading', 'result', 'error']
+const STATES = ['idle', 'select', 'loading', 'result', 'error']
 
 function showState(name) {
   STATES.forEach(s => {
@@ -54,6 +54,89 @@ saveSettingsBtn.addEventListener('click', () => {
     settingsMsg.textContent = 'Saved!'
     setTimeout(() => { settingsMsg.textContent = ''; closeSettings() }, 1200)
   })
+})
+
+// ── Image selection ────────────────────────────────────────────────
+
+/** Holds the current listing payload while the user picks images. */
+let _pendingListing = null
+/** Set of selected image URLs. */
+const _selected = new Set()
+
+const thumbGrid       = document.getElementById('thumb-grid')
+const selCountEl      = document.getElementById('sel-count')
+const analyzeSelBtn   = document.getElementById('analyze-selected-btn')
+const selectTitleEl   = document.getElementById('select-title')
+const selectAllBtn    = document.getElementById('select-all-btn')
+const clearSelBtn     = document.getElementById('clear-sel-btn')
+
+function refreshSelectionUI() {
+  const n = _selected.size
+  selCountEl.textContent = n
+  analyzeSelBtn.disabled = n === 0
+  // Dim un-selected once something is chosen
+  thumbGrid.classList.toggle('has-selection', n > 0)
+  // Sync item borders
+  thumbGrid.querySelectorAll('.thumb-item').forEach(item => {
+    item.classList.toggle('selected', _selected.has(item.dataset.url))
+  })
+}
+
+function buildThumbGrid(imageUrls) {
+  thumbGrid.innerHTML = ''
+  _selected.clear()
+
+  imageUrls.forEach((url, i) => {
+    const item = document.createElement('div')
+    item.className = 'thumb-item'
+    item.dataset.url = url
+    item.title = `Image ${i + 1}`
+
+    const img = document.createElement('img')
+    img.alt = `Card image ${i + 1}`
+    img.loading = 'lazy'
+    img.src = url
+    img.onerror = () => {
+      img.remove()
+      const err = document.createElement('div')
+      err.className = 'thumb-err'
+      err.textContent = '🖼'
+      item.appendChild(err)
+    }
+
+    item.appendChild(img)
+    item.addEventListener('click', () => {
+      if (_selected.has(url)) {
+        _selected.delete(url)
+      } else {
+        _selected.add(url)
+      }
+      refreshSelectionUI()
+    })
+
+    thumbGrid.appendChild(item)
+  })
+
+  refreshSelectionUI()
+}
+
+selectAllBtn.addEventListener('click', () => {
+  thumbGrid.querySelectorAll('.thumb-item').forEach(item => _selected.add(item.dataset.url))
+  refreshSelectionUI()
+})
+
+clearSelBtn.addEventListener('click', () => {
+  _selected.clear()
+  refreshSelectionUI()
+})
+
+analyzeSelBtn.addEventListener('click', () => {
+  if (!_pendingListing || _selected.size === 0) return
+  const payload = {
+    ..._pendingListing,
+    image_urls: [..._selected],
+  }
+  chrome.runtime.sendMessage({ type: 'ANALYZE_SELECTED', payload })
 })
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -203,6 +286,18 @@ function renderResult(payload) {
 chrome.runtime.onMessage.addListener((msg) => {
   switch (msg.type) {
 
+    case 'IMAGES_LOADED': {
+      const listing = msg.payload ?? {}
+      _pendingListing = listing
+      // Populate header
+      const t = listing.title ?? ''
+      selectTitleEl.textContent = t.length > 80 ? t.slice(0, 77) + '…' : t
+      // Build thumbnail grid
+      buildThumbGrid(listing.image_urls ?? [])
+      showState('select')
+      break
+    }
+
     case 'ANALYSIS_START': {
       const title = msg.payload?.title ?? ''
       document.getElementById('loading-title').textContent =
@@ -234,9 +329,15 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 })
 
-// ── Reset button ───────────────────────────────────────────────────
-document.getElementById('reset-btn').addEventListener('click', () => showState('idle'))
-document.getElementById('error-retry-btn').addEventListener('click', () => showState('idle'))
+// ── Reset / back buttons ───────────────────────────────────────────
+document.getElementById('reset-btn').addEventListener('click', () => {
+  // Return to picker if we still have images loaded, else idle
+  showState(_pendingListing ? 'select' : 'idle')
+})
+
+document.getElementById('error-retry-btn').addEventListener('click', () => {
+  showState(_pendingListing ? 'select' : 'idle')
+})
 
 // ── Init ───────────────────────────────────────────────────────────
 showState('idle')

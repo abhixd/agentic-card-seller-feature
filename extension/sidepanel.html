@@ -42,6 +42,25 @@
       </p>
     </div>
 
+    <!-- Select state -->
+    <div id="state-select" class="state hidden">
+      <div class="select-header">
+        <p id="select-title" class="select-title"></p>
+        <p class="select-hint">Tap images to select for analysis</p>
+      </div>
+      <div class="select-actions-top">
+        <button id="select-all-btn"  class="btn-link">Select all</button>
+        <span class="select-sep">·</span>
+        <button id="clear-sel-btn"   class="btn-link">Clear</button>
+      </div>
+      <div id="thumb-grid" class="thumb-grid"></div>
+      <div class="select-footer">
+        <button id="analyze-selected-btn" class="btn-primary btn-full" disabled>
+          Analyze <span id="sel-count">0</span> selected
+        </button>
+      </div>
+    </div>
+
     <!-- Loading state -->
     <div id="state-loading" class="state hidden">
       <div class="spinner-wrap">
@@ -150,8 +169,8 @@
       <!-- Comps source note -->
       <p id="comps-note" class="comps-note"></p>
 
-      <!-- Analyze another -->
-      <button id="reset-btn" class="btn-ghost reset-btn">← Analyze another card</button>
+      <!-- Back to picker -->
+      <button id="reset-btn" class="btn-ghost reset-btn">← Change image selection</button>
 
     </div><!-- /state-result -->
   </main>
