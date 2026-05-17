@@ -3,11 +3,19 @@
  *
  * Phase 1 CV-assisted grading pipeline:
  *
- *  1. runCVDetectors()   — download first image, compute blur/glare/brightness
- *  2. fetchResized()     — download + sharp-resize first image to ≤1024px
- *     (runs in parallel with step 1 — same network cost, no extra round-trip)
- *  3. Build Claude prompt — CV measurements injected before grading instructions
- *  4. gradeWithClaude()  — Claude Haiku sees CV data + image, returns structured JSON
+ *  1. fetchBuffer()        — download each image once (shared across steps)
+ *  2. classifyCardSide()   — HSV blue-band detection → 'front' | 'back' | 'unknown'
+ *  3. Sort + label         — fronts first, backs second; labels injected into prompt
+ *  4. analyseBuffer()      — blur/glare/brightness on first front image
+ *  5. resizeBuffer()       — resize first image to ≤1024px for Claude (fewer tokens)
+ *  6. gradeWithClaude()    — Claude Haiku sees sorted images + CV + labels → JSON
+ *  7. Sanity guard         — if both sides non-assessable, force low confidence
+ *
+ * Why pre-classify images?
+ *   Claude sometimes fails to identify which image is front vs back, especially
+ *   when cards are angled, sleeved, or have unusual lighting. Pre-classifying with
+ *   a fast HSV pixel check and injecting the labels into the prompt eliminates
+ *   the ambiguity — Claude never has to guess.
  *
  * Why resize?
  *   Anthropic caps images at 1568px internally; eBay photos are often 1600–3000px.
@@ -20,7 +28,13 @@
 
 import Anthropic from '@anthropic-ai/sdk'
 import sharp from 'sharp'
-import { runCVDetectors, formatCVSection } from './cvDetectors'
+import {
+  analyseBuffer,
+  classifyCardSide,
+  formatCVSection,
+  formatSideLabels,
+  CardSide,
+} from './cvDetectors'
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -68,7 +82,7 @@ export interface SideAnalysis {
 export interface GradingDecision {
   gradable_candidate: 'yes' | 'maybe' | 'no'
   reason:             string
-  caveats:            string[]  // explicit warnings, e.g. "back image missing"
+  caveats:            string[]
 }
 
 export interface ClaudeGradingResult {
@@ -96,7 +110,7 @@ Core principles:
 - Distinguish between: (1) visible defects and (2) unknowns caused by image limitations.
 
 Evaluate in this order:
-1. IMAGE CLASSIFICATION — label each image as "front", "back", or "other" based on visible content. The front shows the card artwork; the back shows the Pokémon logo / back design.
+1. IMAGE CLASSIFICATION — Images have been pre-classified as FRONT or BACK using pixel analysis (see labels above the images). Trust the pre-classification — do NOT reclassify images yourself. Use the labels to know which image shows the card artwork (front) and which shows the Pokémon logo design (back).
 2. FRONT ANALYSIS — if a front image is present, assess separately:
    - Centering: estimate L/R and T/B border split
    - Corners: TL, TR, BL, BR — whitening, fraying, rounding
@@ -259,21 +273,33 @@ Rules:
 - Distribution values must sum approximately to 1.00.
 - confidence "high": top-2 PSA grades >60% of mass. "medium": 40–60%. "low": image too limited.`
 
-// ── Image fetch + resize helper ───────────────────────────────────
+// ── Image helpers ─────────────────────────────────────────────────
 
 /**
- * Download one image URL and resize to ≤1024px (longest edge), JPEG q85.
- * Returns null on any failure — caller falls back to passing the URL to Claude.
- *
- * Why not white-balance: see module docstring.
- * Why not aspect-pad: adds black bars, wastes tokens, assumes card is cropped.
+ * Download one image URL and return its raw buffer.
+ * Returns null on failure — callers degrade gracefully.
  */
-async function fetchResized(url: string): Promise<{ base64: string; mimeType: 'image/jpeg' } | null> {
+async function fetchBuffer(url: string): Promise<Buffer | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(8_000) })
     if (!res.ok) return null
-    const raw     = Buffer.from(await res.arrayBuffer())
-    const resized = await sharp(raw)
+    return Buffer.from(await res.arrayBuffer())
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Resize a buffer to ≤1024px (longest edge), JPEG q85.
+ * Returns null on failure — caller falls back to passing the URL to Claude.
+ *
+ * Why not white-balance: see module docstring.
+ */
+async function resizeBuffer(
+  buf: Buffer,
+): Promise<{ base64: string; mimeType: 'image/jpeg' } | null> {
+  try {
+    const resized = await sharp(buf)
       .resize(1024, 1024, { fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality: 85 })
       .toBuffer()
@@ -293,18 +319,38 @@ export async function gradeWithClaude(
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set')
 
   const client = new Anthropic({ apiKey })
+  const urls   = imageUrls.slice(0, 6)
 
-  // ── Step 1 + 2: CV detectors & image resize run in parallel ──────
-  // Both need to download image[0]; running concurrently avoids a second
-  // sequential network round-trip.
-  const [cv, resized] = await Promise.all([
-    runCVDetectors(imageUrls),
-    fetchResized(imageUrls[0]),
-  ])
+  // ── Step 1: Download all image buffers in parallel ────────────────────────
+  // Single download per image — buffer is reused for classify + CV + resize.
+  const buffers = await Promise.all(urls.map(fetchBuffer))
 
-  // ── Step 3: Build image content blocks ───────────────────────────
-  // Image 0: use resized base64 if available (fewer tokens), else URL.
-  // Images 1-5: pass as URLs (Claude resizes them internally).
+  // ── Step 2: Classify each image as front / back / unknown ─────────────────
+  const sides: CardSide[] = await Promise.all(
+    buffers.map(buf =>
+      buf ? classifyCardSide(buf) : Promise.resolve<CardSide>('unknown'),
+    ),
+  )
+
+  // ── Step 3: Sort indices — fronts first, backs second, unknowns last ───────
+  const sideRank = (s: CardSide) => s === 'front' ? 0 : s === 'back' ? 1 : 2
+  const order = [...urls.keys()].sort((a, b) => sideRank(sides[a]) - sideRank(sides[b]))
+
+  const sortedUrls    = order.map(i => urls[i])
+  const sortedBuffers = order.map(i => buffers[i])
+  const sortedSides   = order.map(i => sides[i])
+
+  // ── Step 4: CV detectors on first front buffer (or first buffer) ──────────
+  const cvIdx = sortedSides.findIndex(s => s === 'front')
+  const cvBuf = sortedBuffers[cvIdx !== -1 ? cvIdx : 0]
+  const cv    = cvBuf ? await analyseBuffer(cvBuf).catch(() => null) : null
+
+  // ── Step 5: Resize first image for Claude (fewer input tokens) ────────────
+  const resized = sortedBuffers[0]
+    ? await resizeBuffer(sortedBuffers[0])
+    : null
+
+  // ── Step 6: Build image content blocks (sorted order) ─────────────────────
   const imageBlocks: Anthropic.ImageBlockParam[] = []
 
   if (resized) {
@@ -312,30 +358,31 @@ export async function gradeWithClaude(
       type:   'image',
       source: { type: 'base64', media_type: resized.mimeType, data: resized.base64 },
     })
-  } else if (imageUrls[0]) {
+  } else if (sortedUrls[0]) {
     imageBlocks.push({
       type:   'image',
-      source: { type: 'url', url: imageUrls[0] },
+      source: { type: 'url', url: sortedUrls[0] },
     })
   }
 
-  for (const url of imageUrls.slice(1, 6)) {
+  for (const url of sortedUrls.slice(1)) {
     imageBlocks.push({ type: 'image', source: { type: 'url', url } })
   }
 
-  // ── Step 4: Build prompt — CV section prepended ───────────────────
-  // formatCVSection() returns '' when cv is null (soft failure), so the
-  // prompt degrades gracefully with no CV data.
-  const cvSection = formatCVSection(cv)
+  // ── Step 7: Build prompt — CV section + side labels prepended ────────────
+  const cvSection  = formatCVSection(cv)
+  const sideLabels = formatSideLabels(sortedSides)
 
   const textHint: Anthropic.TextBlockParam = {
     type: 'text',
-    text: `${cvSection}Listing title (use as identity hint, but trust the image over the title): "${title}"\n\n${USER_PROMPT}`,
+    text: `${cvSection}${sideLabels}Listing title (use as identity hint, but trust the image over the title): "${title}"\n\n${USER_PROMPT}`,
   }
 
+  // ── Step 8: Call Claude Haiku ────────────────────────────────────────────
+  // max_tokens=2048: front+back split schema produces ~600–900 output tokens
   const response = await client.messages.create({
     model:      'claude-haiku-4-5',
-    max_tokens: 2048,  // front+back split schema ~600-900 tokens; 1024 caused truncation
+    max_tokens: 2048,
     system:     SYSTEM_PROMPT,
     messages: [
       {
@@ -352,7 +399,10 @@ export async function gradeWithClaude(
     .trim()
 
   // Strip accidental markdown code fences
-  const json = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+  const json = raw
+    .replace(/^```(?:json)?\s*\n?/i, '')
+    .replace(/\n?```\s*$/i, '')
+    .trim()
 
   let parsed: ClaudeGradingResult
   try {
@@ -361,11 +411,26 @@ export async function gradeWithClaude(
     throw new Error(`Claude returned non-JSON response: ${raw.slice(0, 200)}`)
   }
 
-  // Normalise distribution so it sums to exactly 1.0
+  // ── Step 9: Normalise distribution to sum to 1.0 ──────────────────────────
   const dist  = parsed.grade_estimate.distribution
   const total = Object.values(dist).reduce((s, v) => s + v, 0)
   if (total > 0 && Math.abs(total - 1) > 0.02) {
     for (const k of Object.keys(dist)) dist[k] = dist[k] / total
+  }
+
+  // ── Step 10: Sanity guard — both sides non-assessable ─────────────────────
+  // If Claude marked both front and back as non-assessable, it couldn't identify
+  // either image. Force low confidence + surface-level limiting factor.
+  const frontOk = parsed.front_analysis?.assessable !== false
+  const backOk  = parsed.back_analysis?.assessable  !== false
+  if (!frontOk && !backOk) {
+    parsed.grade_estimate.confidence      = 'low'
+    parsed.grade_estimate.limiting_factor = 'image_quality'
+    parsed.grading_decision.gradable_candidate = 'no'
+    parsed.grading_decision.caveats = [
+      ...(parsed.grading_decision.caveats ?? []),
+      'Neither front nor back image was assessable — unable to grade reliably.',
+    ]
   }
 
   return parsed
