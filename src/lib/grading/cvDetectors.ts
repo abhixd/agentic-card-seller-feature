@@ -1,67 +1,97 @@
 /**
- * cvDetectors.ts — Phase 1 CV measurements + card-side classifier
+ * cvDetectors.ts — CV measurements, card-side classifier, and structural analysis
  *
- * Designed for the Chrome extension pipeline where images arrive as public
- * eBay URLs (not base64 uploads). We fetch the first usable image, run
- * pixel-level analysis, and return structured measurements for prompt injection.
+ * Pipeline (runs before Claude, results injected into prompt):
  *
- * Detectors (Phase 1):
- *  1. Blur score   — Laplacian variance (higher = sharper, <40 = blurry)
- *  2. Glare        — fraction of pixels ≥ 245 brightness (>5% = problematic)
- *  3. Brightness   — mean + std dev of grayscale
- *  4. Side class.  — HSV blue-band analysis to detect Pokémon card back
+ *  Phase 1 — image quality
+ *    1. Blur score        — Laplacian variance  (< 40 = blurry)
+ *    2. Glare             — fraction of pixels ≥ 245 (> 5% = problematic)
+ *    3. Brightness        — mean + std dev
  *
- * Phase 2 TODO: edge-scan centering, Hough scratch detection (Python microservice)
+ *  Phase 2 — card structure  (new)
+ *    4. Corner whitening  — per-corner brightness analysis (TL/TR/BL/BR)
+ *    5. Surface roughness — Sobel gradient in card-border band (scratch proxy)
+ *    6. Side classifier   — HSV blue-band detection → 'front' | 'back'
+ *
+ * All analysis runs on the canonical 384×544 grayscale image so the same
+ * Sharp pipeline handles quality + structure in a single pass.
+ *
+ * Centering (pixel-accurate via perspective warp) is implemented in the
+ * Python notebook using OpenCV — it requires contour finding + homography
+ * which are not available in Sharp.
  */
 
 import sharp from 'sharp'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/** Canonical size for CV measurement. Must match notebook preprocessing. */
 const CANONICAL_W = 384
 const CANONICAL_H = 544
 
-const BLUR_THRESHOLD  = 40    // Laplacian variance; below = blurry
-const GLARE_THRESHOLD = 0.05  // 5% overexposed pixels = significant glare
+const BLUR_THRESHOLD  = 40
+const GLARE_THRESHOLD = 0.05
 
-/**
- * Pokémon card back HSV thresholds (standard 0–360° hue scale).
- *
- * The back has had the same blue/teal design since 1996 — a field of
- * hue ~195–220°, saturation >50%, value >25% covering ~50–65% of the card.
- * A pixel fraction above 0.25 reliably identifies the back even under
- * compression, glare, and moderate angle/lighting variation.
- */
-const BACK_HUE_MIN         = 195    // degrees
-const BACK_HUE_MAX         = 220    // degrees
-const BACK_SAT_MIN         = 0.50   // 0–1 scale
-const BACK_VAL_MIN         = 0.25   // 0–1 scale
-const BACK_PIXEL_THRESHOLD = 0.25   // fraction of image; above = back
+// Corner analysis — patch size as fraction of canonical dimensions
+const CORNER_W_PX        = 46    // ≈ 12% of 384
+const CORNER_H_PX        = 55    // ≈ 10% of 544
+const WHITE_THRESH        = 215   // grayscale value above which = white / whitening
+const WHITENING_THRESHOLD = 0.07  // > 7% white pixels in patch → whitening
+
+// Surface roughness — band around the image perimeter (card border region)
+// The card's colored border should be smooth; scratches = unexpected gradient spikes
+const BORDER_BAND_W = 55   // px from each side to inspect (≈ 14% of 384)
+const BORDER_BAND_H = 70   // px from each side to inspect (≈ 13% of 544)
+const SCRATCH_GRADIENT_THRESHOLD = 35  // Sobel magnitude above = "edge feature"
+const SCRATCH_SEVERITY_THRESHOLDS = { none: 0, light: 200, moderate: 600, heavy: 1400 }
+
+// Side classifier HSV thresholds
+const BACK_HUE_MIN         = 195
+const BACK_HUE_MAX         = 220
+const BACK_SAT_MIN         = 0.50
+const BACK_VAL_MIN         = 0.25
+const BACK_PIXEL_THRESHOLD = 0.25
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
 export interface CVMeasurements {
-  blur_score:      number   // Laplacian variance (0 → very blurry)
-  glare_fraction:  number   // 0–1 fraction of pixels ≥ 245
-  brightness_mean: number   // mean grayscale (0–255)
-  brightness_std:  number   // std dev of grayscale
+  // Phase 1 — image quality
+  blur_score:      number
+  glare_fraction:  number
+  brightness_mean: number
+  brightness_std:  number
   is_blurry:       boolean
   has_glare:       boolean
-  cv_issues:       string[] // human-readable, injected verbatim into Claude prompt
+  cv_issues:       string[]
+
+  // Phase 2 — card structure
+  corners:  CornerAnalysis | null
+  scratch:  ScratchResult  | null
+}
+
+export interface CornerPatch {
+  brightness:     number   // mean grayscale 0–255
+  white_fraction: number   // fraction of pixels > WHITE_THRESH
+  whitening:      boolean
+}
+
+export interface CornerAnalysis {
+  TL: CornerPatch
+  TR: CornerPatch
+  BL: CornerPatch
+  BR: CornerPatch
+  any_whitening:      boolean
+  whitening_corners:  string[]   // e.g. ['TL', 'BR']
+}
+
+export interface ScratchResult {
+  edge_pixel_count: number                              // raw gradient spike count
+  severity:         'none' | 'light' | 'moderate' | 'heavy'
 }
 
 export type CardSide = 'front' | 'back' | 'unknown'
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-/**
- * Laplacian variance — equivalent to cv2.Laplacian(gray, CV_64F).var()
- *
- * Kernel: [ 0  1  0 ]
- *         [ 1 -4  1 ]
- *         [ 0  1  0 ]
- */
 function laplacianVariance(pixels: Uint8Array, width: number, height: number): number {
   let lapSum = 0, lapSumSq = 0
   const innerCount = (width - 2) * (height - 2)
@@ -70,26 +100,137 @@ function laplacianVariance(pixels: Uint8Array, width: number, height: number): n
     const row = y * width
     for (let x = 1; x < width - 1; x++) {
       const lap =
-        pixels[row - width + x] +  // y-1, x
-        pixels[row + x - 1] +      // y,   x-1
-        pixels[row + x + 1] +      // y,   x+1
-        pixels[row + width + x] -  // y+1, x
-        4 * pixels[row + x]        // center
+        pixels[row - width + x] +
+        pixels[row + x - 1] +
+        pixels[row + x + 1] +
+        pixels[row + width + x] -
+        4 * pixels[row + x]
       lapSum   += lap
       lapSumSq += lap * lap
     }
   }
-
   const mean = lapSum / innerCount
   return (lapSumSq / innerCount) - mean * mean
 }
 
-// ── Core analysis on a buffer (exported for reuse in claudeVision.ts) ─────────
+/**
+ * Extract a rectangular patch from a flat grayscale pixel array and compute
+ * brightness stats. Row-major layout: index = row * width + col.
+ */
+function extractPatch(
+  pixels:   Uint8Array,
+  imgW:     number,
+  imgH:     number,
+  rowStart: number,
+  colStart: number,
+  patchH:   number,
+  patchW:   number,
+): CornerPatch {
+  let sum = 0, whiteCount = 0, count = 0
+  const rowEnd = Math.min(rowStart + patchH, imgH)
+  const colEnd = Math.min(colStart + patchW, imgW)
+
+  for (let r = rowStart; r < rowEnd; r++) {
+    for (let c = colStart; c < colEnd; c++) {
+      const v = pixels[r * imgW + c]
+      sum += v
+      if (v > WHITE_THRESH) whiteCount++
+      count++
+    }
+  }
+
+  const brightness     = count > 0 ? sum / count : 0
+  const white_fraction = count > 0 ? whiteCount / count : 0
+
+  return {
+    brightness:     r1(brightness),
+    white_fraction: r4(white_fraction),
+    whitening:      white_fraction > WHITENING_THRESHOLD,
+  }
+}
 
 /**
- * Run blur/glare/brightness detectors on a pre-downloaded image buffer.
- * Exported so claudeVision.ts can pass its already-downloaded buffer
- * instead of triggering a second network fetch.
+ * Analyse the four corners of the canonical grayscale image for whitening.
+ * Corner whitening is the #1 indicator of PSA grade ceiling — any whitening
+ * rules out PSA 10 and likely caps at PSA 8 or below.
+ */
+function computeCornerAnalysis(
+  pixels: Uint8Array,
+  width:  number,
+  height: number,
+): CornerAnalysis {
+  const patches = {
+    TL: extractPatch(pixels, width, height, 0,            0,             CORNER_H_PX, CORNER_W_PX),
+    TR: extractPatch(pixels, width, height, 0,            width - CORNER_W_PX, CORNER_H_PX, CORNER_W_PX),
+    BL: extractPatch(pixels, width, height, height - CORNER_H_PX, 0,    CORNER_H_PX, CORNER_W_PX),
+    BR: extractPatch(pixels, width, height, height - CORNER_H_PX, width - CORNER_W_PX, CORNER_H_PX, CORNER_W_PX),
+  }
+
+  const whitening_corners = (Object.entries(patches) as [string, CornerPatch][])
+    .filter(([, p]) => p.whitening)
+    .map(([name]) => name)
+
+  return { ...patches, any_whitening: whitening_corners.length > 0, whitening_corners }
+}
+
+/**
+ * Sobel gradient magnitude in the card-border band (perimeter of the canonical image).
+ *
+ * The card's printed border (yellow, black, etc.) should be a smooth, uniform band.
+ * Physical scratches show up as unexpected high-gradient spikes in this region.
+ * Artwork-area gradients are excluded so artwork detail doesn't inflate the count.
+ *
+ * Returns a severity label and raw edge-pixel count for prompt injection.
+ * Labeled "approximate" because perspective distortion and photo background
+ * can also contribute gradients — interpret with the glare/blur context.
+ */
+function computeScratchIndicator(
+  pixels: Uint8Array,
+  width:  number,
+  height: number,
+): ScratchResult {
+  let edgeCount = 0
+
+  // Iterate only the border band (4 sides, excluding inner artwork)
+  // Top band, Bottom band, Left band, Right band — avoid double-counting corners
+  const regions: Array<[number, number, number, number]> = [
+    [1,                   1,                  BORDER_BAND_H,      width - 1],  // top
+    [height - BORDER_BAND_H, 1,              height - 1,         width - 1],  // bottom
+    [BORDER_BAND_H,       1,                  height - BORDER_BAND_H, BORDER_BAND_W],  // left
+    [BORDER_BAND_H, width - BORDER_BAND_W,   height - BORDER_BAND_H, width - 1],      // right
+  ]
+
+  for (const [yMin, xMin, yMax, xMax] of regions) {
+    for (let y = Math.max(1, yMin); y < Math.min(height - 1, yMax); y++) {
+      for (let x = Math.max(1, xMin); x < Math.min(width - 1, xMax); x++) {
+        const row = y * width
+        const gx =
+          -pixels[row - width + x - 1] + pixels[row - width + x + 1]
+          - 2 * pixels[row + x - 1]   + 2 * pixels[row + x + 1]
+          - pixels[row + width + x - 1] + pixels[row + width + x + 1]
+        const gy =
+          -pixels[(y - 1) * width + x - 1] - 2 * pixels[(y - 1) * width + x] - pixels[(y - 1) * width + x + 1]
+          + pixels[(y + 1) * width + x - 1] + 2 * pixels[(y + 1) * width + x] + pixels[(y + 1) * width + x + 1]
+        if (Math.sqrt(gx * gx + gy * gy) > SCRATCH_GRADIENT_THRESHOLD) edgeCount++
+      }
+    }
+  }
+
+  const { light, moderate, heavy } = SCRATCH_SEVERITY_THRESHOLDS
+  const severity: ScratchResult['severity'] =
+    edgeCount >= heavy    ? 'heavy'    :
+    edgeCount >= moderate ? 'moderate' :
+    edgeCount >= light    ? 'light'    : 'none'
+
+  return { edge_pixel_count: edgeCount, severity }
+}
+
+// ── Core analysis on a buffer ─────────────────────────────────────────────────
+
+/**
+ * Full CV analysis on a pre-downloaded image buffer.
+ * Runs blur/glare/brightness + corner whitening + scratch indicator
+ * in a single Sharp pass so callers don't trigger extra network fetches.
  */
 export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
   const { data, info } = await sharp(buf)
@@ -102,6 +243,7 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
   const { width, height } = info
   const total = width * height
 
+  // ── Phase 1: quality metrics ───────────────────────────────────────────────
   let sum = 0, sumSq = 0, glareCount = 0
   for (let i = 0; i < total; i++) {
     const v = pixels[i]
@@ -128,6 +270,13 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
   else if (brightness_mean > 220 && !has_glare)
     cv_issues.push('overexposed image — highlight detail may be lost')
 
+  // ── Phase 2: structural analysis ──────────────────────────────────────────
+  let corners: CornerAnalysis | null = null
+  let scratch: ScratchResult  | null = null
+
+  try { corners = computeCornerAnalysis(pixels, width, height) } catch { /* soft fail */ }
+  try { scratch = computeScratchIndicator(pixels, width, height) } catch { /* soft fail */ }
+
   return {
     blur_score:      r1(blur_score),
     glare_fraction:  r4(glare_fraction),
@@ -136,33 +285,21 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
     is_blurry,
     has_glare,
     cv_issues,
+    corners,
+    scratch,
   }
 }
 
 // ── Card-side classifier ──────────────────────────────────────────────────────
 
-/**
- * Classify a card image as 'front', 'back', or 'unknown' via HSV analysis.
- *
- * The Pokémon card back has a distinctive blue/teal field (hue 195–220°,
- * saturation >50%) that covers ~50–65% of the card surface. This colour
- * signature is stable across 25+ years of print runs and survives JPEG
- * compression and moderate lighting variation.
- *
- * Decision rule:
- *   ≥ 25% of pixels in the blue band → 'back'
- *   everything else                  → 'front'  (conservative assumption)
- *   processing error                 → 'unknown'
- */
 export async function classifyCardSide(buf: Buffer): Promise<CardSide> {
   try {
-    // 128×128 is sufficient for colour distribution — much faster than full res
     const { data, info } = await sharp(buf)
       .resize(128, 128, { fit: 'fill' })
       .raw()
       .toBuffer({ resolveWithObject: true })
 
-    const channels    = info.channels   // 3 (RGB) or 4 (RGBA)
+    const channels    = info.channels
     const totalPixels = info.width * info.height
     let   blueCount   = 0
 
@@ -175,13 +312,11 @@ export async function classifyCardSide(buf: Buffer): Promise<CardSide> {
       const cmin = Math.min(r, g, b)
       const diff = cmax - cmin
 
-      // Skip dark and near-grey pixels
-      if (cmax < BACK_VAL_MIN)                    continue
+      if (cmax < BACK_VAL_MIN) continue
       const sat = cmax === 0 ? 0 : diff / cmax
-      if (sat  < BACK_SAT_MIN)                    continue
-      if (diff === 0)                             continue
+      if (sat  < BACK_SAT_MIN) continue
+      if (diff === 0)          continue
 
-      // Compute hue in [0, 360)
       let hue: number
       if      (cmax === r) hue = 60 * (((g - b) / diff) % 6)
       else if (cmax === g) hue = 60 * ((b - r)  / diff + 2)
@@ -199,11 +334,6 @@ export async function classifyCardSide(buf: Buffer): Promise<CardSide> {
 
 // ── Main exports ──────────────────────────────────────────────────────────────
 
-/**
- * Run CV detectors on the first successfully downloadable image URL.
- * Kept for backward compatibility; claudeVision.ts now calls analyseBuffer()
- * directly with pre-downloaded buffers to avoid double fetching.
- */
 export async function runCVDetectors(imageUrls: string[]): Promise<CVMeasurements | null> {
   for (const url of imageUrls.slice(0, 2)) {
     try {
@@ -220,10 +350,6 @@ export async function runCVDetectors(imageUrls: string[]): Promise<CVMeasurement
 
 // ── Prompt formatters ─────────────────────────────────────────────────────────
 
-/**
- * Format CVMeasurements as a prompt section ready to prepend to grading
- * instructions. Returns empty string if cv is null (no-op injection).
- */
 export function formatCVSection(cv: CVMeasurements | null): string {
   if (!cv) return ''
 
@@ -234,21 +360,47 @@ export function formatCVSection(cv: CVMeasurements | null): string {
   const blurNote  = cv.is_blurry ? '\nNOTE: Image is blurry — lower confidence, flag in issues.' : ''
   const glareNote = cv.has_glare ? '\nNOTE: Significant glare — surface haze or scratches may be hidden.' : ''
 
+  // Corner section
+  let cornerStr = ''
+  if (cv.corners) {
+    const c = cv.corners
+    const fmt = (p: CornerPatch) =>
+      `brightness ${p.brightness}, white ${(p.white_fraction * 100).toFixed(1)}%${p.whitening ? ' ⚠ WHITENING' : ''}`
+    cornerStr = `
+─── CV CORNER ANALYSIS (pixel measurement) ───
+  TL: ${fmt(c.TL)}
+  TR: ${fmt(c.TR)}
+  BL: ${fmt(c.BL)}
+  BR: ${fmt(c.BR)}
+${c.any_whitening
+  ? `NOTE: Whitening detected at ${c.whitening_corners.join(', ')} — these corners cannot grade PSA 10; likely caps at PSA 8 or below.`
+  : 'NOTE: No corner whitening detected in pixel analysis.'}
+`
+  }
+
+  // Scratch section
+  let scratchStr = ''
+  if (cv.scratch) {
+    const s = cv.scratch
+    scratchStr = `
+─── CV SURFACE ROUGHNESS (border-band gradient, approximate) ───
+  Edge-pixel count: ${s.edge_pixel_count}  Severity: ${s.severity.toUpperCase()}
+${s.severity !== 'none'
+  ? `NOTE: Elevated gradient features in card border band — possible scratches or print lines. Inspect surface carefully.`
+  : 'NOTE: Border band appears smooth — no strong gradient spikes detected.'}
+`
+  }
+
   return `─── CV MEASUREMENTS (pixel analysis, run before this prompt) ───
 Blur score   : ${cv.blur_score}  (threshold ≥ ${BLUR_THRESHOLD} = acceptably sharp)
 Glare        : ${r1(cv.glare_fraction * 100)}% pixels overexposed  (≤ 5% acceptable)
 Brightness   : mean ${cv.brightness_mean} / std ${cv.brightness_std}  (0–255 scale)
 CV issues    :
 ${issueStr}${blurNote}${glareNote}
-
+${cornerStr}${scratchStr}
 `
 }
 
-/**
- * Format per-image side labels for prompt injection.
- * Tells Claude exactly which position is front vs back so it never guesses.
- * Returns empty string when all sides are unknown (no CV classification available).
- */
 export function formatSideLabels(sides: CardSide[]): string {
   if (sides.every(s => s === 'unknown')) return ''
   const lines = sides.map((s, i) => `  Image ${i + 1}: ${s.toUpperCase()}`)
