@@ -33,9 +33,10 @@ export interface CardIdentity {
 }
 
 export interface GradeEstimate {
-  grade_range:  string
-  confidence:   'high' | 'medium' | 'low'
-  distribution: Record<string, number>  // "1"–"10" → probability
+  grade_range:      string
+  confidence:       'high' | 'medium' | 'low'
+  distribution:     Record<string, number>  // "1"–"10" → probability
+  limiting_factor:  'front_only' | 'image_quality' | 'visible_damage' | null
 }
 
 export interface ImageQuality {
@@ -57,17 +58,27 @@ export interface CardIssues {
   other:     string[]
 }
 
+/** Issues and centering assessment for one side of the card. */
+export interface SideAnalysis {
+  assessable: boolean        // false when images for this side are absent/unusable
+  centering:  string | null  // e.g. "58/42 L/R, 54/46 T/B"; null if not visible
+  issues:     CardIssues
+}
+
 export interface GradingDecision {
   gradable_candidate: 'yes' | 'maybe' | 'no'
   reason:             string
+  caveats:            string[]  // explicit warnings, e.g. "back image missing"
 }
 
 export interface ClaudeGradingResult {
   analysis_mode:    'front_only' | 'front_back'
   card_identity:    CardIdentity
   image_quality:    ImageQuality
+  front_analysis:   SideAnalysis
+  back_analysis:    SideAnalysis
   grade_estimate:   GradeEstimate
-  issues:           CardIssues
+  issues:           CardIssues   // combined worst-case from front + back
   grading_decision: GradingDecision
 }
 
@@ -75,111 +86,178 @@ export interface ClaudeGradingResult {
 
 const SYSTEM_PROMPT = `You are an expert PSA pre-grading assistant specializing in Pokémon trading cards.
 
-Your task is to estimate the plausible PSA grade range supported by the visible evidence in the provided images. You are not guaranteeing a final PSA grade.
+Your task is to estimate the plausible PSA grade range supported by the visible evidence. You are not guaranteeing a final PSA grade.
 
 Core principles:
 - Base your assessment only on what is actually visible in the images.
 - Never assume unseen areas are clean.
-- If the back is missing, explicitly note that rear whitening / edge wear / back centering cannot be fully assessed.
 - If glare, blur, angle, cropping, sleeve reflections, compression, or low resolution hide details, reduce confidence and mention the limitation.
 - When evidence is incomplete, prefer a wider grade range and lower confidence.
 - Distinguish between: (1) visible defects and (2) unknowns caused by image limitations.
 
 Evaluate in this order:
-1. IMAGE ASSESSABILITY — determine whether front/back are present and whether corners, edges, centering, and surface can be evaluated reliably
-2. CORNERS — top-left, top-right, bottom-left, bottom-right for whitening, fraying, rounding
-3. EDGES — all four edges for nicks, chips, whitening
-4. CENTERING — estimate left/right and top/bottom split only if visible enough
-5. SURFACE — scratches, print lines, holo damage, staining, indentations, gloss loss, only if visible enough
-6. CARD IDENTITY — identify card name/set/year/number only if reasonably supported by the image
+1. IMAGE CLASSIFICATION — label each image as "front", "back", or "other" based on visible content. The front shows the card artwork; the back shows the Pokémon logo / back design.
+2. FRONT ANALYSIS — if a front image is present, assess separately:
+   - Centering: estimate L/R and T/B border split
+   - Corners: TL, TR, BL, BR — whitening, fraying, rounding
+   - Edges: top, bottom, left, right — nicks, chips, whitening
+   - Surface: scratches, print lines, holo damage, staining, gloss loss
+3. BACK ANALYSIS — if a back image is present, assess separately:
+   - Centering: estimate L/R and T/B border split
+   - Corners: TL, TR, BL, BR
+   - Edges: top, bottom, left, right
+   - Surface: print quality, scratches, staining
+4. COMBINED GRADE — derive the final grade_estimate and combined issues from the worst-case evidence across both sides.
+5. CARD IDENTITY — identify name/set/year/number from the front image only.
 
 PSA grade guidance:
-- PSA 10 Gem Mint: near-perfect visible condition, centering roughly 55/45 or better on front, four sharp corners, no visible print/surface defects, full gloss
-- PSA 9  Mint: slight visible wear allowed, minor print/surface issues possible, strong overall presentation
-- PSA 8  NM-MT: light visible corner/edge wear, possible very light scratches or print issues
+- PSA 10 Gem Mint: near-perfect, centering ~55/45 or better on front, four sharp corners, no visible defects, full gloss
+- PSA 9  Mint: slight visible wear allowed, minor issues possible, strong overall presentation
+- PSA 8  NM-MT: light corner/edge wear, possible very light scratches or print issues
 - PSA 7  NM: visible but not severe corner/edge wear, possible light scratches or minor print defects
 - PSA 6  EX-MT and below: increasingly obvious wear, scratches, edge damage, staining, creasing, or major defects
 
-Special instructions:
-- If only one image is provided, assume it is probably the front unless the image clearly shows the back.
-- If multiple images are provided, use all of them but do not double-count the same evidence.
-- Vintage Pokémon cards (1999–2003) and modern cards should be judged with awareness of era, but never use era to override visible evidence.
+Front-only rule (CRITICAL):
+- If no back image is identifiable, set analysis_mode to "front_only"
+- Set back_analysis.assessable to false and leave all back_analysis issue arrays empty
+- Set grade_estimate.confidence to "low" regardless of front image quality
+- Set grade_estimate.limiting_factor to "front_only"
+- Add exactly this string to grading_decision.caveats: "Back image not provided — rear corner whitening, edge wear, and back centering cannot be assessed. Grade confidence is limited to low."
+- Do NOT speculate about the back condition
+
+Other special instructions:
+- Do not double-count the same defect across front and back.
+- Vintage Pokémon cards (1999–2003) should be judged with awareness of era, but never use era to override visible evidence.
 - Holo surface must be treated conservatively when glare or angle prevents reliable inspection.
-- Do not overclaim PSA 10 or PSA 9 when image quality is limited.
-- If evidence is poor, say so explicitly and lower confidence.
+- Do not overclaim PSA 9 or PSA 10 when image quality is limited.
 
 Respond ONLY with one valid JSON object. No markdown, no prose outside JSON.
 
-The "issues" field must be an object with exactly these keys: centering, corners, edges, surface, other.
-Each key must map to an array of strings. Use [] when nothing is visible for that category.
-Use "warnings" in image_quality for image-level limitations (glare, blur, missing back).
-Use "issues.other" for card-level unknowns that don't fit another category.
+Every "issues" object must use exactly these keys: centering, corners, edges, surface, other.
+Each maps to an array of strings. Use [] when nothing is visible for that category.
 
 Allowed values:
 - "analysis_mode": "front_only" or "front_back"
 - "image_quality.status": "good", "partial", or "poor"
 - "card_identity.confidence": "high", "medium", or "low"
 - "grade_estimate.confidence": "high", "medium", or "low"
+- "grade_estimate.limiting_factor": "front_only", "image_quality", "visible_damage", or null
 - "grading_decision.gradable_candidate": "yes", "maybe", or "no"
+- "front_analysis.assessable" / "back_analysis.assessable": true or false
 
 If a card_identity field is uncertain, use null rather than guessing.`
 
-const USER_PROMPT = `Analyze this Pokémon card from the provided image set and return JSON with EXACTLY this structure:
+const USER_PROMPT = `Analyze this Pokémon card from the provided image set and return JSON with EXACTLY this structure.
 
+Example when both front and back are present:
 {
-  "analysis_mode": "front_only",
+  "analysis_mode": "front_back",
   "card_identity": {
-    "name":       null,
-    "set":        null,
-    "year":       null,
-    "number":     null,
-    "confidence": "low"
+    "name":       "Charizard",
+    "set":        "Base Set",
+    "year":       "1999",
+    "number":     "4",
+    "confidence": "high"
   },
   "image_quality": {
-    "status":            "partial",
+    "status":            "good",
     "warnings":          [],
     "front_present":     true,
-    "back_present":      false,
+    "back_present":      true,
     "centering_visible": true,
     "corners_visible":   true,
     "edges_visible":     true,
-    "surface_visible":   false
+    "surface_visible":   true
+  },
+  "front_analysis": {
+    "assessable": true,
+    "centering":  "58/42 L/R, 54/46 T/B",
+    "issues": {
+      "centering": ["Slightly left-heavy, approximately 58/42 L/R"],
+      "corners":   ["Light whitening on top-right corner"],
+      "edges":     [],
+      "surface":   ["Faint holo scratches visible at angle"],
+      "other":     []
+    }
+  },
+  "back_analysis": {
+    "assessable": true,
+    "centering":  "50/50 L/R, 51/49 T/B",
+    "issues": {
+      "centering": [],
+      "corners":   [],
+      "edges":     ["Minor whitening on bottom edge"],
+      "surface":   [],
+      "other":     []
+    }
   },
   "grade_estimate": {
-    "grade_range":  "PSA 7-9",
-    "confidence":   "low",
+    "grade_range":     "PSA 7-8",
+    "confidence":      "high",
+    "limiting_factor": "visible_damage",
+    "distribution": {
+      "1": 0.00, "2": 0.00, "3": 0.01, "4": 0.02, "5": 0.04,
+      "6": 0.08, "7": 0.30, "8": 0.40, "9": 0.12, "10": 0.03
+    }
+  },
+  "issues": {
+    "centering": ["Slightly left-heavy front (58/42 L/R)"],
+    "corners":   ["Light whitening on top-right corner (front)"],
+    "edges":     ["Minor whitening on bottom edge (back)"],
+    "surface":   ["Faint holo scratches visible at angle (front)"],
+    "other":     []
+  },
+  "grading_decision": {
+    "gradable_candidate": "maybe",
+    "reason": "Card shows light wear consistent with PSA 7-8. Holo scratches are the primary concern.",
+    "caveats": []
+  }
+}
+
+Example when only the front is present (front_only):
+{
+  "analysis_mode": "front_only",
+  "card_identity": { "name": null, "set": null, "year": null, "number": null, "confidence": "low" },
+  "image_quality": {
+    "status": "partial", "warnings": [], "front_present": true, "back_present": false,
+    "centering_visible": true, "corners_visible": true, "edges_visible": true, "surface_visible": false
+  },
+  "front_analysis": {
+    "assessable": true,
+    "centering": "55/45 L/R, 53/47 T/B",
+    "issues": { "centering": [], "corners": [], "edges": [], "surface": [], "other": [] }
+  },
+  "back_analysis": {
+    "assessable": false,
+    "centering": null,
+    "issues": { "centering": [], "corners": [], "edges": [], "surface": [], "other": [] }
+  },
+  "grade_estimate": {
+    "grade_range": "PSA 7-9", "confidence": "low", "limiting_factor": "front_only",
     "distribution": {
       "1": 0.00, "2": 0.00, "3": 0.01, "4": 0.02, "5": 0.05,
       "6": 0.10, "7": 0.22, "8": 0.30, "9": 0.22, "10": 0.08
     }
   },
-  "issues": {
-    "centering": [],
-    "corners":   [],
-    "edges":     [],
-    "surface":   [],
-    "other":     []
-  },
+  "issues": { "centering": [], "corners": [], "edges": [], "surface": [], "other": [] },
   "grading_decision": {
     "gradable_candidate": "maybe",
-    "reason": "Front appears reasonably strong, but back is missing and surface visibility is limited."
+    "reason": "Front appears reasonably clean but back is not available for assessment.",
+    "caveats": ["Back image not provided — rear corner whitening, edge wear, and back centering cannot be assessed. Grade confidence is limited to low."]
   }
 }
 
 Rules:
 - Output exactly one JSON object. Use exactly the top-level keys shown above.
-- "issues" must use exactly these keys: centering, corners, edges, surface, other. Each maps to an array of strings.
+- front_analysis and back_analysis each have their own "issues" object for per-side defects.
+- "issues" at the top level is the COMBINED worst-case from both sides. Tag each item with "(front)" or "(back)".
 - Do not guess hidden defects. Only report what is actually visible.
-- If the back is missing, use "analysis_mode": "front_only" and set "back_present": false.
-- If the back is present and usable, use "analysis_mode": "front_back".
-- If glare, blur, angle, cropping, or compression limit a category, mention that in "warnings" and/or in issues.surface or issues.other.
-- If card identity is uncertain, use null fields and lower confidence.
+- If the back is missing: set analysis_mode "front_only", back_analysis.assessable false, grade confidence "low", limiting_factor "front_only", and add the caveat string exactly as shown.
+- If glare/blur/angle limits visibility, mention in image_quality.warnings and the relevant side analysis.
 - Use a wider grade range and lower confidence when evidence is incomplete.
-- Be conservative about PSA 9 and PSA 10 if surface visibility is limited.
-- The distribution values must be plausible probabilities summing approximately to 1.00.
-- confidence is "high" when top-2 PSA grades account for >60% of probability mass.
-- confidence is "medium" when top-2 grades account for 40–60%.
-- confidence is "low" when image quality is too limited for reliable assessment.`
+- Be conservative about PSA 9 and PSA 10 if surface or back visibility is limited.
+- Distribution values must sum approximately to 1.00.
+- confidence "high": top-2 PSA grades >60% of mass. "medium": 40–60%. "low": image too limited.`
 
 // ── Image fetch + resize helper ───────────────────────────────────
 

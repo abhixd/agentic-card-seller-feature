@@ -264,6 +264,75 @@ function renderResult(payload) {
   document.getElementById('gd-label').textContent  = gdMeta.label
   document.getElementById('gd-reason').textContent = grading_decision.reason ?? ''
 
+  const caveats    = grading_decision.caveats ?? []
+  const caveatsList = document.getElementById('gd-caveats')
+  caveatsList.innerHTML = ''
+  if (caveats.length > 0) {
+    caveats.forEach(c => {
+      const li = document.createElement('li')
+      li.textContent = c
+      caveatsList.appendChild(li)
+    })
+    caveatsList.classList.remove('hidden')
+  } else {
+    caveatsList.classList.add('hidden')
+  }
+
+  // ── Front / Back analysis ───────────────────────────────────────
+  function renderSideAnalysis(side, prefix) {
+    const notAvailEl  = document.getElementById(`${prefix}-not-available`)
+    const centeringEl = document.getElementById(`${prefix}-centering`)
+    const issuesEl    = document.getElementById(`${prefix}-issues-list`)
+
+    if (!side || side.assessable === false) {
+      notAvailEl.classList.remove('hidden')
+      centeringEl.classList.add('hidden')
+      issuesEl.classList.add('hidden')
+      return
+    }
+
+    notAvailEl.classList.add('hidden')
+    issuesEl.innerHTML = ''
+    let hasIssue = false
+
+    if (side.centering) {
+      centeringEl.textContent = `Centering: ${side.centering}`
+      centeringEl.classList.remove('hidden')
+    } else {
+      centeringEl.classList.add('hidden')
+    }
+
+    const sideIssues = side.issues ?? {}
+    Object.entries(ISSUE_CATEGORY_LABELS).forEach(([key, label]) => {
+      const items = sideIssues[key]
+      if (!Array.isArray(items) || items.length === 0) return
+      hasIssue = true
+      const header = document.createElement('li')
+      header.className = 'issue-category-header'
+      header.textContent = label
+      issuesEl.appendChild(header)
+      items.forEach(issue => {
+        const li = document.createElement('li')
+        li.className = 'issue-item'
+        li.textContent = issue
+        issuesEl.appendChild(li)
+      })
+    })
+
+    if (!hasIssue) {
+      const li = document.createElement('li')
+      li.className = 'no-issues'
+      li.textContent = '✓ No issues detected'
+      li.style.listStyle = 'none'
+      issuesEl.appendChild(li)
+    }
+
+    issuesEl.classList.remove('hidden')
+  }
+
+  renderSideAnalysis(payload.front_analysis, 'front')
+  renderSideAnalysis(payload.back_analysis,  'back')
+
   // ── Grade estimate ──────────────────────────────────────────────
   const dist       = grade_estimate.distribution ?? {}
   const gradeRange = grade_estimate.grade_range   ?? '?'

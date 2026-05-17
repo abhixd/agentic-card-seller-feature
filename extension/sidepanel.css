@@ -319,6 +319,42 @@ main { padding: 16px 14px 32px; }
   line-height: 1.5;
 }
 
+/* Caveats — prominent warning under grading decision */
+.gd-caveats {
+  list-style: none;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.gd-caveats li {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(220, 38, 38, 0.12);
+  border-left: 3px solid var(--skip);
+  color: #fca5a5;
+}
+
+/* Side analysis sections (front / back) */
+.side-analysis-section { margin-bottom: 14px; }
+
+.side-centering {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.side-not-available {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
 /* Decision banner */
 .decision-banner {
   border-radius: var(--radius);
