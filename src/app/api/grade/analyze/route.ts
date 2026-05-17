@@ -151,6 +151,51 @@ function computeDecision(
 
 function round2(n: number) { return Math.round(n * 100) / 100 }
 
+// ── Inference sanity guard ────────────────────────────────────────
+/**
+ * Fix contradictions that Claude occasionally returns despite prompt rules.
+ * Runs server-side so the extension always gets consistent data.
+ *
+ * Rules enforced:
+ *  1. front_only mode → confidence MUST be "low", limiting_factor "front_only"
+ *  2. Both sides non-assessable → confidence "low", gradable "no", caveat added
+ *  3. front_only + back_analysis.assessable true → force back to false (impossible state)
+ */
+function sanitiseInference(
+  inf: Awaited<ReturnType<typeof gradeWithClaude>>,
+): Awaited<ReturnType<typeof gradeWithClaude>> {
+  const frontAssessable = inf.front_analysis?.assessable !== false
+  const backAssessable  = inf.back_analysis?.assessable  !== false
+
+  // Rule 1: front_only mode always means low confidence
+  if (inf.analysis_mode === 'front_only') {
+    inf.grade_estimate.confidence     = 'low'
+    inf.grade_estimate.limiting_factor = 'front_only'
+    // Back must be non-assessable in front_only mode
+    if (inf.back_analysis) inf.back_analysis.assessable = false
+    // Ensure the required caveat string is present
+    const requiredCaveat = 'Back image not provided — rear corner whitening, edge wear, and back centering cannot be assessed. Grade confidence is limited to low.'
+    inf.grading_decision.caveats = inf.grading_decision.caveats ?? []
+    if (!inf.grading_decision.caveats.includes(requiredCaveat)) {
+      inf.grading_decision.caveats.push(requiredCaveat)
+    }
+  }
+
+  // Rule 2: both sides non-assessable → can't grade at all
+  if (!frontAssessable && !backAssessable) {
+    inf.grade_estimate.confidence      = 'low'
+    inf.grade_estimate.limiting_factor = 'image_quality'
+    inf.grading_decision.gradable_candidate = 'no'
+    inf.grading_decision.caveats = inf.grading_decision.caveats ?? []
+    const bothBadCaveat = 'Neither front nor back image was assessable — unable to grade reliably.'
+    if (!inf.grading_decision.caveats.includes(bothBadCaveat)) {
+      inf.grading_decision.caveats.push(bothBadCaveat)
+    }
+  }
+
+  return inf
+}
+
 // ── Route ─────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
@@ -173,7 +218,7 @@ export async function POST(req: NextRequest) {
   // ── 1. Claude Vision grading ──────────────────────────────────
   let inference: Awaited<ReturnType<typeof gradeWithClaude>>
   try {
-    inference = await gradeWithClaude(body.image_urls, body.title)
+    inference = sanitiseInference(await gradeWithClaude(body.image_urls, body.title))
   } catch (err) {
     return NextResponse.json(
       { error: `Claude Vision grading failed: ${err instanceof Error ? err.message : 'Unknown error'}` },
