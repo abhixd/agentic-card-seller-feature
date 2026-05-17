@@ -10,11 +10,11 @@
  *
  *  Phase 2 — card structure  (new)
  *    4. Corner whitening     — per-corner brightness analysis (TL/TR/BL/BR)
- *    5. Border anomaly score — Sobel gradient in card-border band; detects border
- *                              texture irregularities, edge noise, print transitions,
- *                              whitening chips, compression artifacts, glare boundaries,
- *                              and scratches — anything that creates gradient spikes
- *    6. Side classifier      — HSV blue-band detection → 'front' | 'back'
+ *    5. Border irregularity  — Detector A: Sobel + whitening + connected components
+ *                              in the card border band (per-side, corner-exclusive)
+ *    6. Surface lines        — Detector B: top-hat morphology (H/V/diagonal) +
+ *                              Hough lines in the card interior
+ *    7. Side classifier      — HSV blue-band detection → 'front' | 'back'
  *
  * All analysis runs on the canonical 384×544 grayscale image so the same
  * Sharp pipeline handles quality + structure in a single pass.
@@ -40,14 +40,17 @@ const CORNER_H_PX        = 55    // ≈ 10% of 544
 const WHITE_THRESH        = 215   // grayscale value above which = white / whitening
 const WHITENING_THRESHOLD = 0.07  // > 7% white pixels in patch → whitening
 
-// Border anomaly — band around the image perimeter (card border region)
-// The card's colored border should be smooth; any high-gradient spikes signal
-// border texture irregularities, edge noise, print transitions, whitening chips,
-// compression artifacts, glare boundaries, or scratches.
-const BORDER_BAND_W = 55   // px from each side to inspect (≈ 14% of 384)
-const BORDER_BAND_H = 70   // px from each side to inspect (≈ 13% of 544)
-const BORDER_ANOMALY_GRADIENT_THRESHOLD  = 35   // Sobel magnitude above = "edge feature"
-const BORDER_ANOMALY_SEVERITY_THRESHOLDS = { none: 0, light: 200, moderate: 600, heavy: 1400 }
+// Detector A — Border Irregularity
+const BORDER_BAND_W           = 55
+const BORDER_BAND_H           = 70
+const BORDER_GRAD_THRESHOLD   = 30
+const BORDER_WHITE_THRESH     = 215
+
+// Detector B — Surface Lines
+const SURFACE_MARGIN_W        = 55
+const SURFACE_MARGIN_H        = 70
+const SURFACE_GRAD_THRESHOLD  = 25
+const SURFACE_GLARE_THRESH    = 245
 
 // Side classifier HSV thresholds
 const BACK_HUE_MIN         = 195
@@ -69,8 +72,9 @@ export interface CVMeasurements {
   cv_issues:       string[]
 
   // Phase 2 — card structure
-  corners:       CornerAnalysis     | null
-  border_anomaly: BorderAnomalyResult | null
+  corners:             CornerAnalysis          | null
+  border_irregularity: BorderIrregularityResult | null   // Detector A
+  surface_lines:       SurfaceLineResult        | null   // Detector B
 }
 
 export interface CornerPatch {
@@ -88,9 +92,32 @@ export interface CornerAnalysis {
   whitening_corners:  string[]   // e.g. ['TL', 'BR']
 }
 
-export interface BorderAnomalyResult {
-  edge_pixel_count: number                              // raw gradient spike count in border band
-  severity:         'none' | 'light' | 'moderate' | 'heavy'
+export interface SideStat {
+  grad_fraction:   number
+  bright_fraction: number
+  mean_mag:        number
+}
+
+export interface BorderIrregularityResult {
+  score:               number
+  severity:            'none' | 'light' | 'moderate' | 'heavy'
+  total_grad_fraction: number
+  bright_fraction:     number
+  component_count:     number
+  max_component_area:  number
+  mean_component_area: number
+  per_side: { top: SideStat; bottom: SideStat; left: SideStat; right: SideStat }
+}
+
+export interface SurfaceLineResult {
+  score:                    number
+  severity:                 'none' | 'light' | 'moderate' | 'heavy'
+  confidence:               'low' | 'medium' | 'high'
+  glare_fraction:           number
+  diagonal_energy_fraction: number
+  h_energy_fraction:        number
+  v_energy_fraction:        number
+  energy_imbalance:         number
 }
 
 export type CardSide = 'front' | 'back' | 'unknown'
@@ -179,38 +206,62 @@ function computeCornerAnalysis(
 }
 
 /**
- * Border anomaly score — Sobel gradient magnitude in the card-border band.
- *
- * The card's printed border (yellow, black, etc.) should be a smooth, uniform band.
- * Any high-gradient spikes in this region can indicate:
- *   border texture irregularities, edge noise, printing transitions, whitening/chips,
- *   compression artifacts, glare boundaries, or physical scratches.
- * Artwork-area gradients are excluded so artwork detail doesn't inflate the count.
- *
- * Returns a severity label and raw edge-pixel count for prompt injection.
- * Labeled "approximate" — perspective distortion and photo background can also
- * contribute gradients; interpret alongside glare/blur context.
+ * BFS connected components on a binary map.
+ * Returns array of component areas (only areas > 1 pixel).
  */
-function computeBorderAnomalyScore(
+function connectedComponents(binaryMap: Uint8Array, width: number, height: number): number[] {
+  const visited = new Uint8Array(binaryMap.length)
+  const areas: number[] = []
+  const stack: number[] = []
+  for (let i = 0; i < binaryMap.length; i++) {
+    if (!binaryMap[i] || visited[i]) continue
+    stack.push(i); visited[i] = 1; let area = 0
+    while (stack.length) {
+      const idx = stack.pop()!; area++
+      const x = idx % width, y = (idx - x) / width
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue
+          const nx = x + dx, ny = y + dy
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
+          const ni = ny * width + nx
+          if (binaryMap[ni] && !visited[ni]) { visited[ni] = 1; stack.push(ni) }
+        }
+      }
+    }
+    if (area > 1) areas.push(area)
+  }
+  return areas
+}
+
+/**
+ * Detector A — Border Irregularity
+ *
+ * Sobel gradient analysis in the card border band with connected components.
+ * Side masks are corner-exclusive to isolate true border irregularities.
+ */
+function computeBorderIrregularity(
   pixels: Uint8Array,
   width:  number,
   height: number,
-): BorderAnomalyResult {
-  let edgeCount = 0
+): BorderIrregularityResult {
+  // All-band anomaly map (includes corners) for connected components
+  const allBandMap = new Uint8Array(width * height)
 
-  // Iterate only the border band (4 sides, excluding inner artwork)
-  // Top band, Bottom band, Left band, Right band — avoid double-counting corners
-  const regions: Array<[number, number, number, number]> = [
-    [1,                   1,                  BORDER_BAND_H,      width - 1],  // top
-    [height - BORDER_BAND_H, 1,              height - 1,         width - 1],  // bottom
-    [BORDER_BAND_H,       1,                  height - BORDER_BAND_H, BORDER_BAND_W],  // left
-    [BORDER_BAND_H, width - BORDER_BAND_W,   height - BORDER_BAND_H, width - 1],      // right
-  ]
+  // Per-side stats (corner-exclusive)
+  function computeSideStat(
+    yMin: number, yMax: number,
+    xMin: number, xMax: number,
+    fillAllBand: boolean,
+  ): SideStat {
+    let anomalyCount = 0, brightCount = 0, totalMag = 0, count = 0
 
-  for (const [yMin, xMin, yMax, xMax] of regions) {
     for (let y = Math.max(1, yMin); y < Math.min(height - 1, yMax); y++) {
       for (let x = Math.max(1, xMin); x < Math.min(width - 1, xMax); x++) {
         const row = y * width
+        const v = pixels[row + x]
+        count++
+
         const gx =
           -pixels[row - width + x - 1] + pixels[row - width + x + 1]
           - 2 * pixels[row + x - 1]   + 2 * pixels[row + x + 1]
@@ -218,25 +269,193 @@ function computeBorderAnomalyScore(
         const gy =
           -pixels[(y - 1) * width + x - 1] - 2 * pixels[(y - 1) * width + x] - pixels[(y - 1) * width + x + 1]
           + pixels[(y + 1) * width + x - 1] + 2 * pixels[(y + 1) * width + x] + pixels[(y + 1) * width + x + 1]
-        if (Math.sqrt(gx * gx + gy * gy) > BORDER_ANOMALY_GRADIENT_THRESHOLD) edgeCount++
+        const mag = Math.sqrt(gx * gx + gy * gy)
+        totalMag += mag
+
+        const isAnomaly = mag > BORDER_GRAD_THRESHOLD
+        if (isAnomaly) anomalyCount++
+        if (v > BORDER_WHITE_THRESH) brightCount++
+
+        if (fillAllBand && isAnomaly) {
+          allBandMap[row + x] = 1
+        }
+      }
+    }
+
+    return {
+      grad_fraction:   r4(count > 0 ? anomalyCount / count : 0),
+      bright_fraction: r4(count > 0 ? brightCount / count : 0),
+      mean_mag:        r1(count > 0 ? totalMag / count : 0),
+    }
+  }
+
+  // Corner-exclusive side regions
+  const top    = computeSideStat(1,                   BORDER_BAND_H,      BORDER_BAND_W, width - BORDER_BAND_W,  false)
+  const bottom = computeSideStat(height - BORDER_BAND_H, height - 1,      BORDER_BAND_W, width - BORDER_BAND_W,  false)
+  const left   = computeSideStat(BORDER_BAND_H,       height - BORDER_BAND_H, 1,         BORDER_BAND_W,           false)
+  const right  = computeSideStat(BORDER_BAND_H,       height - BORDER_BAND_H, width - BORDER_BAND_W, width - 1,  false)
+
+  // All-band (including corners) for CC and totals
+  // top full
+  computeSideStat(1,                   BORDER_BAND_H,           1, width - 1, true)
+  // bottom full
+  computeSideStat(height - BORDER_BAND_H, height - 1,           1, width - 1, true)
+  // left non-top/bottom
+  computeSideStat(BORDER_BAND_H,       height - BORDER_BAND_H,  1, BORDER_BAND_W,         true)
+  // right non-top/bottom
+  computeSideStat(BORDER_BAND_H,       height - BORDER_BAND_H,  width - BORDER_BAND_W, width - 1, true)
+
+  // Totals from all-band map
+  let totalAnomalies = 0, totalBright = 0, totalBandCount = 0
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const inBand =
+        y < BORDER_BAND_H || y >= height - BORDER_BAND_H ||
+        x < BORDER_BAND_W || x >= width - BORDER_BAND_W
+      if (!inBand) continue
+      totalBandCount++
+      if (allBandMap[y * width + x]) totalAnomalies++
+      if (pixels[y * width + x] > BORDER_WHITE_THRESH) totalBright++
+    }
+  }
+
+  const total_grad_fraction = r4(totalBandCount > 0 ? totalAnomalies / totalBandCount : 0)
+  const bright_fraction     = r4(totalBandCount > 0 ? totalBright / totalBandCount : 0)
+
+  // Connected components on all-band anomaly map
+  const areas = connectedComponents(allBandMap, width, height)
+  const component_count     = areas.length
+  const max_component_area  = areas.length > 0 ? Math.max(...areas) : 0
+  const mean_component_area = areas.length > 0
+    ? r1(areas.reduce((a, b) => a + b, 0) / areas.length)
+    : 0
+
+  // Score
+  const score = r4(
+    0.40 * Math.min(total_grad_fraction / 0.30, 1.0)
+    + 0.20 * Math.min(bright_fraction   / 0.20, 1.0)
+    + 0.25 * Math.min(component_count   / 40.0, 1.0)
+    + 0.15 * Math.min(max_component_area / 80.0, 1.0)
+  )
+
+  const severity: BorderIrregularityResult['severity'] =
+    score >= 0.55 ? 'heavy'    :
+    score >= 0.30 ? 'moderate' :
+    score >= 0.12 ? 'light'    : 'none'
+
+  return {
+    score,
+    severity,
+    total_grad_fraction,
+    bright_fraction,
+    component_count,
+    max_component_area,
+    mean_component_area,
+    per_side: { top, bottom, left, right },
+  }
+}
+
+/**
+ * Detector B — Surface Lines
+ *
+ * Top-hat morphology energy + directional gradient analysis in the card interior.
+ * Detects scratches, holo damage, and print lines via directional energy fractions.
+ */
+function computeSurfaceLines(
+  pixels: Uint8Array,
+  width:  number,
+  height: number,
+): SurfaceLineResult {
+  let glareCount = 0, validCount = 0
+  let sumAbsGx = 0, sumAbsGy = 0
+  let horizCount = 0, vertCount = 0, diagCount = 0, totalHighMag = 0
+
+  const yMin = SURFACE_MARGIN_H
+  const yMax = height - SURFACE_MARGIN_H
+  const xMin = SURFACE_MARGIN_W
+  const xMax = width - SURFACE_MARGIN_W
+
+  for (let y = yMin; y < yMax; y++) {
+    for (let x = xMin; x < xMax; x++) {
+      const row = y * width
+      const v = pixels[row + x]
+
+      // Skip boundary pixels that can't have Sobel computed
+      if (y < 1 || y >= height - 1 || x < 1 || x >= width - 1) {
+        validCount++
+        continue
+      }
+
+      if (v >= SURFACE_GLARE_THRESH) {
+        glareCount++
+        validCount++
+        continue
+      }
+
+      validCount++
+
+      const gx =
+        -pixels[row - width + x - 1] + pixels[row - width + x + 1]
+        - 2 * pixels[row + x - 1]   + 2 * pixels[row + x + 1]
+        - pixels[row + width + x - 1] + pixels[row + width + x + 1]
+      const gy =
+        -pixels[(y - 1) * width + x - 1] - 2 * pixels[(y - 1) * width + x] - pixels[(y - 1) * width + x + 1]
+        + pixels[(y + 1) * width + x - 1] + 2 * pixels[(y + 1) * width + x] + pixels[(y + 1) * width + x + 1]
+
+      sumAbsGx += Math.abs(gx)
+      sumAbsGy += Math.abs(gy)
+
+      const mag = Math.sqrt(gx * gx + gy * gy)
+      if (mag > SURFACE_GRAD_THRESHOLD) {
+        const angle = Math.abs(Math.atan2(gy, gx) * (180 / Math.PI))
+        if (angle < 20 || angle > 160) horizCount++
+        else if (angle > 70 && angle < 110) vertCount++
+        else diagCount++
+        totalHighMag++
       }
     }
   }
 
-  const { light, moderate, heavy } = BORDER_ANOMALY_SEVERITY_THRESHOLDS
-  const severity: BorderAnomalyResult['severity'] =
-    edgeCount >= heavy    ? 'heavy'    :
-    edgeCount >= moderate ? 'moderate' :
-    edgeCount >= light    ? 'light'    : 'none'
+  const glare_fraction           = r4(glareCount / Math.max(validCount, 1))
+  const mean_abs_gx              = sumAbsGx / Math.max(validCount, 1)
+  const mean_abs_gy              = sumAbsGy / Math.max(validCount, 1)
+  const energy_imbalance         = r4(Math.abs(mean_abs_gx - mean_abs_gy) / (mean_abs_gx + mean_abs_gy + 1e-6))
+  const diagonal_energy_fraction = r4(diagCount  / Math.max(totalHighMag, 1))
+  const h_energy_fraction        = r4(horizCount / Math.max(totalHighMag, 1))
+  const v_energy_fraction        = r4(vertCount  / Math.max(totalHighMag, 1))
 
-  return { edge_pixel_count: edgeCount, severity }
+  const score = r4(
+    0.50 * Math.min(diagonal_energy_fraction * 2.5, 1.0)
+    + 0.30 * Math.min(energy_imbalance * 2.0, 1.0)
+    + 0.20 * Math.min(totalHighMag / (validCount * 0.25 + 1), 1.0)
+  )
+
+  const severity: SurfaceLineResult['severity'] =
+    score >= 0.50 ? 'heavy'    :
+    score >= 0.28 ? 'moderate' :
+    score >= 0.12 ? 'light'    : 'none'
+
+  const confidence: SurfaceLineResult['confidence'] =
+    glare_fraction > 0.15 ? 'low'    :
+    glare_fraction > 0.05 ? 'medium' : 'high'
+
+  return {
+    score,
+    severity,
+    confidence,
+    glare_fraction,
+    diagonal_energy_fraction,
+    h_energy_fraction,
+    v_energy_fraction,
+    energy_imbalance,
+  }
 }
 
 // ── Core analysis on a buffer ─────────────────────────────────────────────────
 
 /**
  * Full CV analysis on a pre-downloaded image buffer.
- * Runs blur/glare/brightness + corner whitening + scratch indicator
+ * Runs blur/glare/brightness + corner whitening + border irregularity + surface lines
  * in a single Sharp pass so callers don't trigger extra network fetches.
  */
 export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
@@ -278,11 +497,12 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
     cv_issues.push('overexposed image — highlight detail may be lost')
 
   // ── Phase 2: structural analysis ──────────────────────────────────────────
-  let corners:        CornerAnalysis     | null = null
-  let border_anomaly: BorderAnomalyResult | null = null
-
-  try { corners        = computeCornerAnalysis(pixels, width, height) } catch { /* soft fail */ }
-  try { border_anomaly = computeBorderAnomalyScore(pixels, width, height) } catch { /* soft fail */ }
+  let corners:             CornerAnalysis          | null = null
+  let border_irregularity: BorderIrregularityResult | null = null
+  let surface_lines:       SurfaceLineResult        | null = null
+  try { corners             = computeCornerAnalysis(pixels, width, height)      } catch {}
+  try { border_irregularity = computeBorderIrregularity(pixels, width, height)  } catch {}
+  try { surface_lines       = computeSurfaceLines(pixels, width, height)         } catch {}
 
   return {
     blur_score:      r1(blur_score),
@@ -293,7 +513,8 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
     has_glare,
     cv_issues,
     corners,
-    border_anomaly,
+    border_irregularity,
+    surface_lines,
   }
 }
 
@@ -385,18 +606,33 @@ ${c.any_whitening
 `
   }
 
-  // Border anomaly section
-  let borderAnomalyStr = ''
-  if (cv.border_anomaly) {
-    const s = cv.border_anomaly
-    borderAnomalyStr = `
-─── CV BORDER ANOMALY SCORE (border-band gradient, approximate) ───
-  Edge-pixel count: ${s.edge_pixel_count}  Severity: ${s.severity.toUpperCase()}
-  (Detects: border texture irregularities, edge noise, print transitions, whitening/chips,
-   compression artifacts, glare boundaries, scratches — anything causing gradient spikes)
-${s.severity !== 'none'
-  ? `NOTE: Elevated border anomaly detected — inspect border band carefully for the above defects.`
-  : 'NOTE: Border band appears smooth — no significant gradient spikes detected.'}
+  // Detector A — Border Irregularity
+  let borderIrregularityStr = ''
+  if (cv.border_irregularity) {
+    const s = cv.border_irregularity
+    const ps = s.per_side
+    borderIrregularityStr = `
+─── CV DETECTOR A: BORDER IRREGULARITY ───
+  Score: ${s.score}  Severity: ${s.severity.toUpperCase()}
+  Gradient: ${r1(s.total_grad_fraction * 100)}%  Bright: ${r1(s.bright_fraction * 100)}%  Clusters: ${s.component_count}  Largest: ${s.max_component_area}px
+  Per-side grad%: top=${r1(ps.top.grad_fraction * 100)}% bottom=${r1(ps.bottom.grad_fraction * 100)}% left=${r1(ps.left.grad_fraction * 100)}% right=${r1(ps.right.grad_fraction * 100)}%
+NOTE: ${s.severity !== 'none'
+  ? 'Elevated border anomaly — inspect for whitening, chips, edge roughness, or print artifacts.'
+  : 'Border band appears clean.'}
+`
+  }
+
+  // Detector B — Surface Lines
+  let surfaceLinesStr = ''
+  if (cv.surface_lines) {
+    const s = cv.surface_lines
+    surfaceLinesStr = `
+─── CV DETECTOR B: SURFACE LINES ───
+  Score: ${s.score}  Severity: ${s.severity.toUpperCase()}  Confidence: ${s.confidence}
+  Diagonal: ${r1(s.diagonal_energy_fraction * 100)}%  H: ${r1(s.h_energy_fraction * 100)}%  V: ${r1(s.v_energy_fraction * 100)}%  Energy imbalance: ${s.energy_imbalance}  Glare: ${r1(s.glare_fraction * 100)}%
+NOTE: ${s.severity !== 'none'
+  ? 'Directional surface features detected — possible scratches, holo damage, or print lines.'
+  : 'No dominant directional surface features detected.'}${s.confidence === 'low' ? '\nNOTE: High glare limits surface analysis reliability.' : ''}
 `
   }
 
@@ -406,7 +642,7 @@ Glare        : ${r1(cv.glare_fraction * 100)}% pixels overexposed  (≤ 5% accep
 Brightness   : mean ${cv.brightness_mean} / std ${cv.brightness_std}  (0–255 scale)
 CV issues    :
 ${issueStr}${blurNote}${glareNote}
-${cornerStr}${borderAnomalyStr}
+${cornerStr}${borderIrregularityStr}${surfaceLinesStr}
 `
 }
 
@@ -422,4 +658,5 @@ NOTE: Trust these labels — do NOT reclassify images yourself.
 
 // ── Utils ─────────────────────────────────────────────────────────────────────
 const r1 = (n: number) => Math.round(n * 10)   / 10
+const r2 = (n: number) => Math.round(n * 100)  / 100
 const r4 = (n: number) => Math.round(n * 10000) / 10000

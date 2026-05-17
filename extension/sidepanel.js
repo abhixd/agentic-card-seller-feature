@@ -166,6 +166,27 @@ const DECISION_META = {
   skip:  { emoji: '❌', css: 'skip' },
 }
 
+// ── CV Detectors renderer ──────────────────────────────────────────
+
+function renderCVDetectors(payload) {
+  const SEV_CSS   = { none: 'cv-sev--none', light: 'cv-sev--light', moderate: 'cv-sev--moderate', heavy: 'cv-sev--heavy' }
+  const SEV_LABEL = { none: 'Clean', light: 'Light', moderate: 'Moderate', heavy: 'Heavy' }
+
+  function setDet(sevId, detailId, result, detailFn) {
+    const sev = result?.severity ?? 'none'
+    const sevEl = document.getElementById(sevId)
+    sevEl.textContent = SEV_LABEL[sev] ?? sev
+    sevEl.className = `cv-sev-badge ${SEV_CSS[sev] ?? ''}`
+    document.getElementById(detailId).textContent = result ? detailFn(result) : '—'
+  }
+
+  setDet('cv-border-sev', 'cv-border-detail', payload.border_irregularity,
+    r => `${(r.total_grad_fraction * 100).toFixed(1)}% grad · ${r.component_count} clusters · largest ${r.max_component_area}px`)
+
+  setDet('cv-surface-sev', 'cv-surface-detail', payload.surface_lines,
+    r => `diag ${(r.diagonal_energy_fraction * 100).toFixed(0)}% · imbal ${r.energy_imbalance.toFixed(2)} · ${r.confidence} conf`)
+}
+
 // ── Render results ─────────────────────────────────────────────────
 
 const ISSUE_CATEGORY_LABELS = {
@@ -407,6 +428,7 @@ function renderResult(payload) {
     ? `Prices from: ${_meta.comps_source}`
     : 'Prices: estimated (no live comps)'
 
+  renderCVDetectors(payload)
   showState('result')
 }
 
