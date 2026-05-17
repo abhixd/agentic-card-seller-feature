@@ -13,7 +13,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { fetchEbayComps } from '@/lib/ebay/findingApi'
-import { gradeWithClaude } from '@/lib/grading/claudeVision'
+import { gradeWithClaude, GradeWithClaudeResult, ClaudeGradingResult } from '@/lib/grading/claudeVision'
 
 export const runtime = 'nodejs'
 
@@ -161,9 +161,7 @@ function round2(n: number) { return Math.round(n * 100) / 100 }
  *  2. Both sides non-assessable → confidence "low", gradable "no", caveat added
  *  3. front_only + back_analysis.assessable true → force back to false (impossible state)
  */
-function sanitiseInference(
-  inf: Awaited<ReturnType<typeof gradeWithClaude>>,
-): Awaited<ReturnType<typeof gradeWithClaude>> {
+function sanitiseInference(inf: ClaudeGradingResult): ClaudeGradingResult {
   const frontAssessable = inf.front_analysis?.assessable !== false
   const backAssessable  = inf.back_analysis?.assessable  !== false
 
@@ -216,9 +214,13 @@ export async function POST(req: NextRequest) {
   const listingTotal = body.price + (body.shipping ?? 0)
 
   // ── 1. Claude Vision grading ──────────────────────────────────
-  let inference: Awaited<ReturnType<typeof gradeWithClaude>>
+  let inference: ClaudeGradingResult
+  let cvMeasurements: GradeWithClaudeResult['_cv']
   try {
-    inference = sanitiseInference(await gradeWithClaude(body.image_urls, body.title))
+    const raw = await gradeWithClaude(body.image_urls, body.title)
+    cvMeasurements = raw._cv
+    const { _cv: _dropped, ...inferenceOnly } = raw
+    inference = sanitiseInference(inferenceOnly)
   } catch (err) {
     return NextResponse.json(
       { error: `Claude Vision grading failed: ${err instanceof Error ? err.message : 'Unknown error'}` },
@@ -255,6 +257,9 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     ...inference,
+    // CV detector results — included so the extension panel can display them
+    border_irregularity: cvMeasurements?.border_irregularity ?? null,
+    surface_lines:       cvMeasurements?.surface_lines       ?? null,
     economics,
     decision,
     _meta: { comps_source: compsSource, grading_backend: 'claude-vision' },
