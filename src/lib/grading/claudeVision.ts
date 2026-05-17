@@ -335,7 +335,7 @@ export async function gradeWithClaude(
 
   const response = await client.messages.create({
     model:      'claude-haiku-4-5',
-    max_tokens: 1024,
+    max_tokens: 2048,  // front+back split schema ~600-900 tokens; 1024 caused truncation
     system:     SYSTEM_PROMPT,
     messages: [
       {
