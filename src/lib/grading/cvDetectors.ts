@@ -9,9 +9,12 @@
  *    3. Brightness        — mean + std dev
  *
  *  Phase 2 — card structure  (new)
- *    4. Corner whitening  — per-corner brightness analysis (TL/TR/BL/BR)
- *    5. Surface roughness — Sobel gradient in card-border band (scratch proxy)
- *    6. Side classifier   — HSV blue-band detection → 'front' | 'back'
+ *    4. Corner whitening     — per-corner brightness analysis (TL/TR/BL/BR)
+ *    5. Border anomaly score — Sobel gradient in card-border band; detects border
+ *                              texture irregularities, edge noise, print transitions,
+ *                              whitening chips, compression artifacts, glare boundaries,
+ *                              and scratches — anything that creates gradient spikes
+ *    6. Side classifier      — HSV blue-band detection → 'front' | 'back'
  *
  * All analysis runs on the canonical 384×544 grayscale image so the same
  * Sharp pipeline handles quality + structure in a single pass.
@@ -37,12 +40,14 @@ const CORNER_H_PX        = 55    // ≈ 10% of 544
 const WHITE_THRESH        = 215   // grayscale value above which = white / whitening
 const WHITENING_THRESHOLD = 0.07  // > 7% white pixels in patch → whitening
 
-// Surface roughness — band around the image perimeter (card border region)
-// The card's colored border should be smooth; scratches = unexpected gradient spikes
+// Border anomaly — band around the image perimeter (card border region)
+// The card's colored border should be smooth; any high-gradient spikes signal
+// border texture irregularities, edge noise, print transitions, whitening chips,
+// compression artifacts, glare boundaries, or scratches.
 const BORDER_BAND_W = 55   // px from each side to inspect (≈ 14% of 384)
 const BORDER_BAND_H = 70   // px from each side to inspect (≈ 13% of 544)
-const SCRATCH_GRADIENT_THRESHOLD = 35  // Sobel magnitude above = "edge feature"
-const SCRATCH_SEVERITY_THRESHOLDS = { none: 0, light: 200, moderate: 600, heavy: 1400 }
+const BORDER_ANOMALY_GRADIENT_THRESHOLD  = 35   // Sobel magnitude above = "edge feature"
+const BORDER_ANOMALY_SEVERITY_THRESHOLDS = { none: 0, light: 200, moderate: 600, heavy: 1400 }
 
 // Side classifier HSV thresholds
 const BACK_HUE_MIN         = 195
@@ -64,8 +69,8 @@ export interface CVMeasurements {
   cv_issues:       string[]
 
   // Phase 2 — card structure
-  corners:  CornerAnalysis | null
-  scratch:  ScratchResult  | null
+  corners:       CornerAnalysis     | null
+  border_anomaly: BorderAnomalyResult | null
 }
 
 export interface CornerPatch {
@@ -83,8 +88,8 @@ export interface CornerAnalysis {
   whitening_corners:  string[]   // e.g. ['TL', 'BR']
 }
 
-export interface ScratchResult {
-  edge_pixel_count: number                              // raw gradient spike count
+export interface BorderAnomalyResult {
+  edge_pixel_count: number                              // raw gradient spike count in border band
   severity:         'none' | 'light' | 'moderate' | 'heavy'
 }
 
@@ -174,21 +179,23 @@ function computeCornerAnalysis(
 }
 
 /**
- * Sobel gradient magnitude in the card-border band (perimeter of the canonical image).
+ * Border anomaly score — Sobel gradient magnitude in the card-border band.
  *
  * The card's printed border (yellow, black, etc.) should be a smooth, uniform band.
- * Physical scratches show up as unexpected high-gradient spikes in this region.
+ * Any high-gradient spikes in this region can indicate:
+ *   border texture irregularities, edge noise, printing transitions, whitening/chips,
+ *   compression artifacts, glare boundaries, or physical scratches.
  * Artwork-area gradients are excluded so artwork detail doesn't inflate the count.
  *
  * Returns a severity label and raw edge-pixel count for prompt injection.
- * Labeled "approximate" because perspective distortion and photo background
- * can also contribute gradients — interpret with the glare/blur context.
+ * Labeled "approximate" — perspective distortion and photo background can also
+ * contribute gradients; interpret alongside glare/blur context.
  */
-function computeScratchIndicator(
+function computeBorderAnomalyScore(
   pixels: Uint8Array,
   width:  number,
   height: number,
-): ScratchResult {
+): BorderAnomalyResult {
   let edgeCount = 0
 
   // Iterate only the border band (4 sides, excluding inner artwork)
@@ -211,13 +218,13 @@ function computeScratchIndicator(
         const gy =
           -pixels[(y - 1) * width + x - 1] - 2 * pixels[(y - 1) * width + x] - pixels[(y - 1) * width + x + 1]
           + pixels[(y + 1) * width + x - 1] + 2 * pixels[(y + 1) * width + x] + pixels[(y + 1) * width + x + 1]
-        if (Math.sqrt(gx * gx + gy * gy) > SCRATCH_GRADIENT_THRESHOLD) edgeCount++
+        if (Math.sqrt(gx * gx + gy * gy) > BORDER_ANOMALY_GRADIENT_THRESHOLD) edgeCount++
       }
     }
   }
 
-  const { light, moderate, heavy } = SCRATCH_SEVERITY_THRESHOLDS
-  const severity: ScratchResult['severity'] =
+  const { light, moderate, heavy } = BORDER_ANOMALY_SEVERITY_THRESHOLDS
+  const severity: BorderAnomalyResult['severity'] =
     edgeCount >= heavy    ? 'heavy'    :
     edgeCount >= moderate ? 'moderate' :
     edgeCount >= light    ? 'light'    : 'none'
@@ -271,11 +278,11 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
     cv_issues.push('overexposed image — highlight detail may be lost')
 
   // ── Phase 2: structural analysis ──────────────────────────────────────────
-  let corners: CornerAnalysis | null = null
-  let scratch: ScratchResult  | null = null
+  let corners:        CornerAnalysis     | null = null
+  let border_anomaly: BorderAnomalyResult | null = null
 
-  try { corners = computeCornerAnalysis(pixels, width, height) } catch { /* soft fail */ }
-  try { scratch = computeScratchIndicator(pixels, width, height) } catch { /* soft fail */ }
+  try { corners        = computeCornerAnalysis(pixels, width, height) } catch { /* soft fail */ }
+  try { border_anomaly = computeBorderAnomalyScore(pixels, width, height) } catch { /* soft fail */ }
 
   return {
     blur_score:      r1(blur_score),
@@ -286,7 +293,7 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
     has_glare,
     cv_issues,
     corners,
-    scratch,
+    border_anomaly,
   }
 }
 
@@ -378,16 +385,18 @@ ${c.any_whitening
 `
   }
 
-  // Scratch section
-  let scratchStr = ''
-  if (cv.scratch) {
-    const s = cv.scratch
-    scratchStr = `
-─── CV SURFACE ROUGHNESS (border-band gradient, approximate) ───
+  // Border anomaly section
+  let borderAnomalyStr = ''
+  if (cv.border_anomaly) {
+    const s = cv.border_anomaly
+    borderAnomalyStr = `
+─── CV BORDER ANOMALY SCORE (border-band gradient, approximate) ───
   Edge-pixel count: ${s.edge_pixel_count}  Severity: ${s.severity.toUpperCase()}
+  (Detects: border texture irregularities, edge noise, print transitions, whitening/chips,
+   compression artifacts, glare boundaries, scratches — anything causing gradient spikes)
 ${s.severity !== 'none'
-  ? `NOTE: Elevated gradient features in card border band — possible scratches or print lines. Inspect surface carefully.`
-  : 'NOTE: Border band appears smooth — no strong gradient spikes detected.'}
+  ? `NOTE: Elevated border anomaly detected — inspect border band carefully for the above defects.`
+  : 'NOTE: Border band appears smooth — no significant gradient spikes detected.'}
 `
   }
 
@@ -397,7 +406,7 @@ Glare        : ${r1(cv.glare_fraction * 100)}% pixels overexposed  (≤ 5% accep
 Brightness   : mean ${cv.brightness_mean} / std ${cv.brightness_std}  (0–255 scale)
 CV issues    :
 ${issueStr}${blurNote}${glareNote}
-${cornerStr}${scratchStr}
+${cornerStr}${borderAnomalyStr}
 `
 }
 
