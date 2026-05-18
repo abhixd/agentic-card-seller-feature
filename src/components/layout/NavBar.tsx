@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, ScanLine, Archive, LogOut, Layers,
   BookOpen, Newspaper, Users, ArrowLeftRight, TrendingUp, Heart, ShoppingBag, CalendarDays,
-  ShoppingCart, Settings, Calculator, Star, Layers2, PackagePlus, PieChart, Tag, Handshake,
+  ShoppingCart, Settings, Wrench,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -48,60 +48,12 @@ const navItems = [
     text:  'text-amber-300',
   },
   {
-    href:  '/tools/buy-price',
-    label: 'Buy Calculator',
-    icon:  Calculator,
-    grad:  ['#06b6d4', '#0e7490'],   // cyan
-    glow:  'rgba(6,182,212,0.7)',
-    text:  'text-cyan-300',
-  },
-  {
-    href:  '/tools/grading-optimizer',
-    label: 'Grade Optimizer',
-    icon:  Star,
-    grad:  ['#a855f7', '#7e22ce'],   // purple
-    glow:  'rgba(168,85,247,0.7)',
-    text:  'text-purple-300',
-  },
-  {
-    href:  '/tools/triage',
-    label: 'Bulk Triage',
-    icon:  Layers2,
-    grad:  ['#f59e0b', '#b45309'],   // amber
-    glow:  'rgba(245,158,11,0.7)',
-    text:  'text-amber-300',
-  },
-  {
-    href:  '/tools/buy-basket',
-    label: 'Buy Basket',
-    icon:  PackagePlus,
-    grad:  ['#10b981', '#047857'],   // emerald
-    glow:  'rgba(16,185,129,0.7)',
-    text:  'text-emerald-300',
-  },
-  {
-    href:  '/tools/rebalance',
-    label: 'Rebalance',
-    icon:  PieChart,
-    grad:  ['#6366f1', '#4338ca'],   // indigo
+    href:  '/tools',
+    label: 'Optimize',
+    icon:  Wrench,
+    grad:  ['#06b6d4', '#6366f1'],   // cyan → indigo
     glow:  'rgba(99,102,241,0.7)',
     text:  'text-indigo-300',
-  },
-  {
-    href:  '/tools/listing-price',
-    label: 'Listing Price',
-    icon:  Tag,
-    grad:  ['#f97316', '#c2410c'],   // orange
-    glow:  'rgba(249,115,22,0.7)',
-    text:  'text-orange-300',
-  },
-  {
-    href:  '/tools/offer',
-    label: 'Offer Advisor',
-    icon:  Handshake,
-    grad:  ['#8b5cf6', '#6d28d9'],   // violet
-    glow:  'rgba(139,92,246,0.7)',
-    text:  'text-violet-300',
   },
   {
     href:  '/trade',
