@@ -219,10 +219,63 @@ const ZONE_LABELS = {
   'centering':   'Centering',
 }
 
+// Claude zone colours (yellow → orange → red by severity)
 const SEV_FILL   = { light: 'rgba(234,179,8,0.35)',  moderate: 'rgba(249,115,22,0.45)', heavy: 'rgba(220,38,38,0.55)' }
 const SEV_STROKE = { light: 'rgba(234,179,8,0.90)',  moderate: 'rgba(249,115,22,1.00)', heavy: 'rgba(220,38,38,1.00)' }
 const SEV_HEX    = { light: '#eab308',               moderate: '#f97316',               heavy: '#ef4444'              }
 const SEV_LABEL  = { light: 'Light',                 moderate: 'Moderate',              heavy: 'Heavy'                }
+
+// CV surface-grid colours (teal — visually distinct from Claude zones)
+// Dashed stroke signals "measured, not annotated".
+const GRID_FILL   = { light: 'rgba(20,184,166,0.18)', moderate: 'rgba(20,184,166,0.30)', heavy: 'rgba(20,184,166,0.45)' }
+const GRID_STROKE = { light: 'rgba(20,184,166,0.60)', moderate: 'rgba(20,184,166,0.80)', heavy: 'rgba(20,184,166,1.00)' }
+const GRID_GLARE_FILL   = 'rgba(156,163,175,0.12)'
+const GRID_GLARE_STROKE = 'rgba(156,163,175,0.40)'
+
+/**
+ * Build a teal dashed-border SVG overlay from CV surface_grid cells.
+ * Grid cells use x_pct/y_pct/w_pct/h_pct (already in 0–100 scale matching viewBox).
+ * Glare-masked cells are shown in grey — they hide signal, not confirm cleanliness.
+ * Returns null when there are no cells to draw.
+ */
+function buildSurfaceGridSVG(gridCells) {
+  if (!gridCells || gridCells.length === 0) return null
+  const NS  = 'http://www.w3.org/2000/svg'
+  const svg = document.createElementNS(NS, 'svg')
+  svg.setAttribute('class',               'zone-overlay surface-grid-overlay')
+  svg.setAttribute('viewBox',             '0 0 100 100')
+  svg.setAttribute('preserveAspectRatio', 'none')
+
+  gridCells.forEach(cell => {
+    const el = document.createElementNS(NS, 'rect')
+    el.setAttribute('x',      String(cell.x_pct))
+    el.setAttribute('y',      String(cell.y_pct))
+    el.setAttribute('width',  String(cell.w_pct))
+    el.setAttribute('height', String(cell.h_pct))
+    el.setAttribute('rx',     '2')
+
+    if (cell.glare_masked) {
+      el.setAttribute('fill',             GRID_GLARE_FILL)
+      el.setAttribute('stroke',           GRID_GLARE_STROKE)
+      el.setAttribute('stroke-width',     '1')
+      el.setAttribute('stroke-dasharray', '2 2')
+    } else {
+      el.setAttribute('fill',             GRID_FILL[cell.severity]   ?? GRID_FILL.light)
+      el.setAttribute('stroke',           GRID_STROKE[cell.severity] ?? GRID_STROKE.light)
+      el.setAttribute('stroke-width',     '1.5')
+      el.setAttribute('stroke-dasharray', '3 2')
+    }
+
+    const title = document.createElementNS(NS, 'title')
+    title.textContent = cell.glare_masked
+      ? `CV: row ${cell.row} col ${cell.col} — glare masked (signal hidden)`
+      : `CV: row ${cell.row} col ${cell.col} — ${cell.severity} surface anomaly (score ${cell.score})`
+    el.appendChild(title)
+    svg.appendChild(el)
+  })
+
+  return svg
+}
 
 /**
  * Build zones from Claude's text issues when Claude didn't return explicit
@@ -441,9 +494,16 @@ function renderLightboxFrame() {
     ? `${item.label}  ·  ${ZONE_LABELS[_lightboxFocusedZone] ?? _lightboxFocusedZone}`
     : sideLabel
 
-  // Zone SVG — focused = one zone highlighted, others ghosted; normal = all zones
+  // Zone SVG — layered: CV grid (bottom, teal dashed) → Claude zones (top, solid)
+  // In focused/investigation mode, Claude zones switch to ghost+highlight; grid stays.
   const svgSlot = document.getElementById('lightbox-svg-slot')
   svgSlot.innerHTML = ''
+
+  // Layer 1 (bottom): CV surface grid — always shown as ambient evidence
+  const gridSvg = buildSurfaceGridSVG(item.gridCells ?? [])
+  if (gridSvg) svgSlot.appendChild(gridSvg)
+
+  // Layer 2 (top): Claude named zones
   if (isFocused) {
     svgSlot.appendChild(buildZoneSVGFocused(item.zones, _lightboxFocusedZone, _lightboxFocusedSev))
   } else if (item.zones.length > 0) {
@@ -511,9 +571,14 @@ document.getElementById('lightbox-next').addEventListener('click', () => {
 
 /**
  * Render the analyzed-images strip.
- * allZones: array of ZoneAnnotation[] aligned with urls (one per image).
+ *
+ * allZones:      ZoneAnnotation[][] — one zone array per image (from Claude)
+ * cvSurfaceGrid: SurfaceGridCell[]  — hot cells from Detector C (front image only)
+ *
+ * Thumbnails layer: CV grid cells (teal, dashed) behind Claude zones (solid).
+ * Lightbox stores both so renderLightboxFrame can reproduce the same layering.
  */
-function renderAnalyzedImages(urls, allZones) {
+function renderAnalyzedImages(urls, allZones, cvSurfaceGrid) {
   const strip   = document.getElementById('analyzed-images-strip')
   const section = strip.closest('.analyzed-images-section')
 
@@ -527,9 +592,11 @@ function renderAnalyzedImages(urls, allZones) {
   const LABELS = ['Front', 'Back']
 
   urls.forEach((url, i) => {
-    const label = LABELS[i] ?? `Image ${i + 1}`
-    const zones = allZones?.[i] ?? []
-    _lightboxItems.push({ url, zones, label })
+    const label     = LABELS[i] ?? `Image ${i + 1}`
+    const zones     = allZones?.[i] ?? []
+    // CV grid only applies to the front image — CV runs on the first buffer
+    const gridCells = i === 0 ? (cvSurfaceGrid ?? []) : []
+    _lightboxItems.push({ url, zones, label, gridCells })
 
     const item = document.createElement('div')
     item.className = 'analyzed-thumb'
@@ -550,6 +617,12 @@ function renderAnalyzedImages(urls, allZones) {
       wrap.appendChild(err)
     }
     wrap.appendChild(img)
+
+    // Layer 1 (bottom): CV surface grid — teal dashed cells
+    const gridSvg = buildSurfaceGridSVG(gridCells)
+    if (gridSvg) wrap.appendChild(gridSvg)
+
+    // Layer 2 (top): Claude named zones — solid coloured rects
     if (zones.length > 0) wrap.appendChild(buildZoneSVG(zones))
 
     const lbl = document.createElement('span')
@@ -562,23 +635,47 @@ function renderAnalyzedImages(urls, allZones) {
     strip.appendChild(item)
   })
 
-  // Severity legend — aggregate across all images
+  // Severity legend
+  const legend = document.createElement('div')
+  legend.className = 'zone-legend'
+  let legendHasEntries = false
+
+  // Claude zone severity entries
   const allSevs = [...new Set((allZones ?? []).flat().map(z => z.severity))]
     .sort((a, b) => ['light','moderate','heavy'].indexOf(a) - ['light','moderate','heavy'].indexOf(b))
+  allSevs.forEach(sev => {
+    const entry = document.createElement('span')
+    entry.className = 'zone-legend-entry'
+    entry.innerHTML =
+      `<span class="zone-legend-pip" style="background:${SEV_HEX[sev]}"></span>` +
+      `<span class="zone-legend-txt">${SEV_LABEL[sev]}</span>`
+    legend.appendChild(entry)
+    legendHasEntries = true
+  })
 
-  if (allSevs.length > 0) {
-    const legend = document.createElement('div')
-    legend.className = 'zone-legend'
-    allSevs.forEach(sev => {
-      const entry = document.createElement('span')
-      entry.className = 'zone-legend-entry'
-      entry.innerHTML =
-        `<span class="zone-legend-pip" style="background:${SEV_HEX[sev]}"></span>` +
-        `<span class="zone-legend-txt">${SEV_LABEL[sev]}</span>`
-      legend.appendChild(entry)
-    })
-    section.appendChild(legend)
+  // CV grid legend entry — show if any hot (non-glare) cells were detected
+  const hasHotGridCells = (cvSurfaceGrid ?? []).some(c => !c.glare_masked)
+  const hasGlareCells   = (cvSurfaceGrid ?? []).some(c =>  c.glare_masked)
+  if (hasHotGridCells) {
+    const entry = document.createElement('span')
+    entry.className = 'zone-legend-entry'
+    entry.innerHTML =
+      `<span class="zone-legend-pip zone-legend-pip--cv"></span>` +
+      `<span class="zone-legend-txt">CV Surface</span>`
+    legend.appendChild(entry)
+    legendHasEntries = true
   }
+  if (hasGlareCells) {
+    const entry = document.createElement('span')
+    entry.className = 'zone-legend-entry'
+    entry.innerHTML =
+      `<span class="zone-legend-pip zone-legend-pip--glare"></span>` +
+      `<span class="zone-legend-txt">Glare hidden</span>`
+    legend.appendChild(entry)
+    legendHasEntries = true
+  }
+
+  if (legendHasEntries) section.appendChild(legend)
 }
 
 // ── Side analysis renderer ─────────────────────────────────────────
@@ -858,7 +955,9 @@ function renderResult(payload) {
     : 'Prices: estimated (no live comps)'
 
   renderCVDetectors(payload)
-  renderAnalyzedImages(_analyzedUrls, [frontZones, backZones])
+  // surface_grid: hot cells from Detector C (front image only, null when clean)
+  const cvSurfaceGrid = Array.isArray(payload.surface_grid) ? payload.surface_grid : null
+  renderAnalyzedImages(_analyzedUrls, [frontZones, backZones], cvSurfaceGrid)
   showState('result')
 }
 

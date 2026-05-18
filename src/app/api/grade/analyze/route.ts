@@ -262,6 +262,11 @@ export async function POST(req: NextRequest) {
     // CV detector results — included so the extension panel can display them
     border_irregularity: cvMeasurements?.border_irregularity ?? null,
     surface_lines:       cvMeasurements?.surface_lines       ?? null,
+    // Detector C — surface grid cells for thumbnail heatmap overlay
+    // Only non-empty when hot cells were detected; applies to the front image (index 0)
+    surface_grid:        cvMeasurements?.surface_grid        ?? null,
+    // Corner whitening results (for future corner overlay support)
+    cv_corners:          cvMeasurements?.corners             ?? null,
     economics,
     decision,
     _meta: { comps_source: compsSource, grading_backend: 'claude-vision' },

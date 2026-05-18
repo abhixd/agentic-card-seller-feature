@@ -688,6 +688,18 @@ main { padding: 16px 14px 32px; }
   color: var(--text-dim);
   font-weight: 500;
 }
+/* CV surface-grid pip — teal, dashed border to match the overlay style */
+.zone-legend-pip--cv {
+  background: rgba(20,184,166,0.30);
+  border: 1px dashed rgba(20,184,166,0.80);
+  border-radius: 2px;
+}
+/* Glare-masked pip — grey, dashed */
+.zone-legend-pip--glare {
+  background: rgba(156,163,175,0.20);
+  border: 1px dashed rgba(156,163,175,0.55);
+  border-radius: 2px;
+}
 
 /* ── Lightbox ────────────────────────────────────────────────────── */
 .thumb-lightbox {
