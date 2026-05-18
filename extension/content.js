@@ -111,20 +111,26 @@
   // ── Button injection ────────────────────────────────────────────
 
   function injectButton() {
-    // Find a good anchor — the "Buy It Now" price block or the bid section
+    if (document.getElementById('cga-analyze-btn')) return
+
+    // Try multiple eBay price / action block selectors — eBay updates layouts regularly.
+    // Each selector targets a visible block near the BIN price or bid section.
     const anchor =
-      document.querySelector('.x-price-primary') ||
-      document.querySelector('.u-price-full-block') ||
-      document.querySelector('#prcIsum_bidPrice') ||
-      document.querySelector('.vi-price')
+      document.querySelector('.x-price-primary')              ||  // 2024+ BIN price
+      document.querySelector('.x-bin-price')                  ||  // some layouts
+      document.querySelector('[data-testid="x-price-section"]')||  // testid variant
+      document.querySelector('.u-price-full-block')           ||  // older layout
+      document.querySelector('#prcIsum_bidPrice')             ||  // bid listing
+      document.querySelector('.vi-price')                     ||  // very old layout
+      document.querySelector('#mainContent')                  ||  // broad fallback
+      document.querySelector('main')                          ||  // HTML5 main
+      document.body                                               // last resort
 
     if (!anchor) {
-      // Retry in 1 s — page may still be rendering
+      // Page hasn't rendered yet — retry
       setTimeout(injectButton, 1000)
       return
     }
-
-    if (document.getElementById('cga-analyze-btn')) return
 
     const wrapper = document.createElement('div')
     wrapper.id = 'cga-wrapper'
@@ -136,7 +142,12 @@
       <div id="cga-status"></div>
     `
 
-    anchor.parentElement.insertBefore(wrapper, anchor.nextSibling)
+    // Prefer inserting after the anchor; fall back to prepending inside it
+    if (anchor.parentElement && anchor !== document.body && anchor !== document.querySelector('main') && anchor !== document.querySelector('#mainContent')) {
+      anchor.parentElement.insertBefore(wrapper, anchor.nextSibling)
+    } else {
+      anchor.prepend(wrapper)
+    }
 
     document.getElementById('cga-analyze-btn').addEventListener('click', onAnalyzeClick)
   }
@@ -198,9 +209,11 @@
     injectButton()
   }
 
-  // Re-inject if eBay does a soft navigation (SPA-style page swap)
+  // Re-inject if eBay does a soft navigation (SPA-style page swap).
+  // subtree:true catches deep DOM replacements — eBay swaps inner containers,
+  // not direct children of body, so subtree:false missed most navigations.
   const _observer = new MutationObserver(() => {
     if (!document.getElementById('cga-analyze-btn')) injectButton()
   })
-  _observer.observe(document.body, { childList: true, subtree: false })
+  _observer.observe(document.body, { childList: true, subtree: true })
 })()
