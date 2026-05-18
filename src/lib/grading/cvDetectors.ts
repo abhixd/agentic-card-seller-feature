@@ -80,6 +80,38 @@ export interface CVMeasurements {
   border_irregularity: BorderIrregularityResult | null   // Detector A
   surface_lines:       SurfaceLineResult        | null   // Detector B
   surface_grid:        SurfaceGridCell[]        | null   // Detector C
+
+  // UI-ready overlays derived from the above (percentage coords, 0–100 scale)
+  corner_boxes:        CornerBox[]   | null   // one entry per whitened corner
+  edge_bands:          EdgeBand[]    | null   // one entry per anomalous edge side
+}
+
+/**
+ * A whitened corner expressed as a percentage bounding box on the canonical image.
+ * Derived from CornerAnalysis — only emitted for corners where whitening === true.
+ */
+export interface CornerBox {
+  corner:   'TL' | 'TR' | 'BL' | 'BR'
+  severity: 'light' | 'moderate' | 'heavy'
+  // Percentage of canonical image dimensions (0–100 scale, matches SVG viewBox)
+  x_pct: number
+  y_pct: number
+  w_pct: number
+  h_pct: number
+}
+
+/**
+ * An anomalous edge band expressed as a percentage bounding box.
+ * Corner areas are excluded so corner_boxes and edge_bands don't overlap.
+ * Derived from BorderIrregularityResult.per_side.
+ */
+export interface EdgeBand {
+  side:     'top' | 'bottom' | 'left' | 'right'
+  severity: 'light' | 'moderate' | 'heavy'
+  x_pct: number
+  y_pct: number
+  w_pct: number
+  h_pct: number
 }
 
 export interface CornerPatch {
@@ -600,6 +632,95 @@ function computeSurfaceGrid(
   return hotCells
 }
 
+// ── UI overlay derivations ────────────────────────────────────────────────────
+
+/**
+ * Convert CornerAnalysis into CornerBox overlay entries.
+ *
+ * The patch dimensions (CORNER_W_PX × CORNER_H_PX on a CANONICAL_W × CANONICAL_H
+ * image) are known constants, so we can compute exact percentage coordinates
+ * without any new pixel scanning.
+ *
+ * Severity is derived from white_fraction:
+ *   heavy    ≥ 0.20  (heavy whitening, visible at a glance)
+ *   moderate ≥ 0.12  (clearly visible whitening)
+ *   light    ≥ WHITENING_THRESHOLD (0.07, just over detection threshold)
+ */
+function deriveCornerBoxes(corners: CornerAnalysis | null): CornerBox[] {
+  if (!corners || !corners.any_whitening) return []
+
+  const W = CANONICAL_W
+  const H = CANONICAL_H
+  const cw = CORNER_W_PX
+  const ch = CORNER_H_PX
+
+  // Percentage dimensions — same for all four corners
+  const w_pct = r4((cw / W) * 100)
+  const h_pct = r4((ch / H) * 100)
+
+  // Corner origins in canvas space (row, col) → (y_pct, x_pct)
+  const origins: Record<string, { x_pct: number; y_pct: number }> = {
+    TL: { x_pct: 0,                        y_pct: 0                        },
+    TR: { x_pct: r4(((W - cw) / W) * 100), y_pct: 0                        },
+    BL: { x_pct: 0,                         y_pct: r4(((H - ch) / H) * 100) },
+    BR: { x_pct: r4(((W - cw) / W) * 100), y_pct: r4(((H - ch) / H) * 100) },
+  }
+
+  const boxes: CornerBox[] = []
+  for (const name of ['TL', 'TR', 'BL', 'BR'] as const) {
+    const patch = corners[name]
+    if (!patch.whitening) continue
+    const severity: CornerBox['severity'] =
+      patch.white_fraction >= 0.20 ? 'heavy'    :
+      patch.white_fraction >= 0.12 ? 'moderate' : 'light'
+    boxes.push({ corner: name, severity, w_pct, h_pct, ...origins[name] })
+  }
+  return boxes
+}
+
+/**
+ * Convert BorderIrregularityResult.per_side into EdgeBand overlay entries.
+ *
+ * Band geometry uses the same BORDER_BAND_W / BORDER_BAND_H constants as the
+ * detector, with corner areas excluded so bands and corner_boxes don't overlap.
+ *
+ * Severity thresholds on grad_fraction (fraction of anomalous pixels per side):
+ *   heavy    > 0.22
+ *   moderate > 0.10
+ *   light    > 0.04
+ */
+function deriveEdgeBands(bi: BorderIrregularityResult | null): EdgeBand[] {
+  if (!bi) return []
+
+  const W  = CANONICAL_W
+  const H  = CANONICAL_H
+  const BW = BORDER_BAND_W   // horizontal inset for left/right bands
+  const BH = BORDER_BAND_H   // vertical inset for top/bottom bands
+
+  // Corner-exclusive band geometry (percentages)
+  //   Top/bottom: x from BW to W-BW, height = BH
+  //   Left/right: y from BH to H-BH, width  = BW
+  const bandDefs: Record<string, { x_pct: number; y_pct: number; w_pct: number; h_pct: number }> = {
+    top:    { x_pct: r4((BW / W) * 100),       y_pct: 0,                            w_pct: r4(((W - 2*BW) / W) * 100), h_pct: r4((BH / H) * 100)             },
+    bottom: { x_pct: r4((BW / W) * 100),       y_pct: r4(((H - BH) / H) * 100),    w_pct: r4(((W - 2*BW) / W) * 100), h_pct: r4((BH / H) * 100)             },
+    left:   { x_pct: 0,                         y_pct: r4((BH / H) * 100),           w_pct: r4((BW / W) * 100),          h_pct: r4(((H - 2*BH) / H) * 100)    },
+    right:  { x_pct: r4(((W - BW) / W) * 100), y_pct: r4((BH / H) * 100),           w_pct: r4((BW / W) * 100),          h_pct: r4(((H - 2*BH) / H) * 100)    },
+  }
+
+  const bands: EdgeBand[] = []
+  const sides = ['top', 'bottom', 'left', 'right'] as const
+  for (const side of sides) {
+    const stat = bi.per_side[side]
+    const grad = stat.grad_fraction
+    if (grad <= 0.04) continue
+    const severity: EdgeBand['severity'] =
+      grad > 0.22 ? 'heavy'    :
+      grad > 0.10 ? 'moderate' : 'light'
+    bands.push({ side, severity, ...bandDefs[side] })
+  }
+  return bands
+}
+
 // ── Core analysis on a buffer ─────────────────────────────────────────────────
 
 /**
@@ -655,6 +776,10 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
   try { surface_lines       = computeSurfaceLines(pixels, width, height)         } catch {}
   try { surface_grid        = computeSurfaceGrid(pixels, width, height)          } catch {}
 
+  // Derive UI-ready overlay entries from the raw detector outputs
+  const corner_boxes = deriveCornerBoxes(corners)
+  const edge_bands   = deriveEdgeBands(border_irregularity)
+
   return {
     blur_score:      r1(blur_score),
     glare_fraction:  r4(glare_fraction),
@@ -667,6 +792,8 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
     border_irregularity,
     surface_lines,
     surface_grid,
+    corner_boxes,
+    edge_bands,
   }
 }
 

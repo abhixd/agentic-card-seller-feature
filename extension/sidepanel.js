@@ -233,6 +233,71 @@ const GRID_GLARE_FILL   = 'rgba(156,163,175,0.12)'
 const GRID_GLARE_STROKE = 'rgba(156,163,175,0.40)'
 
 /**
+ * Build solid-teal SVG rects for whitened corners.
+ * Solid stroke (vs dashed for grid cells) signals high location confidence —
+ * we know exactly which corner patch was scanned.
+ */
+function buildCornerBoxSVG(cornerBoxes) {
+  if (!cornerBoxes || cornerBoxes.length === 0) return null
+  const NS  = 'http://www.w3.org/2000/svg'
+  const svg = document.createElementNS(NS, 'svg')
+  svg.setAttribute('class',               'zone-overlay cv-corner-overlay')
+  svg.setAttribute('viewBox',             '0 0 100 100')
+  svg.setAttribute('preserveAspectRatio', 'none')
+
+  const CORNER_NAMES = { TL: 'Top-Left', TR: 'Top-Right', BL: 'Bottom-Left', BR: 'Bottom-Right' }
+
+  cornerBoxes.forEach(box => {
+    const el = document.createElementNS(NS, 'rect')
+    el.setAttribute('x',            String(box.x_pct))
+    el.setAttribute('y',            String(box.y_pct))
+    el.setAttribute('width',        String(box.w_pct))
+    el.setAttribute('height',       String(box.h_pct))
+    el.setAttribute('fill',         GRID_FILL[box.severity]   ?? GRID_FILL.light)
+    el.setAttribute('stroke',       GRID_STROKE[box.severity] ?? GRID_STROKE.light)
+    el.setAttribute('stroke-width', '2')
+    el.setAttribute('rx',           '2')
+    const title = document.createElementNS(NS, 'title')
+    title.textContent = `CV: ${CORNER_NAMES[box.corner] ?? box.corner} corner — ${box.severity} whitening`
+    el.appendChild(title)
+    svg.appendChild(el)
+  })
+
+  return svg
+}
+
+/**
+ * Build solid-teal SVG rects for anomalous edge bands.
+ * Corner areas are excluded so these don't overlap with corner boxes.
+ */
+function buildEdgeBandSVG(edgeBands) {
+  if (!edgeBands || edgeBands.length === 0) return null
+  const NS  = 'http://www.w3.org/2000/svg'
+  const svg = document.createElementNS(NS, 'svg')
+  svg.setAttribute('class',               'zone-overlay cv-edge-overlay')
+  svg.setAttribute('viewBox',             '0 0 100 100')
+  svg.setAttribute('preserveAspectRatio', 'none')
+
+  edgeBands.forEach(band => {
+    const el = document.createElementNS(NS, 'rect')
+    el.setAttribute('x',            String(band.x_pct))
+    el.setAttribute('y',            String(band.y_pct))
+    el.setAttribute('width',        String(band.w_pct))
+    el.setAttribute('height',       String(band.h_pct))
+    el.setAttribute('fill',         GRID_FILL[band.severity]   ?? GRID_FILL.light)
+    el.setAttribute('stroke',       GRID_STROKE[band.severity] ?? GRID_STROKE.light)
+    el.setAttribute('stroke-width', '2')
+    el.setAttribute('rx',           '2')
+    const title = document.createElementNS(NS, 'title')
+    title.textContent = `CV: ${band.side} edge — ${band.severity} border irregularity`
+    el.appendChild(title)
+    svg.appendChild(el)
+  })
+
+  return svg
+}
+
+/**
  * Build a teal dashed-border SVG overlay from CV surface_grid cells.
  * Grid cells use x_pct/y_pct/w_pct/h_pct (already in 0–100 scale matching viewBox).
  * Glare-masked cells are shown in grey — they hide signal, not confirm cleanliness.
@@ -499,11 +564,15 @@ function renderLightboxFrame() {
   const svgSlot = document.getElementById('lightbox-svg-slot')
   svgSlot.innerHTML = ''
 
-  // Layer 1 (bottom): CV surface grid — always shown as ambient evidence
-  const gridSvg = buildSurfaceGridSVG(item.gridCells ?? [])
-  if (gridSvg) svgSlot.appendChild(gridSvg)
+  // CV layers — always shown as ambient evidence in both normal and focused mode
+  const gridSvg   = buildSurfaceGridSVG(item.gridCells   ?? [])
+  const cornerSvg = buildCornerBoxSVG(item.cornerBoxes   ?? [])
+  const edgeSvg   = buildEdgeBandSVG(item.edgeBands      ?? [])
+  if (gridSvg)   svgSlot.appendChild(gridSvg)    // Layer 1: surface grid (dashed)
+  if (cornerSvg) svgSlot.appendChild(cornerSvg)  // Layer 2: corner boxes (solid)
+  if (edgeSvg)   svgSlot.appendChild(edgeSvg)    // Layer 3: edge bands  (solid)
 
-  // Layer 2 (top): Claude named zones
+  // Layer 4 (top): Claude named zones
   if (isFocused) {
     svgSlot.appendChild(buildZoneSVGFocused(item.zones, _lightboxFocusedZone, _lightboxFocusedSev))
   } else if (item.zones.length > 0) {
@@ -574,11 +643,16 @@ document.getElementById('lightbox-next').addEventListener('click', () => {
  *
  * allZones:      ZoneAnnotation[][] — one zone array per image (from Claude)
  * cvSurfaceGrid: SurfaceGridCell[]  — hot cells from Detector C (front image only)
+ * cvCornerBoxes: CornerBox[]        — whitened corners (front image only)
+ * cvEdgeBands:   EdgeBand[]         — anomalous edge bands (front image only)
  *
- * Thumbnails layer: CV grid cells (teal, dashed) behind Claude zones (solid).
- * Lightbox stores both so renderLightboxFrame can reproduce the same layering.
+ * Layer order (bottom → top):
+ *   1. CV surface grid  — teal dashed (uncertain surface regions)
+ *   2. CV corner boxes  — teal solid  (precise whitened corners)
+ *   3. CV edge bands    — teal solid  (precise anomalous edges)
+ *   4. Claude zones     — yellow/orange/red solid (textual annotations)
  */
-function renderAnalyzedImages(urls, allZones, cvSurfaceGrid) {
+function renderAnalyzedImages(urls, allZones, cvSurfaceGrid, cvCornerBoxes, cvEdgeBands) {
   const strip   = document.getElementById('analyzed-images-strip')
   const section = strip.closest('.analyzed-images-section')
 
@@ -594,9 +668,11 @@ function renderAnalyzedImages(urls, allZones, cvSurfaceGrid) {
   urls.forEach((url, i) => {
     const label     = LABELS[i] ?? `Image ${i + 1}`
     const zones     = allZones?.[i] ?? []
-    // CV grid only applies to the front image — CV runs on the first buffer
-    const gridCells = i === 0 ? (cvSurfaceGrid ?? []) : []
-    _lightboxItems.push({ url, zones, label, gridCells })
+    // CV overlays only apply to the front image — CV runs on the first buffer
+    const gridCells   = i === 0 ? (cvSurfaceGrid  ?? []) : []
+    const cornerBoxes = i === 0 ? (cvCornerBoxes  ?? []) : []
+    const edgeBands   = i === 0 ? (cvEdgeBands    ?? []) : []
+    _lightboxItems.push({ url, zones, label, gridCells, cornerBoxes, edgeBands })
 
     const item = document.createElement('div')
     item.className = 'analyzed-thumb'
@@ -618,11 +694,19 @@ function renderAnalyzedImages(urls, allZones, cvSurfaceGrid) {
     }
     wrap.appendChild(img)
 
-    // Layer 1 (bottom): CV surface grid — teal dashed cells
+    // Layer 1: CV surface grid — teal dashed (broad surface regions)
     const gridSvg = buildSurfaceGridSVG(gridCells)
     if (gridSvg) wrap.appendChild(gridSvg)
 
-    // Layer 2 (top): Claude named zones — solid coloured rects
+    // Layer 2: CV corner boxes — teal solid (precise whitened corners)
+    const cornerSvg = buildCornerBoxSVG(cornerBoxes)
+    if (cornerSvg) wrap.appendChild(cornerSvg)
+
+    // Layer 3: CV edge bands — teal solid (precise anomalous edges)
+    const edgeSvg = buildEdgeBandSVG(edgeBands)
+    if (edgeSvg) wrap.appendChild(edgeSvg)
+
+    // Layer 4 (top): Claude named zones — solid coloured rects
     if (zones.length > 0) wrap.appendChild(buildZoneSVG(zones))
 
     const lbl = document.createElement('span')
@@ -653,19 +737,27 @@ function renderAnalyzedImages(urls, allZones, cvSurfaceGrid) {
     legendHasEntries = true
   })
 
-  // CV grid legend entry — show if any hot (non-glare) cells were detected
-  const hasHotGridCells = (cvSurfaceGrid ?? []).some(c => !c.glare_masked)
-  const hasGlareCells   = (cvSurfaceGrid ?? []).some(c =>  c.glare_masked)
-  if (hasHotGridCells) {
+  // CV overlay legend entries — one combined "CV measured" pip covers all three CV layers
+  const hasCVCorners = (cvCornerBoxes ?? []).length > 0
+  const hasCVEdges   = (cvEdgeBands   ?? []).length > 0
+  const hasHotGrid   = (cvSurfaceGrid ?? []).some(c => !c.glare_masked)
+  const hasGlare     = (cvSurfaceGrid ?? []).some(c =>  c.glare_masked)
+
+  if (hasCVCorners || hasCVEdges || hasHotGrid) {
     const entry = document.createElement('span')
     entry.className = 'zone-legend-entry'
+    const parts = [
+      hasCVCorners && 'corners',
+      hasCVEdges   && 'edges',
+      hasHotGrid   && 'surface',
+    ].filter(Boolean).join(', ')
     entry.innerHTML =
       `<span class="zone-legend-pip zone-legend-pip--cv"></span>` +
-      `<span class="zone-legend-txt">CV Surface</span>`
+      `<span class="zone-legend-txt">CV: ${parts}</span>`
     legend.appendChild(entry)
     legendHasEntries = true
   }
-  if (hasGlareCells) {
+  if (hasGlare) {
     const entry = document.createElement('span')
     entry.className = 'zone-legend-entry'
     entry.innerHTML =
@@ -955,9 +1047,11 @@ function renderResult(payload) {
     : 'Prices: estimated (no live comps)'
 
   renderCVDetectors(payload)
-  // surface_grid: hot cells from Detector C (front image only, null when clean)
-  const cvSurfaceGrid = Array.isArray(payload.surface_grid) ? payload.surface_grid : null
-  renderAnalyzedImages(_analyzedUrls, [frontZones, backZones], cvSurfaceGrid)
+  // CV overlay data — all apply to the front image only (CV runs on first buffer)
+  const cvSurfaceGrid  = Array.isArray(payload.surface_grid) ? payload.surface_grid  : null
+  const cvCornerBoxes  = Array.isArray(payload.corner_boxes) ? payload.corner_boxes  : null
+  const cvEdgeBands    = Array.isArray(payload.edge_bands)   ? payload.edge_bands    : null
+  renderAnalyzedImages(_analyzedUrls, [frontZones, backZones], cvSurfaceGrid, cvCornerBoxes, cvEdgeBands)
   showState('result')
 }
 
