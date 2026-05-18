@@ -30,6 +30,7 @@ import Anthropic, { APIError } from '@anthropic-ai/sdk'
 import sharp from 'sharp'
 import {
   analyseBuffer,
+  detectCardBounds,
   formatCVSection,
 } from './cvDetectors'
 
@@ -419,16 +420,35 @@ export async function gradeWithClaude(
     }),
   )
 
-  // ── Step 2: CV detectors on the first non-null buffer ────────────────────
-  const cv = await analyseBuffer(buffers.find(Boolean)!).catch(() => null)
+  // ── Step 1b: Crop card from background in each buffer ────────────────────
+  // eBay photos routinely show the card surrounded by backgrounds. Without
+  // cropping, CV corner/edge patches measure the mat or table instead of the
+  // card. detectCardBounds() returns null when it can't reliably locate the
+  // card — in that case we keep the original buffer (safe degradation).
+  const croppedBuffers: (Buffer | null)[] = await Promise.all(
+    buffers.map(async (buf) => {
+      if (!buf) return null
+      try {
+        const bounds = await detectCardBounds(buf)
+        if (!bounds) return buf
+        console.log(`[cvDetectors] card detected — cropping to ${bounds.width}×${bounds.height} at (${bounds.left},${bounds.top})`)
+        return await sharp(buf).extract(bounds).toBuffer()
+      } catch {
+        return buf
+      }
+    }),
+  )
 
-  // ── Step 3: Resize all buffers to base64 for Claude ──────────────────────
+  // ── Step 2: CV detectors on the first non-null (cropped) buffer ──────────
+  const cv = await analyseBuffer(croppedBuffers.find(Boolean)!).catch(() => null)
+
+  // ── Step 3: Resize all (cropped) buffers to base64 for Claude ────────────
   // Prefer resized JPEG (fewer tokens). When Sharp fails (e.g. missing native
   // binary on Vercel), fall back to the raw buffer — DO NOT fall back to the
   // eBay CDN URL, which is blocked server-side and leaves Claude with no image.
   const imageBlocks: Anthropic.ImageBlockParam[] = []
   for (let i = 0; i < n; i++) {
-    const buf = buffers[i]
+    const buf = croppedBuffers[i]
     if (buf) {
       const r = await resizeBuffer(buf).catch(() => null)
       if (r) {

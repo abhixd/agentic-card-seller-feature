@@ -797,6 +797,141 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
   }
 }
 
+// ── Card boundary detection ───────────────────────────────────────────────────
+
+/**
+ * Detect the bounding box of the card within an image buffer.
+ *
+ * eBay photos routinely show the card surrounded by backgrounds (mats, hands,
+ * holders, other cards). Without cropping, all CV detectors measure the background
+ * rather than the card — corner patches land on the table, edge bands straddle
+ * the card edge, and the surface grid covers open air.
+ *
+ * Algorithm:
+ *  1. Downsample to ≤256×256 (keep aspect ratio; fast pixel scan)
+ *  2. Sample 12×12 corner patches → median R/G/B → background estimate
+ *  3. Mark each pixel as foreground when Euclidean RGB distance > 35
+ *  4. Find bounding box of all foreground pixels
+ *  5. Expand by 8% on each side for the card's white border
+ *  6. Scale coordinates back to original image dimensions
+ *
+ * Returns null (use full image) when:
+ *   • foreground fraction < 5%  (uniform image — can't find a boundary)
+ *   • crop covers < 25% of the original (detection almost certainly wrong)
+ *   • crop covers > 92% of the original (no meaningful crop — skip the overhead)
+ */
+export async function detectCardBounds(
+  buf: Buffer,
+): Promise<{ left: number; top: number; width: number; height: number } | null> {
+  const DETECT_MAX      = 256
+  const CORNER_SAMPLE   = 12    // px in downsampled space
+  const RGB_DIST_THRESH = 35
+  const MARGIN_FRAC     = 0.08
+  const MIN_FG_FRAC     = 0.05
+  const MIN_CROP_FRAC   = 0.25
+  const MAX_CROP_FRAC   = 0.92
+
+  try {
+    // Original image dimensions (needed to scale bounds back)
+    const meta  = await sharp(buf).metadata()
+    const origW = meta.width
+    const origH = meta.height
+    if (!origW || !origH) return null
+
+    // Downsample — flatten removes any alpha channel
+    const { data, info } = await sharp(buf)
+      .resize(DETECT_MAX, DETECT_MAX, { fit: 'inside' })
+      .flatten({ background: { r: 255, g: 255, b: 255 } })
+      .raw()
+      .toBuffer({ resolveWithObject: true })
+
+    const sW       = info.width
+    const sH       = info.height
+    const ch       = info.channels        // 3 (RGB) or 4 (RGBA) after flatten
+    const px       = new Uint8Array(data)
+    const total    = sW * sH
+
+    // ── Background estimation ──────────────────────────────────────────────
+    // Collect R/G/B values from each of the four 12×12 corner patches and
+    // compute median per channel. The median is robust to pixels that happen
+    // to land on the card border when the card nearly fills the frame.
+    function medianFromPatch(row0: number, col0: number): [number, number, number] {
+      const rs: number[] = [], gs: number[] = [], bs: number[] = []
+      for (let r = row0; r < Math.min(row0 + CORNER_SAMPLE, sH); r++) {
+        for (let c = col0; c < Math.min(col0 + CORNER_SAMPLE, sW); c++) {
+          const i = (r * sW + c) * ch
+          rs.push(px[i]); gs.push(px[i + 1]); bs.push(px[i + 2])
+        }
+      }
+      const med = (a: number[]) => { a.sort((x, y) => x - y); return a[Math.floor(a.length / 2)] }
+      return [med(rs), med(gs), med(bs)]
+    }
+
+    const patches = [
+      medianFromPatch(0,                    0),
+      medianFromPatch(0,                    sW - CORNER_SAMPLE),
+      medianFromPatch(sH - CORNER_SAMPLE,   0),
+      medianFromPatch(sH - CORNER_SAMPLE,   sW - CORNER_SAMPLE),
+    ]
+    const bgR = Math.round(patches.reduce((s, p) => s + p[0], 0) / 4)
+    const bgG = Math.round(patches.reduce((s, p) => s + p[1], 0) / 4)
+    const bgB = Math.round(patches.reduce((s, p) => s + p[2], 0) / 4)
+
+    // ── Foreground bounding box ────────────────────────────────────────────
+    let fgCount = 0
+    let minRow = sH, maxRow = -1, minCol = sW, maxCol = -1
+
+    for (let r = 0; r < sH; r++) {
+      for (let c = 0; c < sW; c++) {
+        const i  = (r * sW + c) * ch
+        const dr = px[i]     - bgR
+        const dg = px[i + 1] - bgG
+        const db = px[i + 2] - bgB
+        if (Math.sqrt(dr * dr + dg * dg + db * db) > RGB_DIST_THRESH) {
+          fgCount++
+          if (r < minRow) minRow = r
+          if (r > maxRow) maxRow = r
+          if (c < minCol) minCol = c
+          if (c > maxCol) maxCol = c
+        }
+      }
+    }
+
+    // Too little foreground → uniform background or near-uniform card fill
+    if (fgCount / total < MIN_FG_FRAC) return null
+    if (maxRow < minRow || maxCol < minCol) return null
+
+    // ── Expand bounding box for card's white border ────────────────────────
+    const mRow = Math.round((maxRow - minRow) * MARGIN_FRAC)
+    const mCol = Math.round((maxCol - minCol) * MARGIN_FRAC)
+    const eMinRow = Math.max(0,      minRow - mRow)
+    const eMaxRow = Math.min(sH - 1, maxRow + mRow)
+    const eMinCol = Math.max(0,      minCol - mCol)
+    const eMaxCol = Math.min(sW - 1, maxCol + mCol)
+
+    // ── Scale to original image coordinates ───────────────────────────────
+    const scaleX = origW / sW
+    const scaleY = origH / sH
+    const left   = Math.max(0, Math.round(eMinCol * scaleX))
+    const top    = Math.max(0, Math.round(eMinRow * scaleY))
+    const right  = Math.min(origW, Math.round(eMaxCol * scaleX))
+    const bottom = Math.min(origH, Math.round(eMaxRow * scaleY))
+    const cropW  = right - left
+    const cropH  = bottom - top
+
+    if (cropW <= 0 || cropH <= 0) return null
+
+    // ── Sanity checks ──────────────────────────────────────────────────────
+    const cropFrac = (cropW * cropH) / (origW * origH)
+    if (cropFrac < MIN_CROP_FRAC) return null  // detection is probably wrong
+    if (cropFrac > MAX_CROP_FRAC) return null  // barely any crop — not worth it
+
+    return { left, top, width: cropW, height: cropH }
+  } catch {
+    return null
+  }
+}
+
 // ── Card-side classifier ──────────────────────────────────────────────────────
 
 export async function classifyCardSide(buf: Buffer): Promise<CardSide> {
