@@ -142,6 +142,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'ANALYZE_SELECTED') {
+    console.log('[CGA] ANALYZE_SELECTED received, urls:', msg.payload?.image_urls?.length)
     handleAnalyze(msg.payload)
     sendResponse({ ok: true })
     return
@@ -163,6 +164,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ── Grading flow ─────────────────────────────────────────────────
 async function handleAnalyze(listing) {
+  console.log('[CGA] handleAnalyze start, urls:', listing.image_urls)
   broadcast({ type: 'ANALYSIS_START', payload: { title: listing.title } })
 
   const { backendUrl = DEFAULT_BACKEND } = await chrome.storage.local.get('backendUrl')
@@ -174,6 +176,7 @@ async function handleAnalyze(listing) {
     // which caused Claude to only see the first image and return FRONT ONLY.
     broadcast({ type: 'ANALYSIS_PROGRESS', payload: { step: 'Downloading images…' } })
     const imageData = await fetchImagesAsBase64(listing.image_urls ?? [])
+    console.log('[CGA] imageData lengths:', imageData.map(d => d ? d.length : null))
 
     broadcast({ type: 'ANALYSIS_PROGRESS', payload: { step: 'Running analysis…' } })
 
