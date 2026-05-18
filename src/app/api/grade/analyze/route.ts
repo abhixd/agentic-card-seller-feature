@@ -42,6 +42,7 @@ export interface GradeAnalysisRequest {
   price:        number
   shipping?:    number
   image_urls:   string[]
+  image_data?:  (string | null)[]   // base64 strings fetched by the extension
   marketplace?: string
   card_category?: string
 }
@@ -217,7 +218,7 @@ export async function POST(req: NextRequest) {
   let inference: ClaudeGradingResult
   let cvMeasurements: GradeWithClaudeResult['_cv']
   try {
-    const raw = await gradeWithClaude(body.image_urls, body.title)
+    const raw = await gradeWithClaude(body.image_urls, body.title, body.image_data)
     cvMeasurements = raw._cv
     const { _cv: _dropped, ...inferenceOnly } = raw
     inference = sanitiseInference(inferenceOnly)

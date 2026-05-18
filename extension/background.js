@@ -169,12 +169,18 @@ async function handleAnalyze(listing) {
   const endpoint = `${backendUrl.replace(/\/$/, '')}/api/grade/analyze`
 
   try {
-    broadcast({ type: 'ANALYSIS_PROGRESS', payload: { step: 'Running CV detectors…' } })
+    // Download images here in the browser — the browser has the correct
+    // session/cookies/referrer to access eBay CDN. Vercel's servers do not,
+    // which caused Claude to only see the first image and return FRONT ONLY.
+    broadcast({ type: 'ANALYSIS_PROGRESS', payload: { step: 'Downloading images…' } })
+    const imageData = await fetchImagesAsBase64(listing.image_urls ?? [])
+
+    broadcast({ type: 'ANALYSIS_PROGRESS', payload: { step: 'Running analysis…' } })
 
     const resp = await fetch(endpoint, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(listing),
+      body:    JSON.stringify({ ...listing, image_data: imageData }),
     })
 
     if (!resp.ok) {
@@ -207,4 +213,27 @@ function broadcast(msg) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/**
+ * Fetch each URL as a base64 string using the browser's fetch
+ * (which carries the correct session/cookies for eBay CDN).
+ * Returns null for any image that fails — backend degrades gracefully.
+ */
+async function fetchImagesAsBase64(urls) {
+  return Promise.all(urls.map(async (url) => {
+    try {
+      const resp = await fetch(url)
+      if (!resp.ok) return null
+      const blob = await resp.blob()
+      return await new Promise((resolve) => {
+        const reader = new FileReader()
+        reader.onload  = () => resolve(reader.result.split(',')[1]) // strip data: prefix
+        reader.onerror = () => resolve(null)
+        reader.readAsDataURL(blob)
+      })
+    } catch {
+      return null
+    }
+  }))
 }

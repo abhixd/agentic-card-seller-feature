@@ -30,10 +30,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import sharp from 'sharp'
 import {
   analyseBuffer,
-  classifyCardSide,
   formatCVSection,
-  formatSideLabels,
-  CardSide,
 } from './cvDetectors'
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -318,140 +315,98 @@ async function resizeBuffer(
 // ── Main function ─────────────────────────────────────────────────
 
 export async function gradeWithClaude(
-  imageUrls: string[],
-  title:     string,
+  imageUrls:  string[],
+  title:      string,
+  imageData?: (string | null)[],   // base64 strings pre-fetched by the extension
 ): Promise<GradeWithClaudeResult> {
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set')
 
   const client = new Anthropic({ apiKey })
-  const urls   = imageUrls.slice(0, 6)
+  const n      = Math.min((imageData ?? imageUrls).length, 6)
 
-  // ── Step 1: Download all image buffers in parallel ────────────────────────
-  // Single download per image — buffer is reused for classify + CV + resize.
-  const buffers = await Promise.all(urls.map(fetchBuffer))
-
-  // ── Step 2: Classify each image as front / back / unknown ─────────────────
-  const sides: CardSide[] = await Promise.all(
-    buffers.map(buf =>
-      buf ? classifyCardSide(buf) : Promise.resolve<CardSide>('unknown'),
-    ),
+  // ── Step 1: Build buffers from base64 (fast) or download URLs (fallback) ──
+  // The extension pre-fetches images in the browser where eBay CDN is accessible.
+  // Server-side URL fetches are unreliable (CDN IP restrictions, referrer checks).
+  const buffers: (Buffer | null)[] = await Promise.all(
+    Array.from({ length: n }, (_, i) => {
+      const b64 = imageData?.[i]
+      if (b64) return Promise.resolve(Buffer.from(b64, 'base64'))
+      return fetchBuffer(imageUrls[i] ?? '')      // fallback for dev/testing
+    }),
   )
 
-  // ── Step 3: Sort indices — fronts first, backs second, unknowns last ───────
-  const sideRank = (s: CardSide) => s === 'front' ? 0 : s === 'back' ? 1 : 2
-  const order = [...urls.keys()].sort((a, b) => sideRank(sides[a]) - sideRank(sides[b]))
+  // ── Step 2: CV detectors on the first non-null buffer ────────────────────
+  const cv = await analyseBuffer(buffers.find(Boolean)!).catch(() => null)
 
-  const sortedUrls    = order.map(i => urls[i])
-  const sortedBuffers = order.map(i => buffers[i])
-  const sortedSides   = order.map(i => sides[i])
-
-  // ── Step 4: CV detectors on first front buffer (or first buffer) ──────────
-  const cvIdx = sortedSides.findIndex(s => s === 'front')
-  const cvBuf = sortedBuffers[cvIdx !== -1 ? cvIdx : 0]
-  const cv    = cvBuf ? await analyseBuffer(cvBuf).catch(() => null) : null
-
-  // ── Step 5: Resize ALL images as base64 for Claude ────────────────────────
-  // Critical: passing subsequent images as raw eBay URLs is unreliable —
-  // Claude's servers may fail to fetch them (CDN restrictions, CORS, rate limits).
-  // When the second image can't be fetched, Claude only sees one image and
-  // returns analysis_mode='front_only' even when both sides were selected.
-  // Solution: download every buffer once (already done in Step 1) and encode all.
-  const resizedAll = await Promise.all(
-    sortedBuffers.map(buf => buf ? resizeBuffer(buf).catch(() => null) : Promise.resolve(null))
-  )
-
-  // ── Step 6: Build image content blocks — all base64, no URL fallthrough ───
+  // ── Step 3: Resize all buffers to base64 for Claude ──────────────────────
   const imageBlocks: Anthropic.ImageBlockParam[] = []
-  for (let i = 0; i < sortedBuffers.length; i++) {
-    const r = resizedAll[i]
-    if (r) {
-      imageBlocks.push({ type: 'image', source: { type: 'base64', media_type: r.mimeType, data: r.base64 } })
-    } else if (sortedUrls[i]) {
-      // Only fall back to URL if resize failed (e.g. buffer was null)
-      imageBlocks.push({ type: 'image', source: { type: 'url', url: sortedUrls[i] } })
+  for (let i = 0; i < n; i++) {
+    const buf = buffers[i]
+    if (buf) {
+      const r = await resizeBuffer(buf).catch(() => null)
+      if (r) {
+        imageBlocks.push({ type: 'image', source: { type: 'base64', media_type: r.mimeType, data: r.base64 } })
+        continue
+      }
+    }
+    // Only fall back to URL if the buffer is missing entirely
+    if (imageUrls[i]) {
+      imageBlocks.push({ type: 'image', source: { type: 'url', url: imageUrls[i] } })
     }
   }
 
-  // ── Step 7: Build prompt — CV section + side labels prepended ────────────
-  const cvSection  = formatCVSection(cv)
-  const sideLabels = formatSideLabels(sortedSides)
+  // ── Step 4: Build prompt ──────────────────────────────────────────────────
+  // Tell Claude how many images were sent and their expected order.
+  // The user selected these images — image 1 is their first pick (front),
+  // image 2 is their second pick (back or another side). No HSV guessing needed.
+  const imageCountNote = imageBlocks.length > 1
+    ? `─── IMAGES (${imageBlocks.length} provided, user-selected from eBay listing) ───\n` +
+      imageBlocks.map((_, i) => `  Image ${i + 1}: ${i === 0 ? 'first selected (likely front)' : i === 1 ? 'second selected (likely back)' : 'additional image'}`).join('\n') +
+      '\nNOTE: Analyze ALL images. Do not set analysis_mode to "front_only" if a second image is present.\n\n'
+    : ''
 
   const textHint: Anthropic.TextBlockParam = {
     type: 'text',
-    text: `${cvSection}${sideLabels}Listing title (use as identity hint, but trust the image over the title): "${title}"\n\n${USER_PROMPT}`,
+    text: `${formatCVSection(cv)}${imageCountNote}Listing title (use as identity hint, but trust the image over the title): "${title}"\n\n${USER_PROMPT}`,
   }
 
-  // ── Step 8: Call Claude Haiku ────────────────────────────────────────────
-  // max_tokens=2048: front+back split schema produces ~600–900 output tokens
+  // ── Step 5: Call Claude Haiku ─────────────────────────────────────────────
   const response = await client.messages.create({
     model:      'claude-haiku-4-5',
     max_tokens: 2048,
     system:     SYSTEM_PROMPT,
-    messages: [
-      {
-        role:    'user',
-        content: [...imageBlocks, textHint],
-      },
-    ],
+    messages:   [{ role: 'user', content: [...imageBlocks, textHint] }],
   })
 
   const raw = response.content
     .filter(b => b.type === 'text')
     .map(b => (b as Anthropic.TextBlock).text)
-    .join('')
-    .trim()
+    .join('').trim()
 
-  // Strip accidental markdown code fences
-  const json = raw
-    .replace(/^```(?:json)?\s*\n?/i, '')
-    .replace(/\n?```\s*$/i, '')
-    .trim()
+  const json = raw.replace(/^```(?:json)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim()
 
   let parsed: ClaudeGradingResult
   try {
     parsed = JSON.parse(json)
   } catch {
-    throw new Error(`Claude returned non-JSON response: ${raw.slice(0, 200)}`)
+    throw new Error(`Claude returned non-JSON: ${raw.slice(0, 200)}`)
   }
 
-  // ── Step 9: Normalise distribution to sum to 1.0 ──────────────────────────
+  // ── Step 6: Normalise grade distribution ──────────────────────────────────
   const dist  = parsed.grade_estimate.distribution
   const total = Object.values(dist).reduce((s, v) => s + v, 0)
   if (total > 0 && Math.abs(total - 1) > 0.02) {
     for (const k of Object.keys(dist)) dist[k] = dist[k] / total
   }
 
-  // ── Step 10: Sanity guard — both sides non-assessable ─────────────────────
-  // If Claude marked both front and back as non-assessable, it couldn't identify
-  // either image. Force low confidence + surface-level limiting factor.
-  const frontOk = parsed.front_analysis?.assessable !== false
-  const backOk  = parsed.back_analysis?.assessable  !== false
-  if (!frontOk && !backOk) {
-    parsed.grade_estimate.confidence      = 'low'
-    parsed.grade_estimate.limiting_factor = 'image_quality'
-    parsed.grading_decision.gradable_candidate = 'no'
-    parsed.grading_decision.caveats = [
-      ...(parsed.grading_decision.caveats ?? []),
-      'Neither front nor back image was assessable — unable to grade reliably.',
-    ]
-  }
-
-  // ── Step 11: Override front_only when CV classifier confirmed both sides ───
-  // Claude can return front_only even when it received both images (if one image
-  // looked ambiguous or the back was hard to identify). If our pixel-level HSV
-  // classifier confidently found both a front and a back, trust it over Claude.
-  const cvHasFront = sortedSides.includes('front')
-  const cvHasBack  = sortedSides.includes('back')
-  if (cvHasFront && cvHasBack && parsed.analysis_mode === 'front_only') {
+  // ── Step 7: Sanity guard — front_only when 2+ images were sent ───────────
+  if (imageBlocks.length >= 2 && parsed.analysis_mode === 'front_only') {
     parsed.analysis_mode = 'front_back'
     if (parsed.grade_estimate.limiting_factor === 'front_only') {
       parsed.grade_estimate.limiting_factor = null
     }
   }
-
-  // Attach CV side classification so the route can include it in the response
-  parsed._cv_sides = sortedSides
 
   return { ...parsed, _cv: cv }
 }
