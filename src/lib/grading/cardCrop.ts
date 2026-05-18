@@ -80,6 +80,13 @@ export interface CropResult extends CropMeta {
 let _cv:        any             = null
 let _cvPromise: Promise<any> | null = null
 
+// How long to wait for the Emscripten WASM runtime to initialise before giving
+// up and letting cropCard() fall through to the color-threshold / full-image
+// fallbacks.  15 s is generous; cold-start + 8 MB WASM typically takes < 3 s.
+const CV_INIT_TIMEOUT_MS     = 15_000
+// Per-call detection timeout — guards against WASM hangs *after* init.
+const CV_DETECTION_TIMEOUT_MS = 20_000
+
 async function getCV(): Promise<any> { // eslint-disable-line @typescript-eslint/no-explicit-any
   if (_cv) return _cv
   if (!_cvPromise) {
@@ -87,13 +94,52 @@ async function getCV(): Promise<any> { // eslint-disable-line @typescript-eslint
       const mod = await import('@techstark/opencv-js')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const cv  = (mod as any).default ?? mod
-      // Wait for Emscripten WASM to finish initialising (fires onRuntimeInitialized)
-      if (typeof cv.Mat === 'undefined') {
-        await new Promise<void>((resolve) => {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          ;(cv as any).onRuntimeInitialized = resolve
-        })
+
+      // Fast path: WASM already finished initialising (cv.Mat is defined).
+      if (typeof cv.Mat !== 'undefined') {
+        _cv = cv
+        console.log('[cardCrop] OpenCV WASM ready (already initialised)')
+        return cv
       }
+
+      // Slow path: wait for Emscripten's onRuntimeInitialized callback.
+      //
+      // Race condition to guard against:
+      //   WASM finishes between the typeof check above and the moment we set
+      //   onRuntimeInitialized → callback fires into the void → promise hangs.
+      // Fix: poll cv.Mat every 100 ms as a backup, and impose a hard timeout so
+      //   the promise always settles (allowing cropCard to fall through to
+      //   color-threshold / full-image fallbacks instead of hanging forever).
+      await new Promise<void>((resolve, reject) => {
+        let settled = false
+        const settle = (fn: () => void) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          clearInterval(poll)
+          fn()
+        }
+
+        const timer = setTimeout(
+          () => settle(() => reject(new Error(`OpenCV WASM init timed out after ${CV_INIT_TIMEOUT_MS} ms`))),
+          CV_INIT_TIMEOUT_MS,
+        )
+
+        // Preserve any previously registered callback (Emscripten may chain them)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const prevCb = (cv as any).onRuntimeInitialized
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(cv as any).onRuntimeInitialized = () => {
+          if (typeof prevCb === 'function') prevCb()
+          settle(resolve)
+        }
+
+        // Poll every 100 ms — catches the race condition described above.
+        const poll = setInterval(() => {
+          if (typeof cv.Mat !== 'undefined') settle(resolve)
+        }, 100)
+      })
+
       _cv = cv
       console.log('[cardCrop] OpenCV WASM ready')
       return cv
@@ -519,9 +565,19 @@ export async function cropCard(
     }
 
     // ── Phase 1 + 2: OpenCV quad detection ───────────────────────────────
+    // CV_DETECTION_TIMEOUT_MS cap prevents a WASM hang from stalling the
+    // entire analyze request — on timeout we fall through to color-threshold.
     let detection: QuadResult | null = null
     try {
-      detection = await detectCardQuad(grayU8, dW, dH)
+      detection = await Promise.race([
+        detectCardQuad(grayU8, dW, dH),
+        new Promise<null>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`OpenCV detection timed out after ${CV_DETECTION_TIMEOUT_MS} ms`)),
+            CV_DETECTION_TIMEOUT_MS,
+          ),
+        ),
+      ])
     } catch (err) {
       console.warn('[cardCrop] OpenCV detection failed, using fallback:', String(err))
     }
