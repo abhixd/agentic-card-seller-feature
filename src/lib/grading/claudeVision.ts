@@ -293,8 +293,20 @@ async function fetchBuffer(url: string): Promise<Buffer | null> {
 }
 
 /**
+ * Detect image MIME type from magic bytes.
+ * Handles JPEG, PNG, WebP, GIF — defaults to jpeg for unknown formats.
+ */
+function detectMimeType(buf: Buffer): 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif' {
+  if (buf.length >= 2  && buf[0] === 0xFF && buf[1] === 0xD8) return 'image/jpeg'
+  if (buf.length >= 8  && buf[0] === 0x89 && buf[1] === 0x50) return 'image/png'
+  if (buf.length >= 12 && buf[0] === 0x52 && buf[1] === 0x49 && buf[8] === 0x57 && buf[9] === 0x45) return 'image/webp'
+  if (buf.length >= 6  && buf[0] === 0x47 && buf[1] === 0x49) return 'image/gif'
+  return 'image/jpeg'
+}
+
+/**
  * Resize a buffer to ≤1024px (longest edge), JPEG q85.
- * Returns null on failure — caller falls back to passing the URL to Claude.
+ * Returns null on failure — caller falls back to raw buffer passthrough.
  *
  * Why not white-balance: see module docstring.
  */
@@ -340,17 +352,25 @@ export async function gradeWithClaude(
   const cv = await analyseBuffer(buffers.find(Boolean)!).catch(() => null)
 
   // ── Step 3: Resize all buffers to base64 for Claude ──────────────────────
+  // Prefer resized JPEG (fewer tokens). When Sharp fails (e.g. missing native
+  // binary on Vercel), fall back to the raw buffer — DO NOT fall back to the
+  // eBay CDN URL, which is blocked server-side and leaves Claude with no image.
   const imageBlocks: Anthropic.ImageBlockParam[] = []
   for (let i = 0; i < n; i++) {
     const buf = buffers[i]
     if (buf) {
       const r = await resizeBuffer(buf).catch(() => null)
       if (r) {
+        // Happy path: Sharp resized to JPEG
         imageBlocks.push({ type: 'image', source: { type: 'base64', media_type: r.mimeType, data: r.base64 } })
-        continue
+      } else {
+        // Sharp unavailable — send original buffer directly (Claude supports WebP/JPEG/PNG)
+        const mimeType = detectMimeType(buf)
+        imageBlocks.push({ type: 'image', source: { type: 'base64', media_type: mimeType, data: buf.toString('base64') } })
       }
+      continue
     }
-    // Only fall back to URL if the buffer is missing entirely
+    // Buffer is null (download failed) — URL fallback only as last resort
     if (imageUrls[i]) {
       imageBlocks.push({ type: 'image', source: { type: 'url', url: imageUrls[i] } })
     }
