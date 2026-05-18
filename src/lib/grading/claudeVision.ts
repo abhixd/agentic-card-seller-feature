@@ -395,8 +395,8 @@ export async function gradeWithClaude(
   console.log(`[CV] sending ${imageBlocks.length} image(s) to Claude, mime types: ${imageBlocks.map(b => b.source.type === 'base64' ? b.source.media_type : 'url').join(', ')}`)
 
   const response = await client.messages.create({
-    model:      'claude-haiku-4-5',
-    max_tokens: 2048,
+    model:      'claude-sonnet-4-5',  // Haiku 4.5 doesn't reliably follow complex JSON schemas
+    max_tokens: 4096,                 // Full response with all fields needs more room than 2048
     system:     SYSTEM_PROMPT,
     messages:   [{ role: 'user', content: [...imageBlocks, textHint] }],
   })
