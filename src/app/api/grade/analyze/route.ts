@@ -267,6 +267,7 @@ export async function POST(req: NextRequest) {
     // UI-ready overlay entries (percentage coords, ready for SVG rendering)
     corner_boxes:        cvMeasurements?.corner_boxes        ?? null,
     edge_bands:          cvMeasurements?.edge_bands          ?? null,
+    card_bounds_pct:     cvMeasurements?.card_bounds_pct    ?? null,
     economics,
     decision,
     _meta: { comps_source: compsSource, grading_backend: 'claude-vision' },

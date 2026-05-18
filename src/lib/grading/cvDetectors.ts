@@ -84,6 +84,10 @@ export interface CVMeasurements {
   // UI-ready overlays derived from the above (percentage coords, 0–100 scale)
   corner_boxes:        CornerBox[]   | null   // one entry per whitened corner
   edge_bands:          EdgeBand[]    | null   // one entry per anomalous edge side
+
+  // Per-image card bounding boxes (normalized 0–1 fractions of original image dimensions).
+  // One entry per analyzed image; null when detection was unreliable or image was missing.
+  card_bounds_pct: Array<{ x: number; y: number; w: number; h: number } | null> | null
 }
 
 /**
