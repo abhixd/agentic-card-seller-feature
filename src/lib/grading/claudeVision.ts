@@ -392,8 +392,6 @@ export async function gradeWithClaude(
   }
 
   // ── Step 5: Call Claude Haiku ─────────────────────────────────────────────
-  console.log(`[CV] sending ${imageBlocks.length} image(s) to Claude, mime types: ${imageBlocks.map(b => b.source.type === 'base64' ? b.source.media_type : 'url').join(', ')}`)
-
   const response = await client.messages.create({
     model:      'claude-sonnet-4-5',  // Haiku 4.5 doesn't reliably follow complex JSON schemas
     max_tokens: 4096,                 // Full response with all fields needs more room than 2048
@@ -414,8 +412,6 @@ export async function gradeWithClaude(
   } catch {
     throw new Error(`Claude returned non-JSON: ${raw.slice(0, 200)}`)
   }
-  console.log(`[CV] Claude returned: analysis_mode=${parsed.analysis_mode}, front_assessable=${parsed.front_analysis?.assessable}, back_assessable=${parsed.back_analysis?.assessable}, confidence=${parsed.grade_estimate?.confidence}`)
-
   // ── Step 6: Normalise grade distribution ──────────────────────────────────
   const dist  = parsed.grade_estimate.distribution
   const total = Object.values(dist).reduce((s, v) => s + v, 0)
