@@ -278,6 +278,39 @@ function inferZonesFromIssues(sideAnalysis) {
   return zones
 }
 
+/**
+ * Map an issue category + text to its card zone name.
+ * Returns null for 'other' issues that can't be located spatially.
+ */
+function getZoneForIssue(category, text) {
+  if (category === 'centering') return 'centering'
+  if (category === 'surface')   return 'surface'
+  if (category === 'other')     return null   // no reliable location
+
+  const t = text.toLowerCase()
+
+  if (category === 'corners') {
+    if (t.includes('top-left')     || t.match(/\btl\b/)) return 'tl-corner'
+    if (t.includes('top-right')    || t.match(/\btr\b/)) return 'tr-corner'
+    if (t.includes('bottom-left')  || t.match(/\bbl\b/)) return 'bl-corner'
+    if (t.includes('bottom-right') || t.match(/\bbr\b/)) return 'br-corner'
+    // Ambiguous — pick the most common PSA problem corner
+    if (t.includes('top'))    return 'tr-corner'
+    if (t.includes('bottom')) return 'bl-corner'
+    return 'tl-corner'
+  }
+
+  if (category === 'edges') {
+    if (t.includes('top'))    return 'top-edge'
+    if (t.includes('bottom')) return 'bottom-edge'
+    if (t.includes('left'))   return 'left-edge'
+    if (t.includes('right'))  return 'right-edge'
+    return 'top-edge'
+  }
+
+  return null
+}
+
 /** Build a reusable SVG element with coloured zone rects. */
 function buildZoneSVG(zones, extraClass) {
   const NS  = 'http://www.w3.org/2000/svg'
@@ -308,13 +341,80 @@ function buildZoneSVG(zones, extraClass) {
   return svg
 }
 
+/**
+ * Build an SVG where `focusedZone` is highlighted at full intensity
+ * and every other zone in `allZones` is drawn as a faint ghost outline —
+ * giving spatial context without stealing attention from the active zone.
+ */
+function buildZoneSVGFocused(allZones, focusedZone, focusedSeverity) {
+  const NS  = 'http://www.w3.org/2000/svg'
+  const svg = document.createElementNS(NS, 'svg')
+  svg.setAttribute('class',               'zone-overlay')
+  svg.setAttribute('viewBox',             '0 0 100 100')
+  svg.setAttribute('preserveAspectRatio', 'none')
+
+  // Ghost pass — all other zones from this side, very dim
+  allZones.forEach(({ zone }) => {
+    if (zone === focusedZone) return
+    const r = ZONE_RECTS[zone]
+    if (!r) return
+    const [x, y, w, h] = r
+    const el = document.createElementNS(NS, 'rect')
+    el.setAttribute('x',            String(x))
+    el.setAttribute('y',            String(y))
+    el.setAttribute('width',        String(w))
+    el.setAttribute('height',       String(h))
+    el.setAttribute('fill',         'rgba(255,255,255,0.04)')
+    el.setAttribute('stroke',       'rgba(255,255,255,0.18)')
+    el.setAttribute('stroke-width', '1')
+    el.setAttribute('rx',           '3')
+    svg.appendChild(el)
+  })
+
+  // Focused zone — bright fill + animated stroke
+  const fr = ZONE_RECTS[focusedZone]
+  if (fr) {
+    const sev = focusedSeverity ?? 'moderate'
+    const [x, y, w, h] = fr
+    const el = document.createElementNS(NS, 'rect')
+    el.setAttribute('x',            String(x))
+    el.setAttribute('y',            String(y))
+    el.setAttribute('width',        String(w))
+    el.setAttribute('height',       String(h))
+    el.setAttribute('fill',         SEV_FILL[sev]   ?? SEV_FILL.moderate)
+    el.setAttribute('stroke',       SEV_STROKE[sev] ?? SEV_STROKE.moderate)
+    el.setAttribute('stroke-width', '3')
+    el.setAttribute('rx',           '3')
+    el.setAttribute('class',        'zone-focused-rect')
+    svg.appendChild(el)
+  }
+
+  return svg
+}
+
 // ── Lightbox ───────────────────────────────────────────────────────
 
 let _lightboxItems = []   // [{url, zones, label}]
 let _lightboxIndex = 0
+let _lightboxFocusedZone = null   // null = normal browse; string = investigation mode
+let _lightboxFocusedNote = null
+let _lightboxFocusedSev  = null
 
 function openLightbox(index) {
+  _lightboxFocusedZone = null
+  _lightboxFocusedNote = null
+  _lightboxFocusedSev  = null
   _lightboxIndex = Math.max(0, Math.min(index, _lightboxItems.length - 1))
+  renderLightboxFrame()
+  document.getElementById('thumb-lightbox').classList.remove('hidden')
+}
+
+/** Open lightbox focused on a specific issue zone — the "Show" button entry point. */
+function openLightboxFocused(thumbIndex, zone, issueText, severity) {
+  _lightboxFocusedZone = zone
+  _lightboxFocusedNote = issueText
+  _lightboxFocusedSev  = severity ?? 'moderate'
+  _lightboxIndex = Math.max(0, Math.min(thumbIndex, _lightboxItems.length - 1))
   renderLightboxFrame()
   document.getElementById('thumb-lightbox').classList.remove('hidden')
 }
@@ -327,40 +427,68 @@ function renderLightboxFrame() {
   const item = _lightboxItems[_lightboxIndex]
   if (!item) return
 
+  const isFocused = _lightboxFocusedZone !== null
+
+  // Image
   document.getElementById('lightbox-img').src = item.url
   document.getElementById('lightbox-img').alt = item.label
-  document.getElementById('lightbox-label').textContent =
-    _lightboxItems.length > 1
-      ? `${item.label}  ·  ${_lightboxIndex + 1} / ${_lightboxItems.length}`
-      : item.label
 
-  // Rebuild zone SVG
+  // Label
+  const sideLabel = _lightboxItems.length > 1
+    ? `${item.label}  ·  ${_lightboxIndex + 1} / ${_lightboxItems.length}`
+    : item.label
+  document.getElementById('lightbox-label').textContent = isFocused
+    ? `${item.label}  ·  ${ZONE_LABELS[_lightboxFocusedZone] ?? _lightboxFocusedZone}`
+    : sideLabel
+
+  // Zone SVG — focused = one zone highlighted, others ghosted; normal = all zones
   const svgSlot = document.getElementById('lightbox-svg-slot')
   svgSlot.innerHTML = ''
-  if (item.zones.length > 0) svgSlot.appendChild(buildZoneSVG(item.zones))
+  if (isFocused) {
+    svgSlot.appendChild(buildZoneSVGFocused(item.zones, _lightboxFocusedZone, _lightboxFocusedSev))
+  } else if (item.zones.length > 0) {
+    svgSlot.appendChild(buildZoneSVG(item.zones))
+  }
 
-  // Zone annotation list
-  const list = document.getElementById('lightbox-zones-list')
-  list.innerHTML = ''
-  if (item.zones.length === 0) {
-    const li = document.createElement('li')
-    li.className = 'lz-clean'
-    li.textContent = '✓ No defects detected on this side'
-    list.appendChild(li)
+  // Focused-issue banner (investigation mode)
+  const banner = document.getElementById('lightbox-focused-banner')
+  if (isFocused) {
+    const sevClass = `lz-badge--${_lightboxFocusedSev ?? 'moderate'}`
+    banner.innerHTML =
+      `<span class="lz-badge ${sevClass}">${ZONE_LABELS[_lightboxFocusedZone] ?? _lightboxFocusedZone}</span>` +
+      `<span class="lightbox-focused-note">${_lightboxFocusedNote ?? ''}</span>`
+    banner.classList.remove('hidden')
   } else {
-    item.zones.forEach(({ zone, severity, note }) => {
-      const li   = document.createElement('li')
-      li.className = 'lz-item'
-      const badge = document.createElement('span')
-      badge.className = `lz-badge lz-badge--${severity}`
-      badge.textContent = ZONE_LABELS[zone] ?? zone
-      const txt = document.createElement('span')
-      txt.className = 'lz-note'
-      txt.textContent = note
-      li.appendChild(badge)
-      li.appendChild(txt)
+    banner.classList.add('hidden')
+  }
+
+  // Zone list — show in normal mode; hide in focused mode
+  const list = document.getElementById('lightbox-zones-list')
+  if (isFocused) {
+    list.classList.add('hidden')
+  } else {
+    list.classList.remove('hidden')
+    list.innerHTML = ''
+    if (item.zones.length === 0) {
+      const li = document.createElement('li')
+      li.className = 'lz-clean'
+      li.textContent = '✓ No defects detected on this side'
       list.appendChild(li)
-    })
+    } else {
+      item.zones.forEach(({ zone, severity, note }) => {
+        const li    = document.createElement('li')
+        li.className = 'lz-item'
+        const badge = document.createElement('span')
+        badge.className = `lz-badge lz-badge--${severity}`
+        badge.textContent = ZONE_LABELS[zone] ?? zone
+        const txt = document.createElement('span')
+        txt.className = 'lz-note'
+        txt.textContent = note
+        li.appendChild(badge)
+        li.appendChild(txt)
+        list.appendChild(li)
+      })
+    }
   }
 
   // Prev / next navigation
@@ -566,7 +694,9 @@ function renderResult(payload) {
   }
 
   // ── Front / Back analysis ───────────────────────────────────────
-  function renderSideAnalysis(side, prefix) {
+  // thumbIndex: 0 = front image, 1 = back image (aligns with _lightboxItems)
+  // sideZones:  zones array for this side, used to look up severity for "Show"
+  function renderSideAnalysis(side, prefix, thumbIndex, sideZones) {
     const notAvailEl  = document.getElementById(`${prefix}-not-available`)
     const centeringEl = document.getElementById(`${prefix}-centering`)
     const issuesEl    = document.getElementById(`${prefix}-issues-list`)
@@ -594,14 +724,40 @@ function renderResult(payload) {
       const items = sideIssues[key]
       if (!Array.isArray(items) || items.length === 0) return
       hasIssue = true
+
       const header = document.createElement('li')
       header.className = 'issue-category-header'
       header.textContent = label
       issuesEl.appendChild(header)
-      items.forEach(issue => {
+
+      items.forEach(issueText => {
+        const zone = getZoneForIssue(key, issueText)
+
         const li = document.createElement('li')
         li.className = 'issue-item'
-        li.textContent = issue
+
+        const txt = document.createElement('span')
+        txt.className = 'issue-text'
+        txt.textContent = issueText
+        li.appendChild(txt)
+
+        // "Show" button — only when we can locate the issue on the card
+        if (zone !== null && thumbIndex < _lightboxItems.length) {
+          // Look up severity from zones array for the right highlight colour
+          const matchedZone = sideZones?.find(z => z.zone === zone)
+          const severity = matchedZone?.severity ?? 'moderate'
+
+          const btn = document.createElement('button')
+          btn.className = 'issue-locate-btn'
+          btn.textContent = 'Show'
+          btn.title = `Locate on card: ${ZONE_LABELS[zone] ?? zone}`
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation()
+            openLightboxFocused(thumbIndex, zone, issueText, severity)
+          })
+          li.appendChild(btn)
+        }
+
         issuesEl.appendChild(li)
       })
     })
@@ -617,8 +773,8 @@ function renderResult(payload) {
     issuesEl.classList.remove('hidden')
   }
 
-  renderSideAnalysis(payload.front_analysis, 'front')
-  renderSideAnalysis(payload.back_analysis,  'back')
+  renderSideAnalysis(payload.front_analysis, 'front', 0, frontZones)
+  renderSideAnalysis(payload.back_analysis,  'back',  1, backZones)
 
   // ── Grade estimate ──────────────────────────────────────────────
   const dist       = grade_estimate.distribution ?? {}

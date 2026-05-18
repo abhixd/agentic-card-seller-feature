@@ -463,7 +463,7 @@ main { padding: 16px 14px 32px; }
 
 .issues-list li {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 7px;
   font-size: 12px;
   color: var(--text);
@@ -475,7 +475,33 @@ main { padding: 16px 14px 32px; }
   color: var(--maybe);
   flex-shrink: 0;
   font-size: 11px;
-  margin-top: 1px;
+}
+
+/* Issue text fills remaining space; "Show" button is pushed to the right */
+.issue-text {
+  flex: 1;
+  line-height: 1.4;
+}
+
+/* "Show" button — small pill next to each locatable issue */
+.issue-locate-btn {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent-lt);
+  background: rgba(79,70,229,0.12);
+  border: 1px solid rgba(79,70,229,0.35);
+  border-radius: 20px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.issue-locate-btn:hover {
+  background: rgba(79,70,229,0.25);
+  border-color: var(--accent-lt);
+  color: #fff;
 }
 
 .no-issues {
@@ -759,6 +785,31 @@ main { padding: 16px 14px 32px; }
   inset: 0;
   width: 100%;
   height: 100%;
+}
+
+/* Focused zone pulse animation */
+@keyframes zonePulse {
+  0%, 100% { opacity: 1;    }
+  50%       { opacity: 0.55; }
+}
+.zone-focused-rect { animation: zonePulse 1.6s ease-in-out infinite; }
+
+/* Investigation mode banner — shows zone label + full issue text */
+.lightbox-focused-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: rgba(79,70,229,0.10);
+  border: 1px solid rgba(79,70,229,0.25);
+  border-radius: 10px;
+}
+
+.lightbox-focused-note {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.5;
+  flex: 1;
 }
 
 /* Zone annotation list */
