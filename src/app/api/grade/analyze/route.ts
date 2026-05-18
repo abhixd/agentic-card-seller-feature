@@ -16,7 +16,7 @@ import { fetchEbayComps } from '@/lib/ebay/findingApi'
 import { gradeWithClaude, GradeWithClaudeResult, ClaudeGradingResult } from '@/lib/grading/claudeVision'
 
 export const runtime = 'nodejs'
-export const maxDuration = 60   // seconds — Claude Vision with 2 images needs ~20–40 s
+export const maxDuration = 120  // seconds — Claude Vision with images needs up to 90 s
 
 // ── CORS ──────────────────────────────────────────────────────────
 const CORS_HEADERS = {
@@ -218,12 +218,10 @@ export async function POST(req: NextRequest) {
   // ── 1. Claude Vision grading ──────────────────────────────────
   let inference: ClaudeGradingResult
   let cvMeasurements: GradeWithClaudeResult['_cv']
-  let cropMeta:       GradeWithClaudeResult['_crop']
   try {
     const raw = await gradeWithClaude(body.image_urls, body.title, body.image_data)
     cvMeasurements = raw._cv
-    cropMeta       = raw._crop
-    const { _cv: _dropped, _crop: _droppedCrop, ...inferenceOnly } = raw
+    const { _cv: _dropped, ...inferenceOnly } = raw
     inference = sanitiseInference(inferenceOnly)
   } catch (err) {
     return NextResponse.json(
@@ -265,17 +263,10 @@ export async function POST(req: NextRequest) {
     border_irregularity: cvMeasurements?.border_irregularity ?? null,
     surface_lines:       cvMeasurements?.surface_lines       ?? null,
     // Detector C — surface grid cells for thumbnail heatmap overlay
-    // Only non-empty when hot cells were detected; applies to the front image (index 0)
     surface_grid:        cvMeasurements?.surface_grid        ?? null,
     // UI-ready overlay entries (percentage coords, ready for SVG rendering)
     corner_boxes:        cvMeasurements?.corner_boxes        ?? null,
     edge_bands:          cvMeasurements?.edge_bands          ?? null,
-    // Crop & rectification metadata (§4 of crop_rectification_subsystem_design.docx)
-    crop_status:          cropMeta?.status           ?? null,
-    crop_confidence:      cropMeta?.crop_confidence  ?? null,
-    crop_visible_fraction:cropMeta?.visible_fraction ?? null,
-    card_quad:            cropMeta?.card_quad        ?? null,
-    crop_detector:        cropMeta?.detector         ?? null,
     economics,
     decision,
     _meta: { comps_source: compsSource, grading_backend: 'claude-vision' },

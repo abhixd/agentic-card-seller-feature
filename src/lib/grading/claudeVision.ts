@@ -31,8 +31,8 @@ import sharp from 'sharp'
 import {
   analyseBuffer,
   formatCVSection,
+  detectCardBounds,
 } from './cvDetectors'
-import { cropCard, CropMeta } from './cardCrop'
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -108,10 +108,9 @@ export interface ClaudeGradingResult {
   _cv_sides?:       string[]     // side classification per image (pipeline, not Claude)
 }
 
-/** Full return type of gradeWithClaude — includes CV measurements and crop metadata. */
+/** Full return type of gradeWithClaude — includes CV measurements. */
 export interface GradeWithClaudeResult extends ClaudeGradingResult {
   _cv:   import('./cvDetectors').CVMeasurements | null
-  _crop: CropMeta | null
 }
 
 // ── Prompt ────────────────────────────────────────────────────────
@@ -407,8 +406,11 @@ export async function gradeWithClaude(
   // 50 s client-side timeout — comfortably inside Vercel's 60 s maxDuration.
   // Without this the SDK waits indefinitely and Vercel returns a cold 504
   // with no useful error message reaching the extension.
-  const client = new Anthropic({ apiKey, timeout: 50_000 })
-  const n      = Math.min((imageData ?? imageUrls).length, 6)
+  const client = new Anthropic({ apiKey, timeout: 100_000 })
+  // Cap at 2 images (front + back). Sending more doesn't improve grading
+  // accuracy but doubles/triples Claude response time and pushes past the
+  // function's maxDuration budget.
+  const n      = Math.min((imageData ?? imageUrls).length, 2)
 
   // ── Step 1: Build buffers from base64 (fast) or download URLs (fallback) ──
   // The extension pre-fetches images in the browser where eBay CDN is accessible.
@@ -421,46 +423,28 @@ export async function gradeWithClaude(
     }),
   )
 
-  // ── Step 1b: Crop card from background in each buffer ───────────────────
-  // cropCard() runs the OpenCV detection cascade (Canny → quad → warpPerspective)
-  // with color-threshold and full-image fallbacks.
+  // ── Step 1b: Crop card from background (Sharp-only, ~200 ms per image) ──
+  // detectCardBounds() samples corner pixels for the background colour,
+  // thresholds foreground by RGB distance, and returns an axis-aligned
+  // bounding box expanded 8% to include the white card border.
+  // Returns null when detection is unreliable — safe degradation to full image.
   //
-  // Hard 5-second outer timeout per image: if the OpenCV dynamic import or WASM
-  // init hangs in this Lambda environment, we fall back to null (uncropped) rather
-  // than consuming the entire 60 s maxDuration budget.  The Sharp-only analyseBuffer
-  // still runs on the uncropped buffer — analysis quality degrades slightly but the
-  // request always completes.
-  const CROP_TIMEOUT_MS = 5_000
-  const cropResults = await Promise.all(
+  // OpenCV perspective rectification (cardCrop.ts) is NOT used in this path:
+  // its 10 MB WASM import hangs in the Vercel Lambda environment, consuming
+  // the entire 60 s maxDuration budget.  It remains available via the
+  // dedicated POST /api/grade/debug-crop endpoint (maxDuration: 30 s).
+  const croppedBuffers: (Buffer | null)[] = await Promise.all(
     buffers.map(async (buf) => {
       if (!buf) return null
       try {
-        return await Promise.race([
-          cropCard(buf),
-          new Promise<null>((_, reject) =>
-            setTimeout(() => reject(new Error('cropCard timeout')), CROP_TIMEOUT_MS),
-          ),
-        ])
-      } catch (err) {
-        console.warn('[claudeVision] cropCard skipped:', String(err))
-        return null
+        const bounds = await detectCardBounds(buf)
+        if (!bounds) return buf
+        return await sharp(buf).extract(bounds).toBuffer()
+      } catch {
+        return buf   // safe fallback: use full image
       }
     }),
   )
-  const croppedBuffers: (Buffer | null)[] = cropResults.map((r, i) => r?.buffer ?? buffers[i])
-
-  // Capture metadata from the first successfully cropped buffer
-  const firstCrop    = cropResults.find(r => r !== null) ?? null
-  const cropMeta: CropMeta | null = firstCrop
-    ? {
-        status:           firstCrop.status,
-        crop_confidence:  firstCrop.crop_confidence,
-        visible_fraction: firstCrop.visible_fraction,
-        card_quad:        firstCrop.card_quad,
-        fallback_used:    firstCrop.fallback_used,
-        detector:         firstCrop.detector,
-      }
-    : null
 
   // ── Step 2: CV detectors on the first non-null (cropped) buffer ──────────
   const cv = await analyseBuffer(croppedBuffers.find(Boolean)!).catch(() => null)
@@ -543,5 +527,5 @@ export async function gradeWithClaude(
     }
   }
 
-  return { ...parsed, _cv: cv, _crop: cropMeta }
+  return { ...parsed, _cv: cv }
 }
