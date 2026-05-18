@@ -370,7 +370,10 @@ export async function gradeWithClaude(
   const apiKey = process.env.ANTHROPIC_API_KEY
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set')
 
-  const client = new Anthropic({ apiKey })
+  // 50 s client-side timeout — comfortably inside Vercel's 60 s maxDuration.
+  // Without this the SDK waits indefinitely and Vercel returns a cold 504
+  // with no useful error message reaching the extension.
+  const client = new Anthropic({ apiKey, timeout: 50_000 })
   const n      = Math.min((imageData ?? imageUrls).length, 6)
 
   // ── Step 1: Build buffers from base64 (fast) or download URLs (fallback) ──

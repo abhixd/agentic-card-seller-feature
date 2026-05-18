@@ -168,6 +168,12 @@ async function handleAnalyze(listing) {
   const { backendUrl = DEFAULT_BACKEND } = await chrome.storage.local.get('backendUrl')
   const endpoint = `${backendUrl.replace(/\/$/, '')}/api/grade/analyze`
 
+  // AbortController for the backend fetch — cancelled if it takes > 80 s.
+  // (Vercel maxDuration is 60 s, so 80 s gives it time to return its own
+  // timeout error before we give up on our end.)
+  const controller = new AbortController()
+  const backendTimer = setTimeout(() => controller.abort(), 80_000)
+
   try {
     // Download images here in the browser — the browser has the correct
     // session/cookies/referrer to access eBay CDN. Vercel's servers do not,
@@ -180,6 +186,7 @@ async function handleAnalyze(listing) {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ ...listing, image_data: imageData }),
+      signal:  controller.signal,
     })
 
     if (!resp.ok) {
@@ -193,15 +200,22 @@ async function handleAnalyze(listing) {
     broadcast({ type: 'ANALYSIS_RESULT', payload: result })
 
   } catch (err) {
+    const isTimeout = err.name === 'AbortError'
     broadcast({
       type: 'ANALYSIS_ERROR',
       payload: {
-        message: err.message ?? 'Unknown error',
-        hint:    endpoint.includes('localhost')
+        message: isTimeout
+          ? 'Analysis timed out — the server took too long to respond.'
+          : (err.message ?? 'Unknown error'),
+        hint: isTimeout
+          ? 'This can happen with large images. Try selecting fewer images or try again.'
+          : endpoint.includes('localhost')
           ? 'Make sure the grading backend is running locally.'
           : null,
       },
     })
+  } finally {
+    clearTimeout(backendTimer)
   }
 }
 
@@ -222,7 +236,8 @@ function sleep(ms) {
 async function fetchImagesAsBase64(urls) {
   return Promise.all(urls.map(async (url) => {
     try {
-      const resp = await fetch(url)
+      // 12 s per image — eBay CDN is fast; longer means something is wrong.
+      const resp = await fetch(url, { signal: AbortSignal.timeout(12_000) })
       if (!resp.ok) return null
       const blob = await resp.blob()
       return await new Promise((resolve) => {
