@@ -190,106 +190,106 @@ function renderCVDetectors(payload) {
     r => `diag ${(r.diagonal_energy_fraction * 100).toFixed(0)}% · imbal ${r.energy_imbalance.toFixed(2)} · ${r.confidence} conf`)
 }
 
-// ── Analyzed images strip ──────────────────────────────────────────
+// ── Analyzed images strip + lightbox ──────────────────────────────
 
-/**
- * Render a horizontal strip of thumbnails showing which images were sent
- * for analysis. First image is labeled "Front", second "Back", rest numbered.
- */
-function renderAnalyzedImages(urls) {
-  const strip = document.getElementById('analyzed-images-strip')
-  strip.innerHTML = ''
-
-  if (!urls || urls.length === 0) {
-    strip.closest('.analyzed-images-section').classList.add('hidden')
-    return
-  }
-
-  strip.closest('.analyzed-images-section').classList.remove('hidden')
-
-  const LABELS = ['Front', 'Back']
-
-  urls.forEach((url, i) => {
-    const label = LABELS[i] ?? `Image ${i + 1}`
-
-    const item = document.createElement('div')
-    item.className = 'analyzed-thumb'
-    item.dataset.index = String(i)
-
-    // Wrapper needed so the SVG zone overlay can be positioned absolutely over the image
-    const wrap = document.createElement('div')
-    wrap.className = 'analyzed-thumb-wrap'
-
-    const img = document.createElement('img')
-    img.alt = label
-    img.loading = 'lazy'
-    img.src = url.replace(/s-l\d+/g, 's-l300')
-    img.onerror = () => {
-      img.remove()
-      const err = document.createElement('div')
-      err.className = 'analyzed-thumb-err'
-      err.textContent = '🖼'
-      wrap.appendChild(err)
-    }
-
-    wrap.appendChild(img)
-    item.appendChild(wrap)
-
-    const lbl = document.createElement('span')
-    lbl.className = 'analyzed-thumb-label'
-    lbl.textContent = label
-
-    item.appendChild(lbl)
-    strip.appendChild(item)
-  })
+// Zone geometry: [x%, y%, w%, h%] in a 100×100 viewBox
+const ZONE_RECTS = {
+  'tl-corner':   [0,   0,   20,  22],
+  'tr-corner':   [80,  0,   20,  22],
+  'bl-corner':   [0,   78,  20,  22],
+  'br-corner':   [80,  78,  20,  22],
+  'top-edge':    [20,  0,   60,  14],
+  'bottom-edge': [20,  86,  60,  14],
+  'left-edge':   [0,   22,  14,  56],
+  'right-edge':  [86,  22,  14,  56],
+  'surface':     [14,  14,  72,  64],
+  'centering':   [4,   4,   92,  92],
 }
 
+const ZONE_LABELS = {
+  'tl-corner':   'Top-Left Corner',
+  'tr-corner':   'Top-Right Corner',
+  'bl-corner':   'Bottom-Left Corner',
+  'br-corner':   'Bottom-Right Corner',
+  'top-edge':    'Top Edge',
+  'bottom-edge': 'Bottom Edge',
+  'left-edge':   'Left Edge',
+  'right-edge':  'Right Edge',
+  'surface':     'Surface',
+  'centering':   'Centering',
+}
+
+const SEV_FILL   = { light: 'rgba(234,179,8,0.35)',  moderate: 'rgba(249,115,22,0.45)', heavy: 'rgba(220,38,38,0.55)' }
+const SEV_STROKE = { light: 'rgba(234,179,8,0.90)',  moderate: 'rgba(249,115,22,1.00)', heavy: 'rgba(220,38,38,1.00)' }
+const SEV_HEX    = { light: '#eab308',               moderate: '#f97316',               heavy: '#ef4444'              }
+const SEV_LABEL  = { light: 'Light',                 moderate: 'Moderate',              heavy: 'Heavy'                }
+
 /**
- * Draw SVG zone highlight rectangles over the thumbnail at `thumbIndex`.
- * Called after renderAnalyzedImages() so the DOM nodes exist.
- *
- * zones: ZoneAnnotation[] from front_analysis.zones / back_analysis.zones
+ * Build zones from Claude's text issues when Claude didn't return explicit
+ * zone data — Haiku may omit the field on clean cards or short responses.
+ * Returns zones[] (may be empty on a clean side).
  */
-function overlayZonesOnThumb(thumbIndex, zones) {
-  if (!zones || zones.length === 0) return
+function inferZonesFromIssues(sideAnalysis) {
+  if (!sideAnalysis || sideAnalysis.assessable === false) return []
+  // Prefer Claude's explicit zones
+  if (Array.isArray(sideAnalysis.zones) && sideAnalysis.zones.length > 0) return sideAnalysis.zones
 
-  const strip = document.getElementById('analyzed-images-strip')
-  const thumb = strip.querySelector(`.analyzed-thumb[data-index="${thumbIndex}"]`)
-  if (!thumb) return
-  const wrap = thumb.querySelector('.analyzed-thumb-wrap')
-  if (!wrap) return
+  const zones = []
+  const issues = sideAnalysis.issues ?? {}
 
-  // ── Zone geometry: [x%, y%, w%, h%] within the card face ──────────────────
-  // Corners are square-ish; edges run between them; surface is the interior.
-  const ZONE_RECTS = {
-    'tl-corner':    [0,   0,   20,  22],
-    'tr-corner':    [80,  0,   20,  22],
-    'bl-corner':    [0,   78,  20,  22],
-    'br-corner':    [80,  78,  20,  22],
-    'top-edge':     [20,  0,   60,  14],
-    'bottom-edge':  [20,  86,  60,  14],
-    'left-edge':    [0,   22,  14,  56],
-    'right-edge':   [86,  22,  14,  56],
-    'surface':      [14,  14,  72,  64],
-    'centering':    [4,   4,   92,  92],
+  function sev(texts) {
+    const j = texts.join(' ').toLowerCase()
+    return j.includes('heavy') || j.includes('major') || j.includes('severe') || j.includes('significant')
+      ? 'heavy' : j.includes('moderate') ? 'moderate' : 'light'
   }
 
-  // Severity → fill / stroke colours
-  const SEV_FILL   = { light: 'rgba(234,179,8,0.32)',  moderate: 'rgba(249,115,22,0.42)', heavy: 'rgba(220,38,38,0.50)' }
-  const SEV_STROKE = { light: 'rgba(234,179,8,0.85)',  moderate: 'rgba(249,115,22,0.95)', heavy: 'rgba(220,38,38,1.00)' }
+  function push(zone, severity, note) {
+    if (!zones.find(z => z.zone === zone)) zones.push({ zone, severity, note: note.slice(0, 60) })
+  }
 
-  const NS = 'http://www.w3.org/2000/svg'
+  if (issues.centering?.length)
+    push('centering', sev(issues.centering), issues.centering[0])
+
+  ;(issues.corners ?? []).forEach(text => {
+    const t = text.toLowerCase()
+    const zone =
+      t.includes('top-left')  || t.includes(' tl') ? 'tl-corner' :
+      t.includes('top-right') || t.includes(' tr') ? 'tr-corner' :
+      t.includes('bottom-left')  || t.includes(' bl') ? 'bl-corner' :
+      t.includes('bottom-right') || t.includes(' br') ? 'br-corner' :
+      t.includes('top')    ? 'tr-corner' :   // default top → tr (most common PSA corner)
+      t.includes('bottom') ? 'bl-corner' : 'tl-corner'
+    push(zone, sev([text]), text)
+  })
+
+  ;(issues.edges ?? []).forEach(text => {
+    const t = text.toLowerCase()
+    const zone =
+      t.includes('top')    ? 'top-edge'    :
+      t.includes('bottom') ? 'bottom-edge' :
+      t.includes('left')   ? 'left-edge'   :
+      t.includes('right')  ? 'right-edge'  : 'top-edge'
+    push(zone, sev([text]), text)
+  })
+
+  if (issues.surface?.length)
+    push('surface', sev(issues.surface), issues.surface[0])
+
+  return zones
+}
+
+/** Build a reusable SVG element with coloured zone rects. */
+function buildZoneSVG(zones, extraClass) {
+  const NS  = 'http://www.w3.org/2000/svg'
   const svg = document.createElementNS(NS, 'svg')
-  svg.setAttribute('class',               'zone-overlay')
+  svg.setAttribute('class',               ['zone-overlay', extraClass].filter(Boolean).join(' '))
   svg.setAttribute('viewBox',             '0 0 100 100')
   svg.setAttribute('preserveAspectRatio', 'none')
-  svg.setAttribute('xmlns',               NS)
 
   zones.forEach(({ zone, severity, note }) => {
-    const rect = ZONE_RECTS[zone]
-    if (!rect) return
-    const [x, y, w, h] = rect
-
+    const r = ZONE_RECTS[zone]
+    if (!r) return
+    const [x, y, w, h] = r
     const el = document.createElementNS(NS, 'rect')
     el.setAttribute('x',            String(x))
     el.setAttribute('y',            String(y))
@@ -297,55 +297,160 @@ function overlayZonesOnThumb(thumbIndex, zones) {
     el.setAttribute('height',       String(h))
     el.setAttribute('fill',         SEV_FILL[severity]   ?? SEV_FILL.light)
     el.setAttribute('stroke',       SEV_STROKE[severity] ?? SEV_STROKE.light)
-    el.setAttribute('stroke-width', '2')
+    el.setAttribute('stroke-width', '2.5')
     el.setAttribute('rx',           '3')
-
-    // Native tooltip — shows on hover
     const title = document.createElementNS(NS, 'title')
     title.textContent = note
     el.appendChild(title)
-
     svg.appendChild(el)
   })
 
-  wrap.appendChild(svg)
-
-  // Show legend only if at least one zone was drawn
-  renderZoneLegend(zones)
+  return svg
 }
 
-/** Render a one-line severity legend below the strip (once, idempotent). */
-function renderZoneLegend(zones) {
-  const section = document.querySelector('.analyzed-images-section')
-  if (!section || section.querySelector('.zone-legend')) return  // already rendered
+// ── Lightbox ───────────────────────────────────────────────────────
 
-  const sevs = [...new Set(zones.map(z => z.severity))]
-  if (sevs.length === 0) return
+let _lightboxItems = []   // [{url, zones, label}]
+let _lightboxIndex = 0
 
-  const SEV_COLOR = { light: '#eab308', moderate: '#f97316', heavy: '#ef4444' }
-  const SEV_LABEL = { light: 'Light',   moderate: 'Moderate', heavy: 'Heavy'  }
+function openLightbox(index) {
+  _lightboxIndex = Math.max(0, Math.min(index, _lightboxItems.length - 1))
+  renderLightboxFrame()
+  document.getElementById('thumb-lightbox').classList.remove('hidden')
+}
 
-  const legend = document.createElement('div')
-  legend.className = 'zone-legend'
+function closeLightbox() {
+  document.getElementById('thumb-lightbox').classList.add('hidden')
+}
 
-  sevs.sort((a, b) => ['light','moderate','heavy'].indexOf(a) - ['light','moderate','heavy'].indexOf(b))
-    .forEach(sev => {
-      const pip = document.createElement('span')
-      pip.className = 'zone-legend-pip'
-      pip.style.background = SEV_COLOR[sev] ?? '#888'
+function renderLightboxFrame() {
+  const item = _lightboxItems[_lightboxIndex]
+  if (!item) return
 
+  document.getElementById('lightbox-img').src = item.url
+  document.getElementById('lightbox-img').alt = item.label
+  document.getElementById('lightbox-label').textContent =
+    _lightboxItems.length > 1
+      ? `${item.label}  ·  ${_lightboxIndex + 1} / ${_lightboxItems.length}`
+      : item.label
+
+  // Rebuild zone SVG
+  const svgSlot = document.getElementById('lightbox-svg-slot')
+  svgSlot.innerHTML = ''
+  if (item.zones.length > 0) svgSlot.appendChild(buildZoneSVG(item.zones))
+
+  // Zone annotation list
+  const list = document.getElementById('lightbox-zones-list')
+  list.innerHTML = ''
+  if (item.zones.length === 0) {
+    const li = document.createElement('li')
+    li.className = 'lz-clean'
+    li.textContent = '✓ No defects detected on this side'
+    list.appendChild(li)
+  } else {
+    item.zones.forEach(({ zone, severity, note }) => {
+      const li   = document.createElement('li')
+      li.className = 'lz-item'
+      const badge = document.createElement('span')
+      badge.className = `lz-badge lz-badge--${severity}`
+      badge.textContent = ZONE_LABELS[zone] ?? zone
       const txt = document.createElement('span')
-      txt.className = 'zone-legend-txt'
-      txt.textContent = SEV_LABEL[sev] ?? sev
+      txt.className = 'lz-note'
+      txt.textContent = note
+      li.appendChild(badge)
+      li.appendChild(txt)
+      list.appendChild(li)
+    })
+  }
 
+  // Prev / next navigation
+  const nav = document.getElementById('lightbox-nav')
+  nav.classList.toggle('hidden', _lightboxItems.length <= 1)
+  document.getElementById('lightbox-prev').disabled = _lightboxIndex === 0
+  document.getElementById('lightbox-next').disabled = _lightboxIndex === _lightboxItems.length - 1
+}
+
+document.getElementById('lightbox-close').addEventListener('click', closeLightbox)
+document.getElementById('lightbox-backdrop').addEventListener('click', closeLightbox)
+document.getElementById('lightbox-prev').addEventListener('click', () => {
+  if (_lightboxIndex > 0) { _lightboxIndex--; renderLightboxFrame() }
+})
+document.getElementById('lightbox-next').addEventListener('click', () => {
+  if (_lightboxIndex < _lightboxItems.length - 1) { _lightboxIndex++; renderLightboxFrame() }
+})
+
+// ── Strip renderer ─────────────────────────────────────────────────
+
+/**
+ * Render the analyzed-images strip.
+ * allZones: array of ZoneAnnotation[] aligned with urls (one per image).
+ */
+function renderAnalyzedImages(urls, allZones) {
+  const strip   = document.getElementById('analyzed-images-strip')
+  const section = strip.closest('.analyzed-images-section')
+
+  section.querySelector('.zone-legend')?.remove()
+  strip.innerHTML = ''
+  _lightboxItems  = []
+
+  if (!urls || urls.length === 0) { section.classList.add('hidden'); return }
+  section.classList.remove('hidden')
+
+  const LABELS = ['Front', 'Back']
+
+  urls.forEach((url, i) => {
+    const label = LABELS[i] ?? `Image ${i + 1}`
+    const zones = allZones?.[i] ?? []
+    _lightboxItems.push({ url, zones, label })
+
+    const item = document.createElement('div')
+    item.className = 'analyzed-thumb'
+    item.dataset.index = String(i)
+
+    const wrap = document.createElement('div')
+    wrap.className = 'analyzed-thumb-wrap'
+
+    const img = document.createElement('img')
+    img.alt     = label
+    img.loading = 'lazy'
+    img.src     = url.replace(/s-l\d+/g, 's-l300')
+    img.onerror = () => {
+      img.remove()
+      const err = document.createElement('div')
+      err.className = 'analyzed-thumb-err'
+      err.textContent = '🖼'
+      wrap.appendChild(err)
+    }
+    wrap.appendChild(img)
+    if (zones.length > 0) wrap.appendChild(buildZoneSVG(zones))
+
+    const lbl = document.createElement('span')
+    lbl.className = 'analyzed-thumb-label'
+    lbl.textContent = label
+
+    item.appendChild(wrap)
+    item.appendChild(lbl)
+    item.addEventListener('click', () => openLightbox(i))
+    strip.appendChild(item)
+  })
+
+  // Severity legend — aggregate across all images
+  const allSevs = [...new Set((allZones ?? []).flat().map(z => z.severity))]
+    .sort((a, b) => ['light','moderate','heavy'].indexOf(a) - ['light','moderate','heavy'].indexOf(b))
+
+  if (allSevs.length > 0) {
+    const legend = document.createElement('div')
+    legend.className = 'zone-legend'
+    allSevs.forEach(sev => {
       const entry = document.createElement('span')
       entry.className = 'zone-legend-entry'
-      entry.appendChild(pip)
-      entry.appendChild(txt)
+      entry.innerHTML =
+        `<span class="zone-legend-pip" style="background:${SEV_HEX[sev]}"></span>` +
+        `<span class="zone-legend-txt">${SEV_LABEL[sev]}</span>`
       legend.appendChild(entry)
     })
-
-  section.appendChild(legend)
+    section.appendChild(legend)
+  }
 }
 
 // ── Render results ─────────────────────────────────────────────────
@@ -590,10 +695,10 @@ function renderResult(payload) {
     : 'Prices: estimated (no live comps)'
 
   renderCVDetectors(payload)
-  renderAnalyzedImages(_analyzedUrls)
-  // Overlay zone highlights after thumbnails are in the DOM
-  overlayZonesOnThumb(0, payload.front_analysis?.zones ?? [])
-  overlayZonesOnThumb(1, payload.back_analysis?.zones  ?? [])
+  // Infer zones from issues text (works even if Claude omitted the zones field)
+  const frontZones = inferZonesFromIssues(payload.front_analysis)
+  const backZones  = inferZonesFromIssues(payload.back_analysis)
+  renderAnalyzedImages(_analyzedUrls, [frontZones, backZones])
   showState('result')
 }
 

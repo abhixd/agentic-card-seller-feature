@@ -582,17 +582,23 @@ main { padding: 16px 14px 32px; }
   align-items: center;
   gap: 5px;
   flex-shrink: 0;
+  cursor: pointer;
 }
 
-/* Relative container so the SVG overlay can sit on top of the image */
 .analyzed-thumb-wrap {
   position: relative;
   width: 76px;
   height: 102px;
-  border-radius: 6px;
+  border-radius: 7px;
   overflow: hidden;
   border: 1.5px solid var(--border);
   background: var(--surface2);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.analyzed-thumb:hover .analyzed-thumb-wrap {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(79,70,229,0.35);
 }
 
 .analyzed-thumb-wrap img {
@@ -612,16 +618,14 @@ main { padding: 16px 14px 32px; }
   color: var(--text-dim);
 }
 
-/* SVG zone highlight overlay */
+/* SVG zone overlay — sits on top of the image */
 .zone-overlay {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  pointer-events: none;   /* don't block image interactions */
+  pointer-events: none;
 }
-
-/* Re-enable pointer events on individual rects so <title> tooltips work */
 .zone-overlay rect {
   pointer-events: all;
   cursor: default;
@@ -635,32 +639,185 @@ main { padding: 16px 14px 32px; }
   color: var(--text-dim);
 }
 
-/* Severity legend */
+/* Severity legend below the strip */
 .zone-legend {
   display: flex;
   gap: 10px;
   margin-top: 7px;
   flex-wrap: wrap;
 }
-
 .zone-legend-entry {
   display: flex;
   align-items: center;
   gap: 4px;
 }
-
 .zone-legend-pip {
   width: 9px;
   height: 9px;
   border-radius: 2px;
   flex-shrink: 0;
 }
-
 .zone-legend-txt {
   font-size: 10px;
   color: var(--text-dim);
   font-weight: 500;
 }
+
+/* ── Lightbox ────────────────────────────────────────────────────── */
+.thumb-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: flex-end;   /* sheet slides up from bottom */
+}
+
+.lightbox-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(5, 5, 15, 0.80);
+  backdrop-filter: blur(4px);
+}
+
+.lightbox-sheet {
+  position: relative;
+  width: 100%;
+  max-height: 92vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border-radius: 18px 18px 0 0;
+  border-top: 1px solid var(--border);
+  padding: 16px 16px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: sheetUp 0.22s ease;
+}
+@keyframes sheetUp {
+  from { transform: translateY(40px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+.lightbox-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.lightbox-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text);
+}
+
+.lightbox-close-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+.lightbox-close-btn:hover { color: var(--text); background: var(--border); }
+
+/* Image + SVG zone overlay */
+.lightbox-img-wrap {
+  position: relative;
+  width: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  /* Maintain card portrait ratio */
+  aspect-ratio: 3 / 4;
+}
+
+.lightbox-img-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+/* Slot where buildZoneSVG() appends its SVG */
+.lightbox-svg-slot {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.lightbox-svg-slot .zone-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Zone annotation list */
+.lightbox-zones-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.lz-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.lz-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+.lz-badge--light    { background: rgba(234,179,8,0.15);  color: #fde68a; border: 1px solid rgba(234,179,8,0.4);  }
+.lz-badge--moderate { background: rgba(249,115,22,0.15); color: #fed7aa; border: 1px solid rgba(249,115,22,0.4); }
+.lz-badge--heavy    { background: rgba(220,38,38,0.15);  color: #fca5a5; border: 1px solid rgba(220,38,38,0.4);  }
+
+.lz-note {
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.lz-clean {
+  font-size: 12px;
+  color: var(--buy);
+}
+
+/* Prev / next navigation */
+.lightbox-nav {
+  display: flex;
+  gap: 8px;
+}
+
+.lightbox-nav-btn {
+  flex: 1;
+  padding: 9px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.lightbox-nav-btn:hover:not(:disabled) { background: var(--border); border-color: var(--accent-lt); }
+.lightbox-nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
 /* Reset button */
 .reset-btn {

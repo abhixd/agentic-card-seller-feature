@@ -236,6 +236,29 @@
     </div><!-- /state-result -->
   </main>
 
+  <!-- ── Lightbox ── -->
+  <div id="thumb-lightbox" class="thumb-lightbox hidden" role="dialog" aria-modal="true" aria-label="Image detail">
+    <div id="lightbox-backdrop" class="lightbox-backdrop"></div>
+    <div class="lightbox-sheet">
+      <div class="lightbox-topbar">
+        <span id="lightbox-label" class="lightbox-label"></span>
+        <button id="lightbox-close" class="lightbox-close-btn" aria-label="Close">✕</button>
+      </div>
+      <!-- Image + zone SVG overlay -->
+      <div class="lightbox-img-wrap">
+        <img id="lightbox-img" alt="" />
+        <div id="lightbox-svg-slot" class="lightbox-svg-slot"></div>
+      </div>
+      <!-- Zone annotation list -->
+      <ul id="lightbox-zones-list" class="lightbox-zones-list"></ul>
+      <!-- Prev / next navigation (hidden when only one image) -->
+      <div id="lightbox-nav" class="lightbox-nav hidden">
+        <button id="lightbox-prev" class="lightbox-nav-btn">‹ Prev</button>
+        <button id="lightbox-next" class="lightbox-nav-btn">Next ›</button>
+      </div>
+    </div>
+  </div>
+
   <script src="sidepanel.js"></script>
 </body>
 </html>
