@@ -541,86 +541,187 @@ function closeLightbox() {
   document.getElementById('thumb-lightbox').classList.add('hidden')
 }
 
+/**
+ * When a Claude zone is focused, show the matching CV evidence SVG underneath —
+ * corner box for corner zones, edge band for edge zones, grid cells for surface.
+ * Returns null when no matching CV data exists (e.g. clean card, CV found nothing).
+ */
+function buildCVEvidenceSVG(item, focusedZone) {
+  if (!focusedZone) return null
+  const NS  = 'http://www.w3.org/2000/svg'
+  const svg = document.createElementNS(NS, 'svg')
+  svg.setAttribute('class',               'zone-overlay cv-evidence-overlay')
+  svg.setAttribute('viewBox',             '0 0 100 100')
+  svg.setAttribute('preserveAspectRatio', 'none')
+  let hasContent = false
+
+  const CORNER_KEY = { 'tl-corner': 'TL', 'tr-corner': 'TR', 'bl-corner': 'BL', 'br-corner': 'BR' }
+  const EDGE_KEY   = { 'top-edge': 'top', 'bottom-edge': 'bottom', 'left-edge': 'left', 'right-edge': 'right' }
+
+  const ck = CORNER_KEY[focusedZone]
+  const ek = EDGE_KEY[focusedZone]
+
+  if (ck) {
+    const box = (item.cornerBoxes ?? []).find(b => b.corner === ck)
+    if (box) {
+      const el = document.createElementNS(NS, 'rect')
+      el.setAttribute('x',            String(box.x_pct))
+      el.setAttribute('y',            String(box.y_pct))
+      el.setAttribute('width',        String(box.w_pct))
+      el.setAttribute('height',       String(box.h_pct))
+      el.setAttribute('fill',         'rgba(20,184,166,0.22)')
+      el.setAttribute('stroke',       'rgba(20,184,166,0.90)')
+      el.setAttribute('stroke-width', '2')
+      el.setAttribute('rx',           '2')
+      const t = document.createElementNS(NS, 'title')
+      t.textContent = `CV confirmed: ${box.severity} whitening`
+      el.appendChild(t)
+      svg.appendChild(el)
+      hasContent = true
+    }
+  } else if (ek) {
+    const band = (item.edgeBands ?? []).find(b => b.side === ek)
+    if (band) {
+      const el = document.createElementNS(NS, 'rect')
+      el.setAttribute('x',            String(band.x_pct))
+      el.setAttribute('y',            String(band.y_pct))
+      el.setAttribute('width',        String(band.w_pct))
+      el.setAttribute('height',       String(band.h_pct))
+      el.setAttribute('fill',         'rgba(20,184,166,0.18)')
+      el.setAttribute('stroke',       'rgba(20,184,166,0.80)')
+      el.setAttribute('stroke-width', '2')
+      el.setAttribute('rx',           '2')
+      const t = document.createElementNS(NS, 'title')
+      t.textContent = `CV confirmed: ${band.severity} border irregularity`
+      el.appendChild(t)
+      svg.appendChild(el)
+      hasContent = true
+    }
+  } else if (focusedZone === 'surface') {
+    const hotCells = (item.gridCells ?? []).filter(c => !c.glare_masked)
+    hotCells.forEach(cell => {
+      const el = document.createElementNS(NS, 'rect')
+      el.setAttribute('x',            String(cell.x_pct))
+      el.setAttribute('y',            String(cell.y_pct))
+      el.setAttribute('width',        String(cell.w_pct))
+      el.setAttribute('height',       String(cell.h_pct))
+      el.setAttribute('fill',         GRID_FILL[cell.severity]   ?? GRID_FILL.light)
+      el.setAttribute('stroke',       GRID_STROKE[cell.severity] ?? GRID_STROKE.light)
+      el.setAttribute('stroke-width', '1.5')
+      el.setAttribute('stroke-dasharray', '3 2')
+      el.setAttribute('rx',           '2')
+      svg.appendChild(el)
+      hasContent = true
+    })
+  }
+
+  return hasContent ? svg : null
+}
+
+function exitFocusedMode() {
+  _lightboxFocusedZone = null
+  _lightboxFocusedNote = null
+  _lightboxFocusedSev  = null
+  renderLightboxFrame()
+}
+
 function renderLightboxFrame() {
   const item = _lightboxItems[_lightboxIndex]
   if (!item) return
 
   const isFocused = _lightboxFocusedZone !== null
 
-  // Image
-  document.getElementById('lightbox-img').src = item.url
-  document.getElementById('lightbox-img').alt = item.label
+  // ── Image ────────────────────────────────────────────────────────
+  const imgEl = document.getElementById('lightbox-img')
+  imgEl.src = item.url
+  imgEl.alt = item.label
+  // Clicking the image in focused mode exits back to the clean overview
+  imgEl.style.cursor = isFocused ? 'pointer' : 'default'
+  imgEl.onclick = isFocused ? exitFocusedMode : null
 
-  // Label
+  // ── Label ────────────────────────────────────────────────────────
   const sideLabel = _lightboxItems.length > 1
     ? `${item.label}  ·  ${_lightboxIndex + 1} / ${_lightboxItems.length}`
     : item.label
-  document.getElementById('lightbox-label').textContent = isFocused
-    ? `${item.label}  ·  ${ZONE_LABELS[_lightboxFocusedZone] ?? _lightboxFocusedZone}`
-    : sideLabel
+  document.getElementById('lightbox-label').textContent = sideLabel
 
-  // Zone SVG — layered: CV grid (bottom, teal dashed) → Claude zones (top, solid)
-  // In focused/investigation mode, Claude zones switch to ghost+highlight; grid stays.
+  // ── SVG overlays — only in focused mode ─────────────────────────
+  // Default state is a clean image; overlays appear only when the user
+  // deliberately focuses an issue, so there's no ambient visual noise.
   const svgSlot = document.getElementById('lightbox-svg-slot')
   svgSlot.innerHTML = ''
-
-  // CV layers — always shown as ambient evidence in both normal and focused mode
-  const gridSvg   = buildSurfaceGridSVG(item.gridCells   ?? [])
-  const cornerSvg = buildCornerBoxSVG(item.cornerBoxes   ?? [])
-  const edgeSvg   = buildEdgeBandSVG(item.edgeBands      ?? [])
-  if (gridSvg)   svgSlot.appendChild(gridSvg)    // Layer 1: surface grid (dashed)
-  if (cornerSvg) svgSlot.appendChild(cornerSvg)  // Layer 2: corner boxes (solid)
-  if (edgeSvg)   svgSlot.appendChild(edgeSvg)    // Layer 3: edge bands  (solid)
-
-  // Layer 4 (top): Claude named zones
   if (isFocused) {
+    // CV evidence first (underneath), then Claude zone highlight on top
+    const cvSvg = buildCVEvidenceSVG(item, _lightboxFocusedZone)
+    if (cvSvg) svgSlot.appendChild(cvSvg)
     svgSlot.appendChild(buildZoneSVGFocused(item.zones, _lightboxFocusedZone, _lightboxFocusedSev))
-  } else if (item.zones.length > 0) {
-    svgSlot.appendChild(buildZoneSVG(item.zones))
   }
 
-  // Focused-issue banner (investigation mode)
+  // ── Banner ───────────────────────────────────────────────────────
   const banner = document.getElementById('lightbox-focused-banner')
   if (isFocused) {
     const sevClass = `lz-badge--${_lightboxFocusedSev ?? 'moderate'}`
     banner.innerHTML =
       `<span class="lz-badge ${sevClass}">${ZONE_LABELS[_lightboxFocusedZone] ?? _lightboxFocusedZone}</span>` +
-      `<span class="lightbox-focused-note">${_lightboxFocusedNote ?? ''}</span>`
+      `<span class="lightbox-focused-note">${_lightboxFocusedNote ?? ''}</span>` +
+      `<button class="lz-back-btn">← All issues</button>`
+    banner.classList.remove('hidden')
+    banner.querySelector('.lz-back-btn').addEventListener('click', exitFocusedMode)
+  } else if (item.zones.length > 0) {
+    banner.innerHTML = `<span class="lz-hint">Tap an issue below to locate it on the card</span>`
     banner.classList.remove('hidden')
   } else {
     banner.classList.add('hidden')
   }
 
-  // Zone list — show in normal mode; hide in focused mode
+  // ── Zone list — always visible, items are tappable ───────────────
   const list = document.getElementById('lightbox-zones-list')
-  if (isFocused) {
-    list.classList.add('hidden')
+  list.classList.remove('hidden')
+  list.innerHTML = ''
+
+  if (item.zones.length === 0) {
+    const li = document.createElement('li')
+    li.className = 'lz-clean'
+    li.textContent = '✓ No defects detected on this side'
+    list.appendChild(li)
   } else {
-    list.classList.remove('hidden')
-    list.innerHTML = ''
-    if (item.zones.length === 0) {
+    item.zones.forEach(({ zone, severity, note }) => {
+      const isActive = isFocused && zone === _lightboxFocusedZone
       const li = document.createElement('li')
-      li.className = 'lz-clean'
-      li.textContent = '✓ No defects detected on this side'
-      list.appendChild(li)
-    } else {
-      item.zones.forEach(({ zone, severity, note }) => {
-        const li    = document.createElement('li')
-        li.className = 'lz-item'
-        const badge = document.createElement('span')
-        badge.className = `lz-badge lz-badge--${severity}`
-        badge.textContent = ZONE_LABELS[zone] ?? zone
-        const txt = document.createElement('span')
-        txt.className = 'lz-note'
-        txt.textContent = note
-        li.appendChild(badge)
-        li.appendChild(txt)
-        list.appendChild(li)
+      li.className = `lz-item lz-item--tappable${isActive ? ' lz-item--active' : ''}`
+
+      const badge = document.createElement('span')
+      badge.className = `lz-badge lz-badge--${severity}`
+      badge.textContent = ZONE_LABELS[zone] ?? zone
+
+      const txt = document.createElement('span')
+      txt.className = 'lz-note'
+      txt.textContent = note
+
+      const arrow = document.createElement('span')
+      arrow.className = 'lz-locate-arrow'
+      arrow.textContent = isActive ? '✕' : '→'
+
+      li.appendChild(badge)
+      li.appendChild(txt)
+      li.appendChild(arrow)
+
+      li.addEventListener('click', () => {
+        if (isActive) {
+          exitFocusedMode()
+        } else {
+          _lightboxFocusedZone = zone
+          _lightboxFocusedNote = note
+          _lightboxFocusedSev  = severity
+          renderLightboxFrame()
+        }
       })
-    }
+
+      list.appendChild(li)
+    })
   }
 
-  // Prev / next navigation
+  // ── Prev / next navigation ───────────────────────────────────────
   const nav = document.getElementById('lightbox-nav')
   nav.classList.toggle('hidden', _lightboxItems.length <= 1)
   document.getElementById('lightbox-prev').disabled = _lightboxIndex === 0
@@ -694,20 +795,23 @@ function renderAnalyzedImages(urls, allZones, cvSurfaceGrid, cvCornerBoxes, cvEd
     }
     wrap.appendChild(img)
 
-    // Layer 1: CV surface grid — teal dashed (broad surface regions)
-    const gridSvg = buildSurfaceGridSVG(gridCells)
-    if (gridSvg) wrap.appendChild(gridSvg)
+    // Thumbnails are kept clean — no overlay noise.
+    // A small severity dot signals "issues found; tap to explore in lightbox."
+    const worstSev =
+      zones.find(z => z.severity === 'heavy')    ? 'heavy'    :
+      cornerBoxes.find(b => b.severity === 'heavy')   ? 'heavy'    :
+      zones.find(z => z.severity === 'moderate') ? 'moderate' :
+      cornerBoxes.find(b => b.severity === 'moderate') ? 'moderate' :
+      edgeBands.find(b => b.severity === 'moderate')   ? 'moderate' :
+      zones.length > 0 || cornerBoxes.length > 0 || edgeBands.length > 0 ||
+        gridCells.some(c => !c.glare_masked) ? 'light' : null
 
-    // Layer 2: CV corner boxes — teal solid (precise whitened corners)
-    const cornerSvg = buildCornerBoxSVG(cornerBoxes)
-    if (cornerSvg) wrap.appendChild(cornerSvg)
-
-    // Layer 3: CV edge bands — teal solid (precise anomalous edges)
-    const edgeSvg = buildEdgeBandSVG(edgeBands)
-    if (edgeSvg) wrap.appendChild(edgeSvg)
-
-    // Layer 4 (top): Claude named zones — solid coloured rects
-    if (zones.length > 0) wrap.appendChild(buildZoneSVG(zones))
+    if (worstSev) {
+      const dot = document.createElement('div')
+      dot.className = `thumb-issue-dot thumb-issue-dot--${worstSev}`
+      dot.title = 'Issues detected — tap to explore'
+      wrap.appendChild(dot)
+    }
 
     const lbl = document.createElement('span')
     lbl.className = 'analyzed-thumb-label'
@@ -719,55 +823,7 @@ function renderAnalyzedImages(urls, allZones, cvSurfaceGrid, cvCornerBoxes, cvEd
     strip.appendChild(item)
   })
 
-  // Severity legend
-  const legend = document.createElement('div')
-  legend.className = 'zone-legend'
-  let legendHasEntries = false
-
-  // Claude zone severity entries
-  const allSevs = [...new Set((allZones ?? []).flat().map(z => z.severity))]
-    .sort((a, b) => ['light','moderate','heavy'].indexOf(a) - ['light','moderate','heavy'].indexOf(b))
-  allSevs.forEach(sev => {
-    const entry = document.createElement('span')
-    entry.className = 'zone-legend-entry'
-    entry.innerHTML =
-      `<span class="zone-legend-pip" style="background:${SEV_HEX[sev]}"></span>` +
-      `<span class="zone-legend-txt">${SEV_LABEL[sev]}</span>`
-    legend.appendChild(entry)
-    legendHasEntries = true
-  })
-
-  // CV overlay legend entries — one combined "CV measured" pip covers all three CV layers
-  const hasCVCorners = (cvCornerBoxes ?? []).length > 0
-  const hasCVEdges   = (cvEdgeBands   ?? []).length > 0
-  const hasHotGrid   = (cvSurfaceGrid ?? []).some(c => !c.glare_masked)
-  const hasGlare     = (cvSurfaceGrid ?? []).some(c =>  c.glare_masked)
-
-  if (hasCVCorners || hasCVEdges || hasHotGrid) {
-    const entry = document.createElement('span')
-    entry.className = 'zone-legend-entry'
-    const parts = [
-      hasCVCorners && 'corners',
-      hasCVEdges   && 'edges',
-      hasHotGrid   && 'surface',
-    ].filter(Boolean).join(', ')
-    entry.innerHTML =
-      `<span class="zone-legend-pip zone-legend-pip--cv"></span>` +
-      `<span class="zone-legend-txt">CV: ${parts}</span>`
-    legend.appendChild(entry)
-    legendHasEntries = true
-  }
-  if (hasGlare) {
-    const entry = document.createElement('span')
-    entry.className = 'zone-legend-entry'
-    entry.innerHTML =
-      `<span class="zone-legend-pip zone-legend-pip--glare"></span>` +
-      `<span class="zone-legend-txt">Glare hidden</span>`
-    legend.appendChild(entry)
-    legendHasEntries = true
-  }
-
-  if (legendHasEntries) section.appendChild(legend)
+  // No always-on legend — interaction happens in the lightbox.
 }
 
 // ── Side analysis renderer ─────────────────────────────────────────
