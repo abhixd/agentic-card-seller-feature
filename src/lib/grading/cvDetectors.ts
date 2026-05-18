@@ -798,6 +798,7 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
     surface_grid,
     corner_boxes,
     edge_bands,
+    card_bounds_pct: null,   // populated per-image in claudeVision.ts after cropping
   }
 }
 
