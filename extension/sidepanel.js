@@ -694,6 +694,11 @@ function renderResult(payload) {
   }
 
   // ── Front / Back analysis ───────────────────────────────────────
+  // Infer zones up front so they're available to both renderSideAnalysis
+  // (for "Show" button severity lookup) and renderAnalyzedImages below.
+  const frontZones = inferZonesFromIssues(payload.front_analysis)
+  const backZones  = inferZonesFromIssues(payload.back_analysis)
+
   // thumbIndex: 0 = front image, 1 = back image (aligns with _lightboxItems)
   // sideZones:  zones array for this side, used to look up severity for "Show"
   function renderSideAnalysis(side, prefix, thumbIndex, sideZones) {
@@ -851,9 +856,6 @@ function renderResult(payload) {
     : 'Prices: estimated (no live comps)'
 
   renderCVDetectors(payload)
-  // Infer zones from issues text (works even if Claude omitted the zones field)
-  const frontZones = inferZonesFromIssues(payload.front_analysis)
-  const backZones  = inferZonesFromIssues(payload.back_analysis)
   renderAnalyzedImages(_analyzedUrls, [frontZones, backZones])
   showState('result')
 }
