@@ -312,6 +312,38 @@ Rules:
 - Distribution values must sum approximately to 1.00.
 - confidence "high": top-2 PSA grades >60% of mass. "medium": 40–60%. "low": image too limited.`
 
+// ── Retry helper ─────────────────────────────────────────────────
+/**
+ * Retry an async fn up to maxAttempts times, backing off on Anthropic 529
+ * (overloaded) errors. All other errors are re-thrown immediately.
+ *
+ * Delay schedule: 2 s → 4 s (doubles each time).
+ * 529s return in <1 s so total overhead per retry is small.
+ */
+async function withRetry<T>(
+  fn:           () => Promise<T>,
+  maxAttempts = 3,
+  baseDelayMs = 2_000,
+): Promise<T> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      const isOverloaded =
+        err instanceof Anthropic.APIStatusError && err.status === 529
+      if (isOverloaded && attempt < maxAttempts) {
+        const delay = baseDelayMs * Math.pow(2, attempt - 1)  // 2 s, 4 s
+        console.warn(`[Claude] overloaded (529) — retrying in ${delay / 1000}s (attempt ${attempt}/${maxAttempts})`)
+        await new Promise(r => setTimeout(r, delay))
+        continue
+      }
+      throw err
+    }
+  }
+  // unreachable — TypeScript needs this
+  throw new Error('withRetry: exceeded maxAttempts without returning')
+}
+
 // ── Image helpers ─────────────────────────────────────────────────
 
 /**
@@ -430,13 +462,15 @@ export async function gradeWithClaude(
     text: `${formatCVSection(cv)}${imageCountNote}Listing title (use as identity hint, but trust the image over the title): "${title}"\n\n${USER_PROMPT}`,
   }
 
-  // ── Step 5: Call Claude Haiku ─────────────────────────────────────────────
-  const response = await client.messages.create({
-    model:      'claude-haiku-4-5',
-    max_tokens: 4096,
-    system:     SYSTEM_PROMPT,
-    messages:   [{ role: 'user', content: [...imageBlocks, textHint] }],
-  })
+  // ── Step 5: Call Claude Haiku (with overloaded-error retry) ──────────────
+  const response = await withRetry(() =>
+    client.messages.create({
+      model:      'claude-haiku-4-5',
+      max_tokens: 4096,
+      system:     SYSTEM_PROMPT,
+      messages:   [{ role: 'user', content: [...imageBlocks, textHint] }],
+    }),
+  )
 
   const raw = response.content
     .filter(b => b.type === 'text')
