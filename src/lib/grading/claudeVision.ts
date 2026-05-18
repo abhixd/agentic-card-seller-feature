@@ -393,8 +393,8 @@ export async function gradeWithClaude(
 
   // ── Step 5: Call Claude Haiku ─────────────────────────────────────────────
   const response = await client.messages.create({
-    model:      'claude-sonnet-4-5',  // Haiku 4.5 doesn't reliably follow complex JSON schemas
-    max_tokens: 4096,                 // Full response with all fields needs more room than 2048
+    model:      'claude-haiku-4-5',
+    max_tokens: 4096,
     system:     SYSTEM_PROMPT,
     messages:   [{ role: 'user', content: [...imageBlocks, textHint] }],
   })
