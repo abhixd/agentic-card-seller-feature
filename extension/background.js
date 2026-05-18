@@ -192,6 +192,7 @@ async function handleAnalyze(listing) {
     }
 
     const result = await resp.json()
+    console.log('[CGA] result analysis_mode:', result.analysis_mode, '| border_irreg:', result.border_irregularity?.severity, '| surface:', result.surface_lines?.severity)
     broadcast({ type: 'ANALYSIS_PROGRESS', payload: { step: 'Computing ROI…' } })
     await sleep(200)
     broadcast({ type: 'ANALYSIS_RESULT', payload: result })
