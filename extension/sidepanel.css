@@ -569,10 +569,9 @@ main { padding: 16px 14px 32px; }
 /* ── Analyzed images strip ───────────────────────────────────────── */
 .analyzed-images-strip {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   overflow-x: auto;
   padding-bottom: 4px;
-  /* Hide scrollbar but keep scroll */
   scrollbar-width: none;
 }
 .analyzed-images-strip::-webkit-scrollbar { display: none; }
@@ -585,27 +584,47 @@ main { padding: 16px 14px 32px; }
   flex-shrink: 0;
 }
 
-.analyzed-thumb img {
-  width: 68px;
-  height: 90px;
-  object-fit: cover;
+/* Relative container so the SVG overlay can sit on top of the image */
+.analyzed-thumb-wrap {
+  position: relative;
+  width: 76px;
+  height: 102px;
   border-radius: 6px;
+  overflow: hidden;
   border: 1.5px solid var(--border);
-  display: block;
   background: var(--surface2);
 }
 
+.analyzed-thumb-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .analyzed-thumb-err {
-  width: 68px;
-  height: 90px;
-  border-radius: 6px;
-  border: 1.5px solid var(--border);
-  background: var(--surface2);
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 22px;
   color: var(--text-dim);
+}
+
+/* SVG zone highlight overlay */
+.zone-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;   /* don't block image interactions */
+}
+
+/* Re-enable pointer events on individual rects so <title> tooltips work */
+.zone-overlay rect {
+  pointer-events: all;
+  cursor: default;
 }
 
 .analyzed-thumb-label {
@@ -614,6 +633,33 @@ main { padding: 16px 14px 32px; }
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-dim);
+}
+
+/* Severity legend */
+.zone-legend {
+  display: flex;
+  gap: 10px;
+  margin-top: 7px;
+  flex-wrap: wrap;
+}
+
+.zone-legend-entry {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.zone-legend-pip {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.zone-legend-txt {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-weight: 500;
 }
 
 /* Reset button */

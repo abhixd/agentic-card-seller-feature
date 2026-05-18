@@ -69,11 +69,24 @@ export interface CardIssues {
   other:     string[]
 }
 
+/**
+ * Spatial zone annotation — used to draw SVG highlights over card thumbnails.
+ * Each entry maps one visible defect to the card region where it appears.
+ */
+export interface ZoneAnnotation {
+  zone:     'tl-corner' | 'tr-corner' | 'bl-corner' | 'br-corner' |
+            'top-edge'  | 'bottom-edge' | 'left-edge' | 'right-edge' |
+            'surface'   | 'centering'
+  severity: 'light' | 'moderate' | 'heavy'
+  note:     string   // concise phrase, max ~8 words
+}
+
 /** Issues and centering assessment for one side of the card. */
 export interface SideAnalysis {
   assessable: boolean        // false when images for this side are absent/unusable
   centering:  string | null  // e.g. "58/42 L/R, 54/46 T/B"; null if not visible
   issues:     CardIssues
+  zones:      ZoneAnnotation[]  // spatial defect locations for thumbnail overlay
 }
 
 export interface GradingDecision {
@@ -148,6 +161,19 @@ Other special instructions:
 - Holo surface must be treated conservatively when glare or angle prevents reliable inspection.
 - Do not overclaim PSA 9 or PSA 10 when image quality is limited.
 
+For each assessable side, also populate a "zones" array that maps each detected defect to its spatial location on the card. This powers visual highlights drawn directly over the card image, so accuracy matters.
+
+Zone names (use exactly these strings):
+  "tl-corner", "tr-corner", "bl-corner", "br-corner"  — the four corners
+  "top-edge", "bottom-edge", "left-edge", "right-edge" — the four edges (excluding corner area)
+  "surface"    — interior card face, excluding the border region
+  "centering"  — use for any centering issue; covers the whole card
+
+Each zone entry: { "zone": "<name>", "severity": "light"|"moderate"|"heavy", "note": "<concise phrase, max 8 words>" }
+Severity guide: light = minor/barely visible, moderate = clearly visible, heavy = prominent/grade-limiting.
+Only include zones where a defect is actually visible. Leave zones [] when the side is clean or not assessable.
+A single physical defect should appear as one zone entry — do not duplicate across issues and zones.
+
 Respond ONLY with one valid JSON object. No markdown, no prose outside JSON.
 
 Every "issues" object must use exactly these keys: centering, corners, edges, surface, other.
@@ -195,7 +221,12 @@ Example when both front and back are present:
       "edges":     [],
       "surface":   ["Faint holo scratches visible at angle"],
       "other":     []
-    }
+    },
+    "zones": [
+      { "zone": "centering",  "severity": "light",    "note": "58/42 left-heavy centering" },
+      { "zone": "tr-corner",  "severity": "light",    "note": "light whitening top-right corner" },
+      { "zone": "surface",    "severity": "light",    "note": "faint holo scratches at angle" }
+    ]
   },
   "back_analysis": {
     "assessable": true,
@@ -206,7 +237,10 @@ Example when both front and back are present:
       "edges":     ["Minor whitening on bottom edge"],
       "surface":   [],
       "other":     []
-    }
+    },
+    "zones": [
+      { "zone": "bottom-edge", "severity": "light", "note": "minor whitening on bottom edge" }
+    ]
   },
   "grade_estimate": {
     "grade_range":     "PSA 7-8",
@@ -242,12 +276,14 @@ Example when only the front is present (front_only):
   "front_analysis": {
     "assessable": true,
     "centering": "55/45 L/R, 53/47 T/B",
-    "issues": { "centering": [], "corners": [], "edges": [], "surface": [], "other": [] }
+    "issues": { "centering": [], "corners": [], "edges": [], "surface": [], "other": [] },
+    "zones": []
   },
   "back_analysis": {
     "assessable": false,
     "centering": null,
-    "issues": { "centering": [], "corners": [], "edges": [], "surface": [], "other": [] }
+    "issues": { "centering": [], "corners": [], "edges": [], "surface": [], "other": [] },
+    "zones": []
   },
   "grade_estimate": {
     "grade_range": "PSA 7-9", "confidence": "low", "limiting_factor": "front_only",
