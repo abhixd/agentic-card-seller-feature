@@ -91,7 +91,14 @@ async function getCV(): Promise<any> { // eslint-disable-line @typescript-eslint
   if (_cv) return _cv
   if (!_cvPromise) {
     _cvPromise = (async () => {
-      const mod = await import('@techstark/opencv-js')
+      // Timeout the import() itself — if the module can't be resolved in the
+      // Lambda environment the dynamic import hangs indefinitely.
+      const mod = await Promise.race([
+        import('@techstark/opencv-js'),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('OpenCV import() timed out after 12 s')), 12_000),
+        ),
+      ])
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const cv  = (mod as any).default ?? mod
 

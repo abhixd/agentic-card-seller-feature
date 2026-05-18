@@ -421,21 +421,33 @@ export async function gradeWithClaude(
     }),
   )
 
-  // ── Step 1b: Crop + rectify card from background in each buffer ──────────
-  // cropCard() runs the full detection cascade:
-  //   1. OpenCV Canny → contour → 4-point quad → warpPerspective (best)
-  //   2. minAreaRect fallback → warpPerspective               (medium confidence)
-  //   3. color-threshold bounding box → axis-aligned extract  (low confidence)
-  //   4. original buffer unchanged                            (failed_detection)
-  // The first image's CropMeta is surfaced in the response so the extension
-  // can warn the user when crop confidence is low.
+  // ── Step 1b: Crop card from background in each buffer ───────────────────
+  // cropCard() runs the OpenCV detection cascade (Canny → quad → warpPerspective)
+  // with color-threshold and full-image fallbacks.
+  //
+  // Hard 5-second outer timeout per image: if the OpenCV dynamic import or WASM
+  // init hangs in this Lambda environment, we fall back to null (uncropped) rather
+  // than consuming the entire 60 s maxDuration budget.  The Sharp-only analyseBuffer
+  // still runs on the uncropped buffer — analysis quality degrades slightly but the
+  // request always completes.
+  const CROP_TIMEOUT_MS = 5_000
   const cropResults = await Promise.all(
     buffers.map(async (buf) => {
       if (!buf) return null
-      return cropCard(buf)
+      try {
+        return await Promise.race([
+          cropCard(buf),
+          new Promise<null>((_, reject) =>
+            setTimeout(() => reject(new Error('cropCard timeout')), CROP_TIMEOUT_MS),
+          ),
+        ])
+      } catch (err) {
+        console.warn('[claudeVision] cropCard skipped:', String(err))
+        return null
+      }
     }),
   )
-  const croppedBuffers: (Buffer | null)[] = cropResults.map(r => r?.buffer ?? null)
+  const croppedBuffers: (Buffer | null)[] = cropResults.map((r, i) => r?.buffer ?? buffers[i])
 
   // Capture metadata from the first successfully cropped buffer
   const firstCrop    = cropResults.find(r => r !== null) ?? null
