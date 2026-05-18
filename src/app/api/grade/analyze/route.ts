@@ -16,6 +16,7 @@ import { fetchEbayComps } from '@/lib/ebay/findingApi'
 import { gradeWithClaude, GradeWithClaudeResult, ClaudeGradingResult } from '@/lib/grading/claudeVision'
 
 export const runtime = 'nodejs'
+export const maxDuration = 60   // seconds — Claude Vision with 2 images needs ~20–40 s
 
 // ── CORS ──────────────────────────────────────────────────────────
 const CORS_HEADERS = {
