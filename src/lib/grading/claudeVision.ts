@@ -26,7 +26,7 @@
  *   Claude should see the card's actual colour, not a normalised version.
  */
 
-import Anthropic from '@anthropic-ai/sdk'
+import Anthropic, { APIError } from '@anthropic-ai/sdk'
 import sharp from 'sharp'
 import {
   analyseBuffer,
@@ -330,7 +330,7 @@ async function withRetry<T>(
       return await fn()
     } catch (err) {
       const isOverloaded =
-        err instanceof Anthropic.APIStatusError && err.status === 529
+        err instanceof APIError && err.status === 529
       if (isOverloaded && attempt < maxAttempts) {
         const delay = baseDelayMs * Math.pow(2, attempt - 1)  // 2 s, 4 s
         console.warn(`[Claude] overloaded (529) — retrying in ${delay / 1000}s (attempt ${attempt}/${maxAttempts})`)

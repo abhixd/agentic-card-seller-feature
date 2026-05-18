@@ -52,6 +52,10 @@ const SURFACE_MARGIN_H        = 70
 const SURFACE_GRAD_THRESHOLD  = 25
 const SURFACE_GLARE_THRESH    = 245
 
+// Detector C — Surface Grid
+const SURFACE_GRID_COLS = 4
+const SURFACE_GRID_ROWS = 6
+
 // Side classifier HSV thresholds
 const BACK_HUE_MIN         = 195
 const BACK_HUE_MAX         = 220
@@ -75,6 +79,7 @@ export interface CVMeasurements {
   corners:             CornerAnalysis          | null
   border_irregularity: BorderIrregularityResult | null   // Detector A
   surface_lines:       SurfaceLineResult        | null   // Detector B
+  surface_grid:        SurfaceGridCell[]        | null   // Detector C
 }
 
 export interface CornerPatch {
@@ -118,6 +123,26 @@ export interface SurfaceLineResult {
   h_energy_fraction:        number
   v_energy_fraction:        number
   energy_imbalance:         number
+}
+
+/**
+ * One hot cell from the 4×6 surface grid.
+ * Only cells with severity !== 'none' are emitted.
+ *
+ * Coordinates are percentages of the canonical image so callers
+ * can draw SVG overlays without knowing the original pixel dimensions.
+ */
+export interface SurfaceGridCell {
+  row:          number                            // 0-indexed, top → bottom
+  col:          number                            // 0-indexed, left → right
+  score:        number
+  severity:     'light' | 'moderate' | 'heavy'
+  glare_masked: boolean                           // true → glare hides signal in this cell
+  // Percentage coords on the canonical image (0–100 scale)
+  x_pct: number
+  y_pct: number
+  w_pct: number
+  h_pct: number
 }
 
 export type CardSide = 'front' | 'back' | 'unknown'
@@ -451,6 +476,130 @@ function computeSurfaceLines(
   }
 }
 
+/**
+ * Detector C — Surface Grid
+ *
+ * Divides the card interior into a 4-column × 6-row grid and runs the same
+ * directional energy analysis as computeSurfaceLines() on each cell.
+ *
+ * Only hot cells (severity !== 'none') are returned, keeping the payload small.
+ * Cells where > 25% of pixels are overexposed are flagged as glare_masked —
+ * they may hide real damage but can't be scored reliably.
+ *
+ * The returned x_pct/y_pct/w_pct/h_pct values are percentages of the canonical
+ * image dimensions so the extension can draw SVG overlays without converting
+ * pixel coordinates.
+ */
+function computeSurfaceGrid(
+  pixels: Uint8Array,
+  width:  number,
+  height: number,
+): SurfaceGridCell[] {
+  const xMin = SURFACE_MARGIN_W
+  const xMax = width  - SURFACE_MARGIN_W
+  const yMin = SURFACE_MARGIN_H
+  const yMax = height - SURFACE_MARGIN_H
+
+  const interiorW = xMax - xMin
+  const interiorH = yMax - yMin
+  const cellW = interiorW / SURFACE_GRID_COLS
+  const cellH = interiorH / SURFACE_GRID_ROWS
+
+  const hotCells: SurfaceGridCell[] = []
+
+  for (let gridRow = 0; gridRow < SURFACE_GRID_ROWS; gridRow++) {
+    for (let gridCol = 0; gridCol < SURFACE_GRID_COLS; gridCol++) {
+      const cx0 = Math.round(xMin + gridCol * cellW)
+      const cx1 = Math.round(xMin + (gridCol + 1) * cellW)
+      const cy0 = Math.round(yMin + gridRow * cellH)
+      const cy1 = Math.round(yMin + (gridRow + 1) * cellH)
+
+      let glareCount = 0, validCount = 0
+      let sumAbsGx = 0, sumAbsGy = 0
+      let horizCount = 0, vertCount = 0, diagCount = 0, totalHighMag = 0
+
+      for (let y = cy0; y < cy1; y++) {
+        for (let x = cx0; x < cx1; x++) {
+          // Skip pixels too close to the image boundary for a 3×3 Sobel kernel
+          if (y < 1 || y >= height - 1 || x < 1 || x >= width - 1) {
+            validCount++
+            continue
+          }
+
+          const v = pixels[y * width + x]
+          validCount++
+
+          if (v >= SURFACE_GLARE_THRESH) {
+            glareCount++
+            continue
+          }
+
+          const offset = y * width
+          const gx =
+            -pixels[offset - width + x - 1] + pixels[offset - width + x + 1]
+            - 2 * pixels[offset + x - 1]    + 2 * pixels[offset + x + 1]
+            - pixels[offset + width + x - 1] + pixels[offset + width + x + 1]
+          const gy =
+            -pixels[(y - 1) * width + x - 1] - 2 * pixels[(y - 1) * width + x] - pixels[(y - 1) * width + x + 1]
+            + pixels[(y + 1) * width + x - 1] + 2 * pixels[(y + 1) * width + x] + pixels[(y + 1) * width + x + 1]
+
+          sumAbsGx += Math.abs(gx)
+          sumAbsGy += Math.abs(gy)
+
+          const mag = Math.sqrt(gx * gx + gy * gy)
+          if (mag > SURFACE_GRAD_THRESHOLD) {
+            const angle = Math.abs(Math.atan2(gy, gx) * (180 / Math.PI))
+            if      (angle < 20 || angle > 160)      horizCount++
+            else if (angle > 70 && angle < 110)      vertCount++
+            else                                     diagCount++
+            totalHighMag++
+          }
+        }
+      }
+
+      const glare_fraction = glareCount / Math.max(validCount, 1)
+      const glare_masked   = glare_fraction > 0.25
+
+      // Percentage coords — shared for both glare-masked and hot-cell paths
+      const x_pct = r4((cx0 / width)         * 100)
+      const y_pct = r4((cy0 / height)        * 100)
+      const w_pct = r4(((cx1 - cx0) / width) * 100)
+      const h_pct = r4(((cy1 - cy0) / height) * 100)
+
+      if (glare_masked) {
+        // Emit glare-masked cells so the UI can show a "hidden by glare" indicator
+        // rather than leaving a blank region that might falsely imply it's clean.
+        hotCells.push({ row: gridRow, col: gridCol, score: 0, severity: 'light', glare_masked: true, x_pct, y_pct, w_pct, h_pct })
+        continue
+      }
+
+      const meanAbsGx        = sumAbsGx / Math.max(validCount, 1)
+      const meanAbsGy        = sumAbsGy / Math.max(validCount, 1)
+      const energy_imbalance = Math.abs(meanAbsGx - meanAbsGy) / (meanAbsGx + meanAbsGy + 1e-6)
+      const diag_fraction    = diagCount / Math.max(totalHighMag, 1)
+
+      // Diagonal energy is the primary scratch signal.
+      // Energy imbalance catches directional features (e.g. horizontal holo lines).
+      const score: number = r4(
+        0.60 * Math.min(diag_fraction    * 2.5, 1.0)
+        + 0.40 * Math.min(energy_imbalance * 2.0, 1.0)
+      )
+
+      // Same thresholds as the global surface_lines severity
+      const severity: SurfaceGridCell['severity'] | 'none' =
+        score >= 0.50 ? 'heavy'    :
+        score >= 0.28 ? 'moderate' :
+        score >= 0.12 ? 'light'    : 'none'
+
+      if (severity !== 'none') {
+        hotCells.push({ row: gridRow, col: gridCol, score, severity, glare_masked: false, x_pct, y_pct, w_pct, h_pct })
+      }
+    }
+  }
+
+  return hotCells
+}
+
 // ── Core analysis on a buffer ─────────────────────────────────────────────────
 
 /**
@@ -500,9 +649,11 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
   let corners:             CornerAnalysis          | null = null
   let border_irregularity: BorderIrregularityResult | null = null
   let surface_lines:       SurfaceLineResult        | null = null
+  let surface_grid:        SurfaceGridCell[]        | null = null
   try { corners             = computeCornerAnalysis(pixels, width, height)      } catch {}
   try { border_irregularity = computeBorderIrregularity(pixels, width, height)  } catch {}
   try { surface_lines       = computeSurfaceLines(pixels, width, height)         } catch {}
+  try { surface_grid        = computeSurfaceGrid(pixels, width, height)          } catch {}
 
   return {
     blur_score:      r1(blur_score),
@@ -515,6 +666,7 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
     corners,
     border_irregularity,
     surface_lines,
+    surface_grid,
   }
 }
 
@@ -636,13 +788,48 @@ NOTE: ${s.severity !== 'none'
 `
   }
 
+  // Detector C — Surface Grid
+  let surfaceGridStr = ''
+  if (cv.surface_grid !== null) {
+    const hot   = cv.surface_grid.filter(c => !c.glare_masked)
+    const glare = cv.surface_grid.filter(c =>  c.glare_masked)
+
+    // Map row/col indices to human-readable region labels
+    const rowLabel = (r: number) => r <= 1 ? 'upper' : r <= 3 ? 'middle' : 'lower'
+    const colLabel = (c: number) => c <= 1 ? 'left'  : 'right'
+
+    if (hot.length === 0 && glare.length === 0) {
+      surfaceGridStr = `
+─── CV DETECTOR C: SURFACE GRID (${SURFACE_GRID_COLS}×${SURFACE_GRID_ROWS} cell analysis) ───
+  No anomalous cells detected — surface appears clean in this image.
+`
+    } else {
+      const hotLines = hot.map(c =>
+        `  • ${rowLabel(c.row)}-${colLabel(c.col)} (row ${c.row} col ${c.col}): ${c.severity.toUpperCase()} [score ${c.score}]`
+      ).join('\n')
+
+      const glareLines = glare.length > 0
+        ? `  Glare-masked cells (signal hidden): ${glare.map(c => `row ${c.row} col ${c.col}`).join(', ')}`
+        : ''
+
+      surfaceGridStr = `
+─── CV DETECTOR C: SURFACE GRID (${SURFACE_GRID_COLS}×${SURFACE_GRID_ROWS} cell analysis) ───
+${hot.length > 0 ? `  Anomalous cells:\n${hotLines}` : '  No anomalous cells detected.'}
+${glareLines}
+NOTE: ${hot.length > 0
+  ? 'These surface regions show elevated directional energy — possible scratches, holo damage, or print lines. Cross-reference with image inspection.'
+  : 'Surface appears clean in measurable regions.'}
+`
+    }
+  }
+
   return `─── CV MEASUREMENTS (pixel analysis, run before this prompt) ───
 Blur score   : ${cv.blur_score}  (threshold ≥ ${BLUR_THRESHOLD} = acceptably sharp)
 Glare        : ${r1(cv.glare_fraction * 100)}% pixels overexposed  (≤ 5% acceptable)
 Brightness   : mean ${cv.brightness_mean} / std ${cv.brightness_std}  (0–255 scale)
 CV issues    :
 ${issueStr}${blurNote}${glareNote}
-${cornerStr}${borderIrregularityStr}${surfaceLinesStr}
+${cornerStr}${borderIrregularityStr}${surfaceLinesStr}${surfaceGridStr}
 `
 }
 
