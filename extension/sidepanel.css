@@ -566,6 +566,56 @@ main { padding: 16px 14px 32px; }
   font-style: italic;
 }
 
+/* ── Analyzed images strip ───────────────────────────────────────── */
+.analyzed-images-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  /* Hide scrollbar but keep scroll */
+  scrollbar-width: none;
+}
+.analyzed-images-strip::-webkit-scrollbar { display: none; }
+
+.analyzed-thumb {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.analyzed-thumb img {
+  width: 68px;
+  height: 90px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1.5px solid var(--border);
+  display: block;
+  background: var(--surface2);
+}
+
+.analyzed-thumb-err {
+  width: 68px;
+  height: 90px;
+  border-radius: 6px;
+  border: 1.5px solid var(--border);
+  background: var(--surface2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  color: var(--text-dim);
+}
+
+.analyzed-thumb-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+
 /* Reset button */
 .reset-btn {
   display: block;

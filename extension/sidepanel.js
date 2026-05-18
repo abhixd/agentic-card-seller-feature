@@ -62,6 +62,8 @@ saveSettingsBtn.addEventListener('click', () => {
 let _pendingListing = null
 /** Set of selected image URLs. */
 const _selected = new Set()
+/** URLs that were submitted for the most recent analysis (in selection order). */
+let _analyzedUrls = []
 
 const thumbGrid       = document.getElementById('thumb-grid')
 const selCountEl      = document.getElementById('sel-count')
@@ -134,9 +136,10 @@ clearSelBtn.addEventListener('click', () => {
 
 analyzeSelBtn.addEventListener('click', () => {
   if (!_pendingListing || _selected.size === 0) return
+  _analyzedUrls = [..._selected]   // snapshot URLs before state clears
   const payload = {
     ..._pendingListing,
-    image_urls: [..._selected],
+    image_urls: _analyzedUrls,
   }
   chrome.runtime.sendMessage({ type: 'ANALYZE_SELECTED', payload })
 })
@@ -185,6 +188,53 @@ function renderCVDetectors(payload) {
 
   setDet('cv-surface-sev', 'cv-surface-detail', payload.surface_lines,
     r => `diag ${(r.diagonal_energy_fraction * 100).toFixed(0)}% · imbal ${r.energy_imbalance.toFixed(2)} · ${r.confidence} conf`)
+}
+
+// ── Analyzed images strip ──────────────────────────────────────────
+
+/**
+ * Render a horizontal strip of thumbnails showing which images were sent
+ * for analysis. First image is labeled "Front", second "Back", rest numbered.
+ */
+function renderAnalyzedImages(urls) {
+  const strip = document.getElementById('analyzed-images-strip')
+  strip.innerHTML = ''
+
+  if (!urls || urls.length === 0) {
+    strip.closest('.analyzed-images-section').classList.add('hidden')
+    return
+  }
+
+  strip.closest('.analyzed-images-section').classList.remove('hidden')
+
+  const LABELS = ['Front', 'Back']
+
+  urls.forEach((url, i) => {
+    const label = LABELS[i] ?? `Image ${i + 1}`
+
+    const item = document.createElement('div')
+    item.className = 'analyzed-thumb'
+
+    const img = document.createElement('img')
+    img.alt = label
+    img.loading = 'lazy'
+    img.src = url.replace(/s-l\d+/g, 's-l300')
+    img.onerror = () => {
+      img.remove()
+      const err = document.createElement('div')
+      err.className = 'analyzed-thumb-err'
+      err.textContent = '🖼'
+      item.insertBefore(err, item.querySelector('.analyzed-thumb-label'))
+    }
+
+    const lbl = document.createElement('span')
+    lbl.className = 'analyzed-thumb-label'
+    lbl.textContent = label
+
+    item.appendChild(img)
+    item.appendChild(lbl)
+    strip.appendChild(item)
+  })
 }
 
 // ── Render results ─────────────────────────────────────────────────
@@ -429,6 +479,7 @@ function renderResult(payload) {
     : 'Prices: estimated (no live comps)'
 
   renderCVDetectors(payload)
+  renderAnalyzedImages(_analyzedUrls)
   showState('result')
 }
 
