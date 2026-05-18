@@ -30,9 +30,9 @@ import Anthropic, { APIError } from '@anthropic-ai/sdk'
 import sharp from 'sharp'
 import {
   analyseBuffer,
-  detectCardBounds,
   formatCVSection,
 } from './cvDetectors'
+import { cropCard, CropMeta } from './cardCrop'
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -108,9 +108,10 @@ export interface ClaudeGradingResult {
   _cv_sides?:       string[]     // side classification per image (pipeline, not Claude)
 }
 
-/** Full return type of gradeWithClaude — includes CV measurements alongside Claude JSON. */
+/** Full return type of gradeWithClaude — includes CV measurements and crop metadata. */
 export interface GradeWithClaudeResult extends ClaudeGradingResult {
-  _cv: import('./cvDetectors').CVMeasurements | null
+  _cv:   import('./cvDetectors').CVMeasurements | null
+  _crop: CropMeta | null
 }
 
 // ── Prompt ────────────────────────────────────────────────────────
@@ -420,24 +421,34 @@ export async function gradeWithClaude(
     }),
   )
 
-  // ── Step 1b: Crop card from background in each buffer ────────────────────
-  // eBay photos routinely show the card surrounded by backgrounds. Without
-  // cropping, CV corner/edge patches measure the mat or table instead of the
-  // card. detectCardBounds() returns null when it can't reliably locate the
-  // card — in that case we keep the original buffer (safe degradation).
-  const croppedBuffers: (Buffer | null)[] = await Promise.all(
+  // ── Step 1b: Crop + rectify card from background in each buffer ──────────
+  // cropCard() runs the full detection cascade:
+  //   1. OpenCV Canny → contour → 4-point quad → warpPerspective (best)
+  //   2. minAreaRect fallback → warpPerspective               (medium confidence)
+  //   3. color-threshold bounding box → axis-aligned extract  (low confidence)
+  //   4. original buffer unchanged                            (failed_detection)
+  // The first image's CropMeta is surfaced in the response so the extension
+  // can warn the user when crop confidence is low.
+  const cropResults = await Promise.all(
     buffers.map(async (buf) => {
       if (!buf) return null
-      try {
-        const bounds = await detectCardBounds(buf)
-        if (!bounds) return buf
-        console.log(`[cvDetectors] card detected — cropping to ${bounds.width}×${bounds.height} at (${bounds.left},${bounds.top})`)
-        return await sharp(buf).extract(bounds).toBuffer()
-      } catch {
-        return buf
-      }
+      return cropCard(buf)
     }),
   )
+  const croppedBuffers: (Buffer | null)[] = cropResults.map(r => r?.buffer ?? null)
+
+  // Capture metadata from the first successfully cropped buffer
+  const firstCrop    = cropResults.find(r => r !== null) ?? null
+  const cropMeta: CropMeta | null = firstCrop
+    ? {
+        status:           firstCrop.status,
+        crop_confidence:  firstCrop.crop_confidence,
+        visible_fraction: firstCrop.visible_fraction,
+        card_quad:        firstCrop.card_quad,
+        fallback_used:    firstCrop.fallback_used,
+        detector:         firstCrop.detector,
+      }
+    : null
 
   // ── Step 2: CV detectors on the first non-null (cropped) buffer ──────────
   const cv = await analyseBuffer(croppedBuffers.find(Boolean)!).catch(() => null)
@@ -520,5 +531,5 @@ export async function gradeWithClaude(
     }
   }
 
-  return { ...parsed, _cv: cv }
+  return { ...parsed, _cv: cv, _crop: cropMeta }
 }
