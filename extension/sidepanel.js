@@ -581,7 +581,12 @@ function renderAnalyzedImages(urls, allZones) {
   }
 }
 
-// ── Render results ─────────────────────────────────────────────────
+// ── Side analysis renderer ─────────────────────────────────────────
+// Module-level (not nested inside renderResult) to avoid V8 hoisting the
+// function declaration above const variables in renderResult's TDZ scope.
+//
+// thumbIndex: 0 = front image, 1 = back image (aligns with _lightboxItems)
+// sideZones:  inferred zones for this side, used to look up "Show" severity
 
 const ISSUE_CATEGORY_LABELS = {
   centering: 'Centering',
@@ -590,6 +595,84 @@ const ISSUE_CATEGORY_LABELS = {
   surface:   'Surface',
   other:     'Other',
 }
+
+function renderSideAnalysis(side, prefix, thumbIndex, sideZones) {
+  const notAvailEl  = document.getElementById(`${prefix}-not-available`)
+  const centeringEl = document.getElementById(`${prefix}-centering`)
+  const issuesEl    = document.getElementById(`${prefix}-issues-list`)
+
+  if (!side || side.assessable === false) {
+    notAvailEl.classList.remove('hidden')
+    centeringEl.classList.add('hidden')
+    issuesEl.classList.add('hidden')
+    return
+  }
+
+  notAvailEl.classList.add('hidden')
+  issuesEl.innerHTML = ''
+  let hasIssue = false
+
+  if (side.centering) {
+    centeringEl.textContent = `Centering: ${side.centering}`
+    centeringEl.classList.remove('hidden')
+  } else {
+    centeringEl.classList.add('hidden')
+  }
+
+  const sideIssues = side.issues ?? {}
+  Object.entries(ISSUE_CATEGORY_LABELS).forEach(([key, label]) => {
+    const items = sideIssues[key]
+    if (!Array.isArray(items) || items.length === 0) return
+    hasIssue = true
+
+    const header = document.createElement('li')
+    header.className = 'issue-category-header'
+    header.textContent = label
+    issuesEl.appendChild(header)
+
+    items.forEach(issueText => {
+      const zone = getZoneForIssue(key, issueText)
+
+      const li  = document.createElement('li')
+      li.className = 'issue-item'
+
+      const txt = document.createElement('span')
+      txt.className = 'issue-text'
+      txt.textContent = issueText
+      li.appendChild(txt)
+
+      // "Show" button — only when the issue can be located on the card image
+      if (zone !== null && thumbIndex < _lightboxItems.length) {
+        const matchedZone = sideZones?.find(z => z.zone === zone)
+        const severity    = matchedZone?.severity ?? 'moderate'
+
+        const btn = document.createElement('button')
+        btn.className = 'issue-locate-btn'
+        btn.textContent = 'Show'
+        btn.title = `Locate on card: ${ZONE_LABELS[zone] ?? zone}`
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation()
+          openLightboxFocused(thumbIndex, zone, issueText, severity)
+        })
+        li.appendChild(btn)
+      }
+
+      issuesEl.appendChild(li)
+    })
+  })
+
+  if (!hasIssue) {
+    const li = document.createElement('li')
+    li.className = 'no-issues'
+    li.textContent = '✓ No issues detected'
+    li.style.listStyle = 'none'
+    issuesEl.appendChild(li)
+  }
+
+  issuesEl.classList.remove('hidden')
+}
+
+// ── Render results ─────────────────────────────────────────────────
 
 const GD_META = {
   yes:   { emoji: '✅', css: 'gd-yes',   label: 'Gradable' },
@@ -694,89 +777,8 @@ function renderResult(payload) {
   }
 
   // ── Front / Back analysis ───────────────────────────────────────
-  // Infer zones up front so they're available to both renderSideAnalysis
-  // (for "Show" button severity lookup) and renderAnalyzedImages below.
   const frontZones = inferZonesFromIssues(payload.front_analysis)
   const backZones  = inferZonesFromIssues(payload.back_analysis)
-
-  // thumbIndex: 0 = front image, 1 = back image (aligns with _lightboxItems)
-  // sideZones:  zones array for this side, used to look up severity for "Show"
-  function renderSideAnalysis(side, prefix, thumbIndex, sideZones) {
-    const notAvailEl  = document.getElementById(`${prefix}-not-available`)
-    const centeringEl = document.getElementById(`${prefix}-centering`)
-    const issuesEl    = document.getElementById(`${prefix}-issues-list`)
-
-    if (!side || side.assessable === false) {
-      notAvailEl.classList.remove('hidden')
-      centeringEl.classList.add('hidden')
-      issuesEl.classList.add('hidden')
-      return
-    }
-
-    notAvailEl.classList.add('hidden')
-    issuesEl.innerHTML = ''
-    let hasIssue = false
-
-    if (side.centering) {
-      centeringEl.textContent = `Centering: ${side.centering}`
-      centeringEl.classList.remove('hidden')
-    } else {
-      centeringEl.classList.add('hidden')
-    }
-
-    const sideIssues = side.issues ?? {}
-    Object.entries(ISSUE_CATEGORY_LABELS).forEach(([key, label]) => {
-      const items = sideIssues[key]
-      if (!Array.isArray(items) || items.length === 0) return
-      hasIssue = true
-
-      const header = document.createElement('li')
-      header.className = 'issue-category-header'
-      header.textContent = label
-      issuesEl.appendChild(header)
-
-      items.forEach(issueText => {
-        const zone = getZoneForIssue(key, issueText)
-
-        const li = document.createElement('li')
-        li.className = 'issue-item'
-
-        const txt = document.createElement('span')
-        txt.className = 'issue-text'
-        txt.textContent = issueText
-        li.appendChild(txt)
-
-        // "Show" button — only when we can locate the issue on the card
-        if (zone !== null && thumbIndex < _lightboxItems.length) {
-          // Look up severity from zones array for the right highlight colour
-          const matchedZone = sideZones?.find(z => z.zone === zone)
-          const severity = matchedZone?.severity ?? 'moderate'
-
-          const btn = document.createElement('button')
-          btn.className = 'issue-locate-btn'
-          btn.textContent = 'Show'
-          btn.title = `Locate on card: ${ZONE_LABELS[zone] ?? zone}`
-          btn.addEventListener('click', (e) => {
-            e.stopPropagation()
-            openLightboxFocused(thumbIndex, zone, issueText, severity)
-          })
-          li.appendChild(btn)
-        }
-
-        issuesEl.appendChild(li)
-      })
-    })
-
-    if (!hasIssue) {
-      const li = document.createElement('li')
-      li.className = 'no-issues'
-      li.textContent = '✓ No issues detected'
-      li.style.listStyle = 'none'
-      issuesEl.appendChild(li)
-    }
-
-    issuesEl.classList.remove('hidden')
-  }
 
   renderSideAnalysis(payload.front_analysis, 'front', 0, frontZones)
   renderSideAnalysis(payload.back_analysis,  'back',  1, backZones)
