@@ -32,6 +32,8 @@ import {
   analyseBuffer,
   formatCVSection,
   detectCardBounds,
+  detectInnerFrame,
+  buildCenteringMeasurement,
 } from './cvDetectors'
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -433,14 +435,14 @@ export async function gradeWithClaude(
   // its 10 MB WASM import hangs in the Vercel Lambda environment, consuming
   // the entire 60 s maxDuration budget.  It remains available via the
   // dedicated POST /api/grade/debug-crop endpoint (maxDuration: 30 s).
-  const cardBoundsPct: Array<{ x: number; y: number; w: number; h: number } | null> = []
+  // Pre-allocate per-image arrays so we can write by index — push() inside
+  // Promise.all callbacks would mis-order entries based on completion time.
+  const cardBoundsPct:     Array<{ x: number; y: number; w: number; h: number } | null> = new Array(buffers.length).fill(null)
+  const centeringPerImage: Array<import('./cvDetectors').CenteringMeasurement | null>   = new Array(buffers.length).fill(null)
 
   const croppedBuffers: (Buffer | null)[] = await Promise.all(
-    buffers.map(async (buf) => {
-      if (!buf) {
-        cardBoundsPct.push(null)
-        return null
-      }
+    buffers.map(async (buf, idx) => {
+      if (!buf) return null
       try {
         const [meta, bounds] = await Promise.all([
           sharp(buf).metadata(),
@@ -449,19 +451,28 @@ export async function gradeWithClaude(
         const origW = meta.width  ?? 0
         const origH = meta.height ?? 0
         if (!bounds || !origW || !origH) {
-          cardBoundsPct.push(null)
+          // No reliable card bounds — fall back to full image, no centering payload
           return buf
         }
-        cardBoundsPct.push({
+        const boundsPct = {
           x: bounds.left   / origW,
           y: bounds.top    / origH,
           w: bounds.width  / origW,
           h: bounds.height / origH,
-        })
-        return await sharp(buf).extract(bounds).toBuffer()
+        }
+        cardBoundsPct[idx] = boundsPct
+
+        const cropped = await sharp(buf).extract(bounds).toBuffer()
+
+        // Detect the inner printed frame inside the cropped card region.
+        // Returns null for borderless / full-art / low-contrast cards —
+        // buildCenteringMeasurement handles that with a fallback payload.
+        const innerFrame = await detectInnerFrame(cropped).catch(() => null)
+        centeringPerImage[idx] = buildCenteringMeasurement(boundsPct, innerFrame)
+
+        return cropped
       } catch {
-        cardBoundsPct.push(null)
-        return buf   // safe fallback: use full image
+        return buf   // safe fallback: use full image, no centering payload
       }
     }),
   )
@@ -547,5 +558,8 @@ export async function gradeWithClaude(
     }
   }
 
-  return { ...parsed, _cv: cv ? { ...cv, card_bounds_pct: cardBoundsPct } : null }
+  return {
+    ...parsed,
+    _cv: cv ? { ...cv, card_bounds_pct: cardBoundsPct, centering: centeringPerImage } : null,
+  }
 }

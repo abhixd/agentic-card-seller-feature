@@ -268,6 +268,8 @@ export async function POST(req: NextRequest) {
     corner_boxes:        cvMeasurements?.corner_boxes        ?? null,
     edge_bands:          cvMeasurements?.edge_bands          ?? null,
     card_bounds_pct:     cvMeasurements?.card_bounds_pct    ?? null,
+    // Per-image centering measurement (outer card + inner frame + T/B/L/R margins)
+    centering:           cvMeasurements?.centering           ?? null,
     economics,
     decision,
     _meta: { comps_source: compsSource, grading_backend: 'claude-vision' },
