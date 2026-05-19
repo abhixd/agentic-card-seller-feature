@@ -88,6 +88,36 @@ export interface CVMeasurements {
   // Per-image card bounding boxes (normalized 0–1 fractions of original image dimensions).
   // One entry per analyzed image; null when detection was unreliable or image was missing.
   card_bounds_pct: Array<{ x: number; y: number; w: number; h: number } | null> | null
+
+  // Per-image centering measurement (outer card vs inner printed frame).
+  // One entry per analyzed image; null when image missing. Each entry may have
+  // inner_frame_bbox_pct === null for borderless / full-art cards.
+  centering: Array<CenteringMeasurement | null> | null
+}
+
+/**
+ * Structured centering payload for the extension to render the inspection view.
+ *
+ * Coordinates are expressed in two systems:
+ *  • card_bbox_pct        — fraction (0–1) of the ORIGINAL photo dimensions.
+ *                           Same coordinate space as CVMeasurements.card_bounds_pct.
+ *  • inner_frame_bbox_pct — fraction (0–1) of the CROPPED card region.
+ *                           (0,0) = top-left of the card, (1,1) = bottom-right.
+ *                           The extension renders the SVG inside the card-cropped
+ *                           slot, so this is the natural coordinate system.
+ *
+ * margins_pct values are percentages (0–100) that sum to 100 on each axis:
+ *   left + right = 100, top + bottom = 100
+ * This matches grader convention ("53/47 top-heavy" = top: 53, bottom: 47).
+ */
+export interface CenteringMeasurement {
+  card_bbox_pct:        { x: number; y: number; w: number; h: number }
+  inner_frame_bbox_pct: { x: number; y: number; w: number; h: number } | null
+  margins_pct:          { left: number; right: number; top: number; bottom: number } | null
+  ratios:               { left_right: string; top_bottom: string } | null
+  interpretation:       'well_centered' | 'slightly_off' | 'noticeably_off' | 'severely_off' | 'unavailable'
+  confidence:           'high' | 'medium' | 'low'
+  fallback_reason:      'borderless_card' | 'low_contrast' | 'crop_failed' | null
 }
 
 /**
@@ -799,6 +829,7 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
     corner_boxes,
     edge_bands,
     card_bounds_pct: null,   // populated per-image in claudeVision.ts after cropping
+    centering:       null,   // populated per-image in claudeVision.ts via detectInnerFrame
   }
 }
 
@@ -934,6 +965,222 @@ export async function detectCardBounds(
     return { left, top, width: cropW, height: cropH }
   } catch {
     return null
+  }
+}
+
+// ── Inner frame detection (for centering) ─────────────────────────────────────
+
+/**
+ * Detect the inner printed frame of a card within an already-cropped card image.
+ *
+ * Most graded card series (vintage Pokémon, base WoTC, modern non-full-art) have
+ * a printed inner border or frame that is the actual reference used for centering
+ * grades. PSA "53/47 top-heavy centering" is measured between the outer card edge
+ * and this inner frame.
+ *
+ * Algorithm (Sharp-only — no OpenCV):
+ *  1. Downsample card-cropped buffer to ≤384 px on its longest side
+ *  2. Grayscale + compute a horizontal-gradient column profile and a
+ *     vertical-gradient row profile (Sobel-style absolute differences)
+ *  3. Scan inward from each side; the first peak whose strength is ≥
+ *     PEAK_THRESH of the max profile value marks the inner frame edge
+ *  4. Require all 4 sides found within sane bounds; otherwise return null
+ *     (borderless / full-art / low-contrast frame)
+ *
+ * Returns coordinates in card-fraction space (0–1, where (0,0) = top-left
+ * of the cropped card and (1,1) = bottom-right).
+ */
+export async function detectInnerFrame(
+  cardOnlyBuf: Buffer,
+): Promise<{ x: number; y: number; w: number; h: number; confidence: 'high' | 'medium' | 'low' } | null> {
+  const DETECT_MAX     = 384
+  // Limit scan to the outer 30% of each side — real card frames sit within
+  // 2–18% of the edge. Beyond 30% we're well into artwork territory.
+  const SEARCH_FRAC    = 0.30
+  // Inner frame must lie outside the immediate edge (which may be the white
+  // border captured by the outer crop) and inside SEARCH_FRAC.
+  const MIN_INSET_FRAC = 0.015
+  const MAX_INSET_FRAC = 0.22
+  // Required peak strength as a fraction of the max gradient on that axis.
+  const PEAK_THRESH    = 0.45
+
+  try {
+    const { data, info } = await sharp(cardOnlyBuf)
+      .resize(DETECT_MAX, DETECT_MAX, { fit: 'inside' })
+      .grayscale()
+      .raw()
+      .toBuffer({ resolveWithObject: true })
+
+    const W = info.width
+    const H = info.height
+    if (W < 40 || H < 40) return null
+
+    const px = new Uint8Array(data)
+
+    // ── Build gradient profiles ──────────────────────────────────────────────
+    // colGrad[c] = sum over all rows of |px(r, c+1) - px(r, c-1)|
+    //   → tall peaks at c = vertical frame edges (left & right)
+    // rowGrad[r] = sum over all cols of |px(r+1, c) - px(r-1, c)|
+    //   → tall peaks at r = horizontal frame edges (top & bottom)
+    const colGrad = new Float32Array(W)
+    const rowGrad = new Float32Array(H)
+
+    for (let r = 1; r < H - 1; r++) {
+      for (let c = 1; c < W - 1; c++) {
+        const hG = Math.abs(px[r * W + c + 1] - px[r * W + c - 1])
+        const vG = Math.abs(px[(r + 1) * W + c] - px[(r - 1) * W + c])
+        colGrad[c] += hG
+        rowGrad[r] += vG
+      }
+    }
+
+    // ── Helper: scan inward for the first strong peak ────────────────────────
+    function findInnerEdge(
+      profile: Float32Array,
+      length: number,
+      fromStart: boolean,        // true = scan left→right (looking for LEFT/TOP edge)
+    ): { idx: number; strength: number } | null {
+      const searchMax = Math.floor(length * SEARCH_FRAC)
+      const minInset  = Math.floor(length * MIN_INSET_FRAC)
+      const maxInset  = Math.floor(length * MAX_INSET_FRAC)
+
+      // Local max over a small window prevents picking single-pixel noise.
+      // We also need an absolute strength threshold.
+      let maxVal = 0
+      for (let i = 0; i < length; i++) if (profile[i] > maxVal) maxVal = profile[i]
+      if (maxVal <= 0) return null
+      const absThresh = maxVal * PEAK_THRESH
+
+      let bestIdx = -1
+      let bestStrength = 0
+
+      // Scan only within [minInset, maxInset]
+      const lo = minInset
+      const hi = Math.min(maxInset, searchMax)
+      for (let i = lo; i <= hi; i++) {
+        const idx = fromStart ? i : length - 1 - i
+        const v = profile[idx]
+        if (v >= absThresh && v > bestStrength) {
+          // Verify it's a local maximum within a ±2 window
+          const i0 = Math.max(0, idx - 2)
+          const i1 = Math.min(length - 1, idx + 2)
+          let isLocalMax = true
+          for (let k = i0; k <= i1; k++) {
+            if (profile[k] > v) { isLocalMax = false; break }
+          }
+          if (isLocalMax) {
+            bestStrength = v
+            bestIdx = idx
+          }
+        }
+      }
+
+      if (bestIdx < 0) return null
+      return { idx: bestIdx, strength: bestStrength / maxVal }
+    }
+
+    const left   = findInnerEdge(colGrad, W, true)
+    const right  = findInnerEdge(colGrad, W, false)
+    const top    = findInnerEdge(rowGrad, H, true)
+    const bottom = findInnerEdge(rowGrad, H, false)
+
+    // Require all 4 sides — partial detection isn't reliable enough to measure
+    if (!left || !right || !top || !bottom) return null
+
+    // Sanity: inner frame must be a proper rectangle (right > left, bottom > top)
+    if (right.idx <= left.idx + 8) return null
+    if (bottom.idx <= top.idx + 8) return null
+
+    // ── Confidence from average peak strength ────────────────────────────────
+    const avgStrength = (left.strength + right.strength + top.strength + bottom.strength) / 4
+    const confidence: 'high' | 'medium' | 'low' =
+      avgStrength >= 0.75 ? 'high'   :
+      avgStrength >= 0.55 ? 'medium' :
+                            'low'
+
+    // Convert pixel indices to fractions of the card region (0–1)
+    const x = left.idx / W
+    const y = top.idx / H
+    const w = (right.idx - left.idx) / W
+    const h = (bottom.idx - top.idx) / H
+
+    return { x, y, w, h, confidence }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Build a CenteringMeasurement payload from the outer card bounds and
+ * an optional inner frame detection. This is pure geometry — no I/O.
+ *
+ * @param cardBoundsPct  outer card bbox in photo-fraction space (0–1)
+ * @param innerFrame     inner frame in card-fraction space (0–1), or null
+ */
+export function buildCenteringMeasurement(
+  cardBoundsPct: { x: number; y: number; w: number; h: number },
+  innerFrame:    { x: number; y: number; w: number; h: number; confidence: 'high' | 'medium' | 'low' } | null,
+): CenteringMeasurement {
+  // Borderless / full-art fallback — return outer bbox only
+  if (!innerFrame) {
+    return {
+      card_bbox_pct:        cardBoundsPct,
+      inner_frame_bbox_pct: null,
+      margins_pct:          null,
+      ratios:               null,
+      interpretation:       'unavailable',
+      confidence:           'low',
+      fallback_reason:      'borderless_card',
+    }
+  }
+
+  // Margins as a percentage of the available space on each axis.
+  // left + right = 100, top + bottom = 100 (matches "53/47" grader convention).
+  const leftRaw   = innerFrame.x
+  const rightRaw  = 1 - (innerFrame.x + innerFrame.w)
+  const topRaw    = innerFrame.y
+  const bottomRaw = 1 - (innerFrame.y + innerFrame.h)
+
+  const horizSum = leftRaw + rightRaw
+  const vertSum  = topRaw  + bottomRaw
+
+  // Degenerate (inner == outer) → no measurable centering
+  if (horizSum <= 1e-6 || vertSum <= 1e-6) {
+    return {
+      card_bbox_pct:        cardBoundsPct,
+      inner_frame_bbox_pct: innerFrame,
+      margins_pct:          null,
+      ratios:               null,
+      interpretation:       'unavailable',
+      confidence:           innerFrame.confidence,
+      fallback_reason:      'low_contrast',
+    }
+  }
+
+  const leftPct   = Math.round((leftRaw   / horizSum) * 100)
+  const rightPct  = 100 - leftPct
+  const topPct    = Math.round((topRaw    / vertSum)  * 100)
+  const bottomPct = 100 - topPct
+
+  // Worst-axis deviation from perfect 50/50 drives the interpretation bucket
+  const lrDev = Math.abs(50 - leftPct)
+  const tbDev = Math.abs(50 - topPct)
+  const worst = Math.max(lrDev, tbDev)
+
+  const interpretation: CenteringMeasurement['interpretation'] =
+    worst <= 2  ? 'well_centered'   :
+    worst <= 5  ? 'slightly_off'    :
+    worst <= 10 ? 'noticeably_off'  :
+                  'severely_off'
+
+  return {
+    card_bbox_pct:        cardBoundsPct,
+    inner_frame_bbox_pct: innerFrame,
+    margins_pct:          { left: leftPct, right: rightPct, top: topPct, bottom: bottomPct },
+    ratios:               { left_right: `${leftPct}/${rightPct}`, top_bottom: `${topPct}/${bottomPct}` },
+    interpretation,
+    confidence:           innerFrame.confidence,
+    fallback_reason:      null,
   }
 }
 
