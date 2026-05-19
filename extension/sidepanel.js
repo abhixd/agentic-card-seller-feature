@@ -203,7 +203,17 @@ const ZONE_RECTS = {
   'left-edge':   [0,   22,  14,  56],
   'right-edge':  [86,  22,  14,  56],
   'surface':     [14,  14,  72,  64],
-  'centering':   [4,   4,   92,  92],
+  'centering':   [4,   4,   92,  92],   // fallback — see CENTERING_STRIPS below
+}
+
+
+/** Returns the list of [x,y,w,h] rects to draw for a given zone name.
+ *  Centering returns [] — the SVG overlay maps to photo edges, not card borders,
+ *  so it's misleading. The banner text (e.g. "52/48 L/R") is the right display. */
+function _zoneRects(zone) {
+  if (zone === 'centering') return []
+  const r = ZONE_RECTS[zone]
+  return r ? [r] : []
 }
 
 const ZONE_LABELS = {
@@ -438,22 +448,23 @@ function buildZoneSVG(zones, extraClass) {
   svg.setAttribute('preserveAspectRatio', 'none')
 
   zones.forEach(({ zone, severity, note }) => {
-    const r = ZONE_RECTS[zone]
-    if (!r) return
-    const [x, y, w, h] = r
-    const el = document.createElementNS(NS, 'rect')
-    el.setAttribute('x',            String(x))
-    el.setAttribute('y',            String(y))
-    el.setAttribute('width',        String(w))
-    el.setAttribute('height',       String(h))
-    el.setAttribute('fill',         SEV_FILL[severity]   ?? SEV_FILL.light)
-    el.setAttribute('stroke',       SEV_STROKE[severity] ?? SEV_STROKE.light)
-    el.setAttribute('stroke-width', '2.5')
-    el.setAttribute('rx',           '3')
-    const title = document.createElementNS(NS, 'title')
-    title.textContent = note
-    el.appendChild(title)
-    svg.appendChild(el)
+    const rects = _zoneRects(zone)
+    if (!rects.length) return
+    rects.forEach(([x, y, w, h]) => {
+      const el = document.createElementNS(NS, 'rect')
+      el.setAttribute('x',            String(x))
+      el.setAttribute('y',            String(y))
+      el.setAttribute('width',        String(w))
+      el.setAttribute('height',       String(h))
+      el.setAttribute('fill',         SEV_FILL[severity]   ?? SEV_FILL.light)
+      el.setAttribute('stroke',       SEV_STROKE[severity] ?? SEV_STROKE.light)
+      el.setAttribute('stroke-width', '2.5')
+      el.setAttribute('rx',           '3')
+      const title = document.createElementNS(NS, 'title')
+      title.textContent = note
+      el.appendChild(title)
+      svg.appendChild(el)
+    })
   })
 
   return svg
@@ -474,26 +485,23 @@ function buildZoneSVGFocused(allZones, focusedZone, focusedSeverity) {
   // Ghost pass — all other zones from this side, very dim
   allZones.forEach(({ zone }) => {
     if (zone === focusedZone) return
-    const r = ZONE_RECTS[zone]
-    if (!r) return
-    const [x, y, w, h] = r
-    const el = document.createElementNS(NS, 'rect')
-    el.setAttribute('x',            String(x))
-    el.setAttribute('y',            String(y))
-    el.setAttribute('width',        String(w))
-    el.setAttribute('height',       String(h))
-    el.setAttribute('fill',         'rgba(255,255,255,0.04)')
-    el.setAttribute('stroke',       'rgba(255,255,255,0.18)')
-    el.setAttribute('stroke-width', '1')
-    el.setAttribute('rx',           '3')
-    svg.appendChild(el)
+    _zoneRects(zone).forEach(([x, y, w, h]) => {
+      const el = document.createElementNS(NS, 'rect')
+      el.setAttribute('x',            String(x))
+      el.setAttribute('y',            String(y))
+      el.setAttribute('width',        String(w))
+      el.setAttribute('height',       String(h))
+      el.setAttribute('fill',         'rgba(255,255,255,0.04)')
+      el.setAttribute('stroke',       'rgba(255,255,255,0.18)')
+      el.setAttribute('stroke-width', '1')
+      el.setAttribute('rx',           '3')
+      svg.appendChild(el)
+    })
   })
 
-  // Focused zone — bright fill + animated stroke
-  const fr = ZONE_RECTS[focusedZone]
-  if (fr) {
-    const sev = focusedSeverity ?? 'moderate'
-    const [x, y, w, h] = fr
+  // Focused zone — bright fill + animated stroke (supports multi-rect zones like centering)
+  const sev = focusedSeverity ?? 'moderate'
+  _zoneRects(focusedZone).forEach(([x, y, w, h], i) => {
     const el = document.createElementNS(NS, 'rect')
     el.setAttribute('x',            String(x))
     el.setAttribute('y',            String(y))
@@ -503,42 +511,75 @@ function buildZoneSVGFocused(allZones, focusedZone, focusedSeverity) {
     el.setAttribute('stroke',       SEV_STROKE[sev] ?? SEV_STROKE.moderate)
     el.setAttribute('stroke-width', '3')
     el.setAttribute('rx',           '3')
-    el.setAttribute('class',        'zone-focused-rect')
+    if (i === 0) el.setAttribute('class', 'zone-focused-rect')  // animate first strip
     svg.appendChild(el)
-  }
+  })
 
   return svg
 }
 
 // ── Lightbox ───────────────────────────────────────────────────────
 
-let _lightboxItems = []   // [{url, zones, label}]
+let _lightboxItems = []   // [{url, zones, label, centering?, ...}]
 let _lightboxIndex = 0
-let _lightboxFocusedZone = null   // null = normal browse; string = investigation mode
+// Mode: 'normal' (clean image + tappable zone list) | 'focused' (issue investigation)
+// | 'centering' (centering inspection — outer + inner frame overlay with T/B/L/R labels)
+let _lightboxMode = 'normal'
+let _lightboxFocusedZone = null   // populated in 'focused' mode
 let _lightboxFocusedNote = null
 let _lightboxFocusedSev  = null
 
+// Human-readable strings for the centering interpretation buckets returned by the backend
+const CENTERING_INTERPRETATION_TEXT = {
+  well_centered:  'Well-centered',
+  slightly_off:   'Slightly off-center',
+  noticeably_off: 'Noticeably off-center',
+  severely_off:   'Severely off-center',
+  unavailable:    'Centering measurement unavailable',
+}
+
 function openLightbox(index) {
+  _lightboxMode        = 'normal'
   _lightboxFocusedZone = null
   _lightboxFocusedNote = null
   _lightboxFocusedSev  = null
   _lightboxIndex = Math.max(0, Math.min(index, _lightboxItems.length - 1))
+  resetZoom()
   renderLightboxFrame()
   document.getElementById('thumb-lightbox').classList.remove('hidden')
 }
 
 /** Open lightbox focused on a specific issue zone — the "Show" button entry point. */
 function openLightboxFocused(thumbIndex, zone, issueText, severity) {
+  _lightboxMode        = 'focused'
   _lightboxFocusedZone = zone
   _lightboxFocusedNote = issueText
   _lightboxFocusedSev  = severity ?? 'moderate'
   _lightboxIndex = Math.max(0, Math.min(thumbIndex, _lightboxItems.length - 1))
+  resetZoom()
+  renderLightboxFrame()
+  document.getElementById('thumb-lightbox').classList.remove('hidden')
+}
+
+/**
+ * Open lightbox in centering inspection mode — shows outer card + inner frame
+ * overlay with T/B/L/R margin labels. Falls back gracefully when measurement
+ * is null (no card bounds detected) or inner frame is null (borderless card).
+ */
+function openLightboxCenteringMode(thumbIndex) {
+  _lightboxMode        = 'centering'
+  _lightboxFocusedZone = null
+  _lightboxFocusedNote = null
+  _lightboxFocusedSev  = null
+  _lightboxIndex = Math.max(0, Math.min(thumbIndex, _lightboxItems.length - 1))
+  resetZoom()
   renderLightboxFrame()
   document.getElementById('thumb-lightbox').classList.remove('hidden')
 }
 
 function closeLightbox() {
   document.getElementById('thumb-lightbox').classList.add('hidden')
+  resetZoom()
 }
 
 /**
@@ -619,25 +660,267 @@ function buildCVEvidenceSVG(item, focusedZone) {
 }
 
 function exitFocusedMode() {
+  _lightboxMode        = 'normal'
   _lightboxFocusedZone = null
   _lightboxFocusedNote = null
   _lightboxFocusedSev  = null
   renderLightboxFrame()
 }
 
+/** Exit centering inspection mode back to the clean browse view. */
+function exitCenteringMode() {
+  _lightboxMode = 'normal'
+  renderLightboxFrame()
+}
+
+/**
+ * Render the centering inspection banner. Three states:
+ *  1. No measurement at all (image missing / bounds undetected)
+ *  2. Borderless / full-art card — outer detected, inner not
+ *  3. Full measurement — ratios + interpretation
+ */
+function renderCenteringBanner(banner, measurement) {
+  banner.classList.remove('hidden')
+  banner.classList.add('lightbox-centering-banner')
+  banner.innerHTML = ''
+
+  const headerRow = document.createElement('div')
+  headerRow.className = 'centering-banner-header'
+
+  const badge = document.createElement('span')
+  badge.className = 'lz-badge lz-badge--moderate centering-badge'
+  badge.textContent = 'Centering'
+  headerRow.appendChild(badge)
+
+  // Build the headline based on what we have
+  let headline = ''
+  let interpretation = ''
+  let helper = ''
+
+  if (!measurement) {
+    headline       = 'Card not isolated'
+    interpretation = 'Centering measurement unavailable'
+    helper         = 'The card could not be cropped from the photo — overlay disabled.'
+  } else if (!measurement.inner_frame_bbox_pct || !measurement.margins_pct) {
+    headline       = 'Outer card detected'
+    interpretation = CENTERING_INTERPRETATION_TEXT[measurement.interpretation] ?? 'Centering measurement unavailable'
+    helper         = measurement.fallback_reason === 'borderless_card'
+      ? 'Inner frame not detected — common for full-art / borderless cards.'
+      : 'Inner frame could not be measured reliably for this image.'
+  } else {
+    const r = measurement.ratios
+    headline       = `${r.top_bottom} T/B  ·  ${r.left_right} L/R`
+    interpretation = CENTERING_INTERPRETATION_TEXT[measurement.interpretation] ?? ''
+    helper         = 'Measured from outer card edge to inner print frame.'
+  }
+
+  const headlineEl = document.createElement('span')
+  headlineEl.className = 'centering-headline'
+  headlineEl.textContent = headline
+  headerRow.appendChild(headlineEl)
+
+  const back = document.createElement('button')
+  back.className = 'lz-back-btn'
+  back.textContent = '← All issues'
+  back.addEventListener('click', exitCenteringMode)
+  headerRow.appendChild(back)
+
+  banner.appendChild(headerRow)
+
+  if (interpretation) {
+    const interp = document.createElement('p')
+    interp.className = 'centering-interpretation'
+    interp.textContent = interpretation
+    banner.appendChild(interp)
+  }
+
+  if (helper) {
+    const help = document.createElement('p')
+    help.className = 'centering-helper'
+    help.textContent = helper
+    banner.appendChild(help)
+  }
+}
+
+/**
+ * Build the centering inspection SVG: thin-stroke outer card boundary
+ * (blue), thin-stroke inner printed frame (yellow), and four T/B/L/R
+ * margin labels positioned just outside the inner frame.
+ *
+ * The SVG is rendered inside #lightbox-svg-slot which is positioned by
+ * _positionSvgSlot() to cover only the card region of the photo. As a
+ * result, the SVG viewBox (0–100) maps to the card region — so the
+ * outer card boundary is at (0,0,100,100) and inner_frame_bbox_pct
+ * (already in card-fraction space) is scaled up by 100.
+ *
+ * Returns null when card bounds are unavailable — caller is responsible
+ * for displaying the appropriate fallback message in the banner.
+ */
+function buildCenteringSVG(measurement) {
+  if (!measurement) return null
+  const NS  = 'http://www.w3.org/2000/svg'
+  const svg = document.createElementNS(NS, 'svg')
+  svg.setAttribute('class',               'centering-overlay')
+  svg.setAttribute('viewBox',             '0 0 100 100')
+  svg.setAttribute('preserveAspectRatio', 'none')
+
+  // ── Outer card boundary (blue, thin stroke, inset 0.4 so the stroke
+  // sits inside the viewBox rather than half-clipped at the edges) ──
+  const OUTER_INSET = 0.4
+  const outer = document.createElementNS(NS, 'rect')
+  outer.setAttribute('x',            String(OUTER_INSET))
+  outer.setAttribute('y',            String(OUTER_INSET))
+  outer.setAttribute('width',        String(100 - 2 * OUTER_INSET))
+  outer.setAttribute('height',       String(100 - 2 * OUTER_INSET))
+  outer.setAttribute('fill',         'none')
+  outer.setAttribute('stroke',       '#5fa8ff')
+  outer.setAttribute('stroke-width', '0.5')
+  outer.setAttribute('class',        'centering-outer-rect')
+  const outerTitle = document.createElementNS(NS, 'title')
+  outerTitle.textContent = 'Outer card edge'
+  outer.appendChild(outerTitle)
+  svg.appendChild(outer)
+
+  // ── Inner frame (yellow, thin stroke) — only when detected ──
+  const inner = measurement.inner_frame_bbox_pct
+  if (inner) {
+    const ix = inner.x * 100
+    const iy = inner.y * 100
+    const iw = inner.w * 100
+    const ih = inner.h * 100
+
+    const innerRect = document.createElementNS(NS, 'rect')
+    innerRect.setAttribute('x',            String(ix))
+    innerRect.setAttribute('y',            String(iy))
+    innerRect.setAttribute('width',        String(iw))
+    innerRect.setAttribute('height',       String(ih))
+    innerRect.setAttribute('fill',         'none')
+    innerRect.setAttribute('stroke',       '#ffd84a')
+    innerRect.setAttribute('stroke-width', '0.5')
+    innerRect.setAttribute('class',        'centering-inner-rect')
+    const innerTitle = document.createElementNS(NS, 'title')
+    innerTitle.textContent = 'Inner printed frame'
+    innerRect.appendChild(innerTitle)
+    svg.appendChild(innerRect)
+
+    // ── T/B/L/R margin labels — only when margins were computed ──
+    const m = measurement.margins_pct
+    if (m) {
+      // Label positions: each label sits inside the gap between the inner
+      // frame edge and the outer card edge, centered on the relevant axis.
+      // We render labels with a dark stroke for legibility on any background.
+      const labelDefs = [
+        // T: above inner top, centered horizontally on inner rect
+        { text: `T: ${m.top}`,    x: ix + iw / 2, y: iy / 2,              anchor: 'middle', baseline: 'middle' },
+        // B: below inner bottom
+        { text: `B: ${m.bottom}`, x: ix + iw / 2, y: iy + ih + (100 - iy - ih) / 2, anchor: 'middle', baseline: 'middle' },
+        // L: left of inner left, centered vertically on inner rect
+        { text: `L: ${m.left}`,   x: ix / 2,                              y: iy + ih / 2, anchor: 'middle', baseline: 'middle' },
+        // R: right of inner right
+        { text: `R: ${m.right}`,  x: ix + iw + (100 - ix - iw) / 2,       y: iy + ih / 2, anchor: 'middle', baseline: 'middle' },
+      ]
+
+      labelDefs.forEach(({ text, x, y, anchor, baseline }) => {
+        const t = document.createElementNS(NS, 'text')
+        t.setAttribute('x',                 String(x))
+        t.setAttribute('y',                 String(y))
+        t.setAttribute('text-anchor',       anchor)
+        t.setAttribute('dominant-baseline', baseline)
+        t.setAttribute('class',             'centering-margin-label')
+        t.textContent = text
+        svg.appendChild(t)
+      })
+    }
+  }
+
+  return svg
+}
+
+/**
+ * Compute the actual rendered rect of an <img> with object-fit:contain
+ * within a container of known dimensions. Returns {x, y, w, h} in px.
+ */
+function _containedImageRect(imgEl, containerW, containerH) {
+  const iw = imgEl.naturalWidth
+  const ih = imgEl.naturalHeight
+  if (!iw || !ih) return { x: 0, y: 0, w: containerW, h: containerH }
+  const containerAspect = containerW / containerH
+  const imageAspect = iw / ih
+  if (imageAspect > containerAspect) {
+    // Image wider relative to container: fit to width, letterbox top/bottom
+    const h = containerW / imageAspect
+    return { x: 0, y: (containerH - h) / 2, w: containerW, h }
+  } else {
+    // Image taller relative to container: fit to height, pillarbox left/right
+    const w = containerH * imageAspect
+    return { x: (containerW - w) / 2, y: 0, w, h: containerH }
+  }
+}
+
+/**
+ * Position #lightbox-svg-slot to cover only the card region within the
+ * displayed image, using the normalized card bounds returned by the backend.
+ * Falls back to full-area when bounds are null (card fills frame, or detection failed).
+ */
+function _positionSvgSlot(svgSlot, imgEl, bounds) {
+  if (!bounds) {
+    svgSlot.style.cssText = ''   // revert to CSS inset:0
+    return
+  }
+  const inner = _zInner()
+  if (!inner) { svgSlot.style.cssText = ''; return }
+
+  const apply = () => {
+    const W = inner.clientWidth
+    const H = inner.clientHeight
+    if (!W || !H) return
+    const r = _containedImageRect(imgEl, W, H)
+    const cardX = r.x + bounds.x * r.w
+    const cardY = r.y + bounds.y * r.h
+    const cardW = bounds.w * r.w
+    const cardH = bounds.h * r.h
+    svgSlot.style.position = 'absolute'
+    svgSlot.style.left   = `${cardX}px`
+    svgSlot.style.top    = `${cardY}px`
+    svgSlot.style.width  = `${cardW}px`
+    svgSlot.style.height = `${cardH}px`
+    svgSlot.style.right  = 'auto'
+    svgSlot.style.bottom = 'auto'
+  }
+
+  if (imgEl.complete && imgEl.naturalWidth > 0) {
+    apply()
+  } else {
+    imgEl.addEventListener('load', apply, { once: true })
+  }
+}
+
 function renderLightboxFrame() {
   const item = _lightboxItems[_lightboxIndex]
   if (!item) return
 
-  const isFocused = _lightboxFocusedZone !== null
+  const isFocused   = _lightboxMode === 'focused'
+  const isCentering = _lightboxMode === 'centering'
 
   // ── Image ────────────────────────────────────────────────────────
   const imgEl = document.getElementById('lightbox-img')
   imgEl.src = item.url
   imgEl.alt = item.label
-  // Clicking the image in focused mode exits back to the clean overview
-  imgEl.style.cursor = isFocused ? 'pointer' : 'default'
-  imgEl.onclick = isFocused ? exitFocusedMode : null
+  // The img element has pointer-events:none (zoom wrap owns all pointer events),
+  // so we wire the focused-mode exit click onto lightbox-zoom-inner instead.
+  // Guard against drag: _zDragged is true if the pointer moved > 3px (pan gesture).
+  const zInner = document.getElementById('lightbox-zoom-inner')
+  if (isFocused || isCentering) {
+    zInner.style.cursor = _zs <= 1.005 ? 'pointer' : ''
+    zInner.onclick = (e) => {
+      if (_zDragged) { _zDragged = false; return }
+      if (isCentering) exitCenteringMode()
+      else             exitFocusedMode()
+    }
+  } else {
+    zInner.style.cursor = ''
+    zInner.onclick = null
+  }
 
   // ── Label ────────────────────────────────────────────────────────
   const sideLabel = _lightboxItems.length > 1
@@ -645,21 +928,29 @@ function renderLightboxFrame() {
     : item.label
   document.getElementById('lightbox-label').textContent = sideLabel
 
-  // ── SVG overlays — only in focused mode ─────────────────────────
-  // Default state is a clean image; overlays appear only when the user
-  // deliberately focuses an issue, so there's no ambient visual noise.
+  // ── SVG overlays — mode-driven ──────────────────────────────────
+  // Normal:    clean image (no overlay noise)
+  // Focused:   CV evidence + Claude zone highlight
+  // Centering: outer card boundary + inner frame + T/B/L/R labels
   const svgSlot = document.getElementById('lightbox-svg-slot')
   svgSlot.innerHTML = ''
   if (isFocused) {
-    // CV evidence first (underneath), then Claude zone highlight on top
     const cvSvg = buildCVEvidenceSVG(item, _lightboxFocusedZone)
     if (cvSvg) svgSlot.appendChild(cvSvg)
     svgSlot.appendChild(buildZoneSVGFocused(item.zones, _lightboxFocusedZone, _lightboxFocusedSev))
+  } else if (isCentering) {
+    const centeringSvg = buildCenteringSVG(item.centering ?? null)
+    if (centeringSvg) svgSlot.appendChild(centeringSvg)
   }
+
+  // Position the SVG slot over the actual card region (not the full eBay photo)
+  _positionSvgSlot(svgSlot, imgEl, item.cardBounds ?? null)
 
   // ── Banner ───────────────────────────────────────────────────────
   const banner = document.getElementById('lightbox-focused-banner')
-  if (isFocused) {
+  if (isCentering) {
+    renderCenteringBanner(banner, item.centering ?? null)
+  } else if (isFocused) {
     const sevClass = `lz-badge--${_lightboxFocusedSev ?? 'moderate'}`
     banner.innerHTML =
       `<span class="lz-badge ${sevClass}">${ZONE_LABELS[_lightboxFocusedZone] ?? _lightboxFocusedZone}</span>` +
@@ -674,51 +965,62 @@ function renderLightboxFrame() {
     banner.classList.add('hidden')
   }
 
-  // ── Zone list — always visible, items are tappable ───────────────
+  // ── Zone list — hidden in centering mode (banner is the whole UI) ──
   const list = document.getElementById('lightbox-zones-list')
-  list.classList.remove('hidden')
-  list.innerHTML = ''
-
-  if (item.zones.length === 0) {
-    const li = document.createElement('li')
-    li.className = 'lz-clean'
-    li.textContent = '✓ No defects detected on this side'
-    list.appendChild(li)
+  if (isCentering) {
+    list.classList.add('hidden')
+    list.innerHTML = ''
   } else {
-    item.zones.forEach(({ zone, severity, note }) => {
-      const isActive = isFocused && zone === _lightboxFocusedZone
+    list.classList.remove('hidden')
+    list.innerHTML = ''
+
+    if (item.zones.length === 0) {
       const li = document.createElement('li')
-      li.className = `lz-item lz-item--tappable${isActive ? ' lz-item--active' : ''}`
-
-      const badge = document.createElement('span')
-      badge.className = `lz-badge lz-badge--${severity}`
-      badge.textContent = ZONE_LABELS[zone] ?? zone
-
-      const txt = document.createElement('span')
-      txt.className = 'lz-note'
-      txt.textContent = note
-
-      const arrow = document.createElement('span')
-      arrow.className = 'lz-locate-arrow'
-      arrow.textContent = isActive ? '✕' : '→'
-
-      li.appendChild(badge)
-      li.appendChild(txt)
-      li.appendChild(arrow)
-
-      li.addEventListener('click', () => {
-        if (isActive) {
-          exitFocusedMode()
-        } else {
-          _lightboxFocusedZone = zone
-          _lightboxFocusedNote = note
-          _lightboxFocusedSev  = severity
-          renderLightboxFrame()
-        }
-      })
-
+      li.className = 'lz-clean'
+      li.textContent = '✓ No defects detected on this side'
       list.appendChild(li)
-    })
+    } else {
+      item.zones.forEach(({ zone, severity, note }) => {
+        const isActive = isFocused && zone === _lightboxFocusedZone
+        const li = document.createElement('li')
+        li.className = `lz-item lz-item--tappable${isActive ? ' lz-item--active' : ''}`
+
+        const badge = document.createElement('span')
+        badge.className = `lz-badge lz-badge--${severity}`
+        badge.textContent = ZONE_LABELS[zone] ?? zone
+
+        const txt = document.createElement('span')
+        txt.className = 'lz-note'
+        txt.textContent = note
+
+        const arrow = document.createElement('span')
+        arrow.className = 'lz-locate-arrow'
+        arrow.textContent = isActive ? '✕' : '→'
+
+        li.appendChild(badge)
+        li.appendChild(txt)
+        li.appendChild(arrow)
+
+        li.addEventListener('click', () => {
+          if (isActive) {
+            exitFocusedMode()
+          } else if (zone === 'centering') {
+            // Centering has its own dedicated inspection mode — don't try to
+            // render it as a generic zone overlay (which would draw nothing,
+            // since _zoneRects('centering') returns []).
+            openLightboxCenteringMode(_lightboxIndex)
+          } else {
+            _lightboxMode        = 'focused'
+            _lightboxFocusedZone = zone
+            _lightboxFocusedNote = note
+            _lightboxFocusedSev  = severity
+            renderLightboxFrame()
+          }
+        })
+
+        list.appendChild(li)
+      })
+    }
   }
 
   // ── Prev / next navigation ───────────────────────────────────────
@@ -728,13 +1030,198 @@ function renderLightboxFrame() {
   document.getElementById('lightbox-next').disabled = _lightboxIndex === _lightboxItems.length - 1
 }
 
+// ── Lightbox zoom engine ───────────────────────────────────────────
+//
+// State: scale + translate(tx, ty) with transform-origin 0 0.
+// Transform applied as: translate(tx, ty) scale(scale)
+// A point (px, py) in wrap-space maps to inner-space as: ((px-tx)/s, (py-ty)/s)
+// Zooming toward cursor: newTx = px - (newS/s) * (px - tx)
+
+let _zs = 1      // current zoom scale
+let _ztx = 0     // current translate X (px, wrap coords)
+let _zty = 0     // current translate Y (px, wrap coords)
+
+// Pan drag state
+let _zPanActive = false
+let _zPanX0 = 0, _zPanY0 = 0   // pointer start
+let _zTx0   = 0, _zTy0   = 0   // translate at drag start
+let _zDragged = false           // true once pointer moves > threshold
+
+// Pinch state
+let _zPinchDist0  = 0
+let _zPinchScale0 = 1
+let _zPinchTx0    = 0, _zPinchTy0 = 0
+let _zPinchMx     = 0, _zPinchMy  = 0  // midpoint in wrap coords
+
+function _zWrap() { return document.getElementById('lightbox-img-wrap') }
+function _zInner() { return document.getElementById('lightbox-zoom-inner') }
+
+function resetZoom() {
+  _zs = 1; _ztx = 0; _zty = 0
+  _zPanActive = false
+  _zDragged   = false
+  _applyZoom()
+}
+
+function _clampPan(w, h) {
+  // Element is (s*w) × (s*h); keep it from drifting outside the wrap
+  _ztx = Math.min(0, Math.max((1 - _zs) * w, _ztx))
+  _zty = Math.min(0, Math.max((1 - _zs) * h, _zty))
+}
+
+function _applyZoom() {
+  const inner = _zInner()
+  const wrap  = _zWrap()
+  if (!inner || !wrap) return
+
+  const zoomed = _zs > 1.005
+  inner.style.transform = `translate(${_ztx}px,${_zty}px) scale(${_zs})`
+  wrap.style.cursor = zoomed ? (_zPanActive ? 'grabbing' : 'grab') : 'zoom-in'
+
+  const badge = document.getElementById('lightbox-zoom-badge')
+  const hint  = document.getElementById('lightbox-zoom-hint')
+  if (badge) {
+    badge.textContent = `${Math.round(_zs * 100)}%`
+    badge.classList.toggle('hidden', !zoomed)
+  }
+  if (hint) hint.classList.toggle('hidden', !zoomed)
+}
+
+// ── Wheel zoom ─────────────────────────────────────────────────────
+function _onWheel(e) {
+  e.preventDefault()
+  const wrap = _zWrap()
+  if (!wrap) return
+  const rect = wrap.getBoundingClientRect()
+
+  const factor = e.deltaY < 0 ? 1.12 : (1 / 1.12)
+  const newS   = Math.min(8, Math.max(1, _zs * factor))
+  if (newS === _zs) return
+
+  const px = e.clientX - rect.left
+  const py = e.clientY - rect.top
+  const r  = newS / _zs
+  _ztx = px - r * (px - _ztx)
+  _zty = py - r * (py - _zty)
+  _zs  = newS
+
+  if (_zs <= 1.005) { _zs = 1; _ztx = 0; _zty = 0 }
+  else _clampPan(rect.width, rect.height)
+  _applyZoom()
+}
+
+// ── Double-click: zoom 2× toward click, or reset if already zoomed ──
+function _onDblClick(e) {
+  e.preventDefault()
+  const wrap = _zWrap()
+  if (!wrap) return
+  if (_zs > 1.005) {
+    resetZoom()
+    return
+  }
+  const rect = wrap.getBoundingClientRect()
+  const px   = e.clientX - rect.left
+  const py   = e.clientY - rect.top
+  const newS = 2.5
+  const r    = newS / _zs
+  _ztx = px - r * (px - _ztx)
+  _zty = py - r * (py - _zty)
+  _zs  = newS
+  _clampPan(rect.width, rect.height)
+  _applyZoom()
+}
+
+// ── Pointer drag (pan when zoomed) ─────────────────────────────────
+function _onPointerDown(e) {
+  if (e.button !== 0 || _zs <= 1.005) return
+  e.preventDefault()
+  _zPanActive = true
+  _zDragged   = false
+  _zPanX0     = e.clientX
+  _zPanY0     = e.clientY
+  _zTx0       = _ztx
+  _zTy0       = _zty
+  _applyZoom()
+  window.addEventListener('pointermove', _onPointerMove, { passive: false })
+  window.addEventListener('pointerup',   _onPointerUp)
+}
+
+function _onPointerMove(e) {
+  if (!_zPanActive) return
+  const dx = e.clientX - _zPanX0
+  const dy = e.clientY - _zPanY0
+  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) _zDragged = true
+  const wrap = _zWrap()
+  if (!wrap) return
+  const rect = wrap.getBoundingClientRect()
+  _ztx = _zTx0 + dx
+  _zty = _zTy0 + dy
+  _clampPan(rect.width, rect.height)
+  _applyZoom()
+}
+
+function _onPointerUp() {
+  _zPanActive = false
+  window.removeEventListener('pointermove', _onPointerMove)
+  window.removeEventListener('pointerup',   _onPointerUp)
+  _applyZoom()
+}
+
+// ── Touch pinch-to-zoom ────────────────────────────────────────────
+function _touchDist(t) { return Math.hypot(t[1].clientX - t[0].clientX, t[1].clientY - t[0].clientY) }
+
+function _onTouchStart(e) {
+  if (e.touches.length !== 2) return
+  e.preventDefault()
+  const wrap = _zWrap()
+  if (!wrap) return
+  const rect = wrap.getBoundingClientRect()
+  _zPinchDist0  = _touchDist(e.touches)
+  _zPinchScale0 = _zs
+  _zPinchTx0    = _ztx
+  _zPinchTy0    = _zty
+  _zPinchMx     = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left
+  _zPinchMy     = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top
+}
+
+function _onTouchMove(e) {
+  if (e.touches.length !== 2) return
+  e.preventDefault()
+  const wrap = _zWrap()
+  if (!wrap) return
+  const rect  = wrap.getBoundingClientRect()
+  const dist  = _touchDist(e.touches)
+  const newS  = Math.min(8, Math.max(1, _zPinchScale0 * (dist / _zPinchDist0)))
+  const r     = newS / _zPinchScale0
+  _ztx = _zPinchMx - r * (_zPinchMx - _zPinchTx0)
+  _zty = _zPinchMy - r * (_zPinchMy - _zPinchTy0)
+  _zs  = newS
+  if (_zs <= 1.005) { _zs = 1; _ztx = 0; _zty = 0 }
+  else _clampPan(rect.width, rect.height)
+  _applyZoom()
+}
+
+// ── Wire zoom events to the wrap ───────────────────────────────────
+;(function attachZoomListeners() {
+  const wrap = _zWrap()
+  if (!wrap) return
+  wrap.addEventListener('wheel',       _onWheel,      { passive: false })
+  wrap.addEventListener('dblclick',    _onDblClick)
+  wrap.addEventListener('pointerdown', _onPointerDown)
+  wrap.addEventListener('touchstart',  _onTouchStart, { passive: false })
+  wrap.addEventListener('touchmove',   _onTouchMove,  { passive: false })
+})()
+
+// ── Reset zoom when lightbox opens / navigates ─────────────────────
+// (called from openLightbox, openLightboxFocused, and nav buttons)
+
 document.getElementById('lightbox-close').addEventListener('click', closeLightbox)
 document.getElementById('lightbox-backdrop').addEventListener('click', closeLightbox)
 document.getElementById('lightbox-prev').addEventListener('click', () => {
-  if (_lightboxIndex > 0) { _lightboxIndex--; renderLightboxFrame() }
+  if (_lightboxIndex > 0) { _lightboxIndex--; resetZoom(); renderLightboxFrame() }
 })
 document.getElementById('lightbox-next').addEventListener('click', () => {
-  if (_lightboxIndex < _lightboxItems.length - 1) { _lightboxIndex++; renderLightboxFrame() }
+  if (_lightboxIndex < _lightboxItems.length - 1) { _lightboxIndex++; resetZoom(); renderLightboxFrame() }
 })
 
 // ── Strip renderer ─────────────────────────────────────────────────
@@ -753,7 +1240,7 @@ document.getElementById('lightbox-next').addEventListener('click', () => {
  *   3. CV edge bands    — teal solid  (precise anomalous edges)
  *   4. Claude zones     — yellow/orange/red solid (textual annotations)
  */
-function renderAnalyzedImages(urls, allZones, cvSurfaceGrid, cvCornerBoxes, cvEdgeBands) {
+function renderAnalyzedImages(urls, allZones, cvSurfaceGrid, cvCornerBoxes, cvEdgeBands, cardBoundsPct, centeringData) {
   const strip   = document.getElementById('analyzed-images-strip')
   const section = strip.closest('.analyzed-images-section')
 
@@ -773,7 +1260,9 @@ function renderAnalyzedImages(urls, allZones, cvSurfaceGrid, cvCornerBoxes, cvEd
     const gridCells   = i === 0 ? (cvSurfaceGrid  ?? []) : []
     const cornerBoxes = i === 0 ? (cvCornerBoxes  ?? []) : []
     const edgeBands   = i === 0 ? (cvEdgeBands    ?? []) : []
-    _lightboxItems.push({ url, zones, label, gridCells, cornerBoxes, edgeBands })
+    const cardBounds = cardBoundsPct?.[i] ?? null
+    const centering  = centeringData?.[i] ?? null
+    _lightboxItems.push({ url, zones, label, gridCells, cornerBoxes, edgeBands, cardBounds, centering })
 
     const item = document.createElement('div')
     item.className = 'analyzed-thumb'
@@ -897,7 +1386,13 @@ function renderSideAnalysis(side, prefix, thumbIndex, sideZones) {
         btn.title = `Locate on card: ${ZONE_LABELS[zone] ?? zone}`
         btn.addEventListener('click', (e) => {
           e.stopPropagation()
-          openLightboxFocused(thumbIndex, zone, issueText, severity)
+          if (zone === 'centering') {
+            // Centering has its own inspection mode — outer + inner frame
+            // overlay with T/B/L/R margin labels, not a generic zone highlight.
+            openLightboxCenteringMode(thumbIndex)
+          } else {
+            openLightboxFocused(thumbIndex, zone, issueText, severity)
+          }
         })
         li.appendChild(btn)
       }
@@ -1107,7 +1602,9 @@ function renderResult(payload) {
   const cvSurfaceGrid  = Array.isArray(payload.surface_grid) ? payload.surface_grid  : null
   const cvCornerBoxes  = Array.isArray(payload.corner_boxes) ? payload.corner_boxes  : null
   const cvEdgeBands    = Array.isArray(payload.edge_bands)   ? payload.edge_bands    : null
-  renderAnalyzedImages(_analyzedUrls, [frontZones, backZones], cvSurfaceGrid, cvCornerBoxes, cvEdgeBands)
+  const cardBoundsPct = Array.isArray(payload.card_bounds_pct) ? payload.card_bounds_pct : null
+  const centeringData = Array.isArray(payload.centering)       ? payload.centering       : null
+  renderAnalyzedImages(_analyzedUrls, [frontZones, backZones], cvSurfaceGrid, cvCornerBoxes, cvEdgeBands, cardBoundsPct, centeringData)
   showState('result')
 }
 

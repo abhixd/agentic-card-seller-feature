@@ -779,13 +779,27 @@ main { padding: 16px 14px 32px; }
   background: var(--surface2);
   /* Maintain card portrait ratio */
   aspect-ratio: 3 / 4;
+  cursor: zoom-in;
+  touch-action: none;   /* let JS handle all touch so pinch doesn't scroll */
 }
 
-.lightbox-img-wrap img {
+/* Transform target — wraps both the image and the SVG overlay so they
+   scale together. transform-origin: 0 0 makes cursor-based zoom math simple. */
+.lightbox-zoom-inner {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.lightbox-zoom-inner img {
   width: 100%;
   height: 100%;
   object-fit: contain;
   display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none;   /* zoom wrap handles all pointer events */
 }
 
 /* Slot where buildZoneSVG() appends its SVG */
@@ -801,12 +815,102 @@ main { padding: 16px 14px 32px; }
   height: 100%;
 }
 
+/* Zoom level badge — bottom-right corner, shown only when scale > 1 */
+.lightbox-zoom-badge {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 20px;
+  pointer-events: none;
+  z-index: 10;
+  letter-spacing: 0.02em;
+}
+
+/* "double-click to reset" hint — top-right, fades in when zoomed */
+.lightbox-zoom-hint {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(0, 0, 0, 0.45);
+  color: rgba(255,255,255,0.85);
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  pointer-events: none;
+  z-index: 10;
+}
+
 /* Focused zone pulse animation */
 @keyframes zonePulse {
   0%, 100% { opacity: 1;    }
   50%       { opacity: 0.55; }
 }
 .zone-focused-rect { animation: zonePulse 1.6s ease-in-out infinite; }
+
+/* ── Centering inspection overlay ────────────────────────────────────────
+ * Thin precise strokes — distinct from the zone overlay style (no fill,
+ * no animation, no rounded corners). Outer = blue, inner = yellow.
+ * Labels carry a dark stroke for legibility on any background.
+ */
+.centering-overlay {
+  pointer-events: none;
+}
+.centering-outer-rect,
+.centering-inner-rect {
+  vector-effect: non-scaling-stroke;
+}
+.centering-margin-label {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 4.5px;          /* viewBox is 0–100, so this is ~4.5% of card height */
+  font-weight: 700;
+  fill: #ffffff;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.78);
+  stroke-width: 0.9px;
+  stroke-linejoin: round;
+}
+
+/* Centering banner — replaces .lightbox-focused-banner content when in centering mode */
+.lightbox-centering-banner {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  background: rgba(95, 168, 255, 0.10);
+  border-color: rgba(95, 168, 255, 0.28);
+}
+.centering-banner-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.centering-badge {
+  background: rgba(95, 168, 255, 0.18) !important;
+  color: #cfe3ff !important;
+  border-color: rgba(95, 168, 255, 0.55) !important;
+}
+.centering-headline {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.centering-interpretation {
+  margin: 2px 0 0 0;
+  font-size: 12px;
+  color: var(--text);
+}
+.centering-helper {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+}
 
 /* Investigation mode banner — shows zone label + full issue text */
 .lightbox-focused-banner {

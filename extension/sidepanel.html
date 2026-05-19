@@ -244,10 +244,16 @@
         <span id="lightbox-label" class="lightbox-label"></span>
         <button id="lightbox-close" class="lightbox-close-btn" aria-label="Close">✕</button>
       </div>
-      <!-- Image + zone SVG overlay -->
-      <div class="lightbox-img-wrap">
-        <img id="lightbox-img" alt="" />
-        <div id="lightbox-svg-slot" class="lightbox-svg-slot"></div>
+      <!-- Image + zone SVG overlay (zoom-inner is the transform target) -->
+      <div class="lightbox-img-wrap" id="lightbox-img-wrap">
+        <div id="lightbox-zoom-inner" class="lightbox-zoom-inner">
+          <img id="lightbox-img" alt="" />
+          <div id="lightbox-svg-slot" class="lightbox-svg-slot"></div>
+        </div>
+        <!-- Live zoom level indicator -->
+        <div id="lightbox-zoom-badge" class="lightbox-zoom-badge hidden">100%</div>
+        <!-- Double-tap / double-click hint shown only while zoomed -->
+        <div id="lightbox-zoom-hint" class="lightbox-zoom-hint hidden">double-click to reset</div>
       </div>
       <!-- Investigation mode: focused issue banner -->
       <div id="lightbox-focused-banner" class="lightbox-focused-banner hidden"></div>
