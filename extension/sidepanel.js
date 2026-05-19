@@ -678,8 +678,13 @@ function exitCenteringMode() {
  *  1. No measurement at all (image missing / bounds undetected)
  *  2. Borderless / full-art card — outer detected, inner not
  *  3. Full measurement — ratios + interpretation
+ *
+ * claudeNote: the textual centering note from Claude (e.g.
+ *   "Centering is well-balanced; very slight favour to left and top").
+ *   Always displayed when present so the user gets Claude's qualitative
+ *   read even when the CV measurement couldn't be computed.
  */
-function renderCenteringBanner(banner, measurement) {
+function renderCenteringBanner(banner, measurement, claudeNote) {
   banner.classList.remove('hidden')
   banner.classList.add('lightbox-centering-banner')
   banner.innerHTML = ''
@@ -698,9 +703,9 @@ function renderCenteringBanner(banner, measurement) {
   let helper = ''
 
   if (!measurement) {
-    headline       = 'Card not isolated'
-    interpretation = 'Centering measurement unavailable'
-    helper         = 'The card could not be cropped from the photo — overlay disabled.'
+    headline       = 'Card fills frame'
+    interpretation = 'CV measurement unavailable for tightly-cropped photos'
+    helper         = 'Visual overlay disabled — see Claude\'s read below.'
   } else if (!measurement.inner_frame_bbox_pct || !measurement.margins_pct) {
     headline       = 'Outer card detected'
     interpretation = CENTERING_INTERPRETATION_TEXT[measurement.interpretation] ?? 'Centering measurement unavailable'
@@ -732,6 +737,21 @@ function renderCenteringBanner(banner, measurement) {
     interp.className = 'centering-interpretation'
     interp.textContent = interpretation
     banner.appendChild(interp)
+  }
+
+  // Claude's textual centering note — always shown when present, so the user
+  // gets the qualitative read whether or not the CV measurement succeeded.
+  if (claudeNote) {
+    const claudeBlock = document.createElement('div')
+    claudeBlock.className = 'centering-claude-note'
+    const labelEl = document.createElement('span')
+    labelEl.className = 'centering-claude-label'
+    labelEl.textContent = 'Claude\'s read: '
+    const textEl = document.createElement('span')
+    textEl.textContent = claudeNote
+    claudeBlock.appendChild(labelEl)
+    claudeBlock.appendChild(textEl)
+    banner.appendChild(claudeBlock)
   }
 
   if (helper) {
@@ -949,7 +969,12 @@ function renderLightboxFrame() {
   // ── Banner ───────────────────────────────────────────────────────
   const banner = document.getElementById('lightbox-focused-banner')
   if (isCentering) {
-    renderCenteringBanner(banner, item.centering ?? null)
+    // Surface Claude's textual centering note (from item.zones) so the user
+    // sees it even when the visual measurement is unavailable (borderless
+    // card, bounds undetected, etc.) — never strand the user with only an
+    // "unavailable" message when Claude actually said something useful.
+    const claudeNote = item.zones.find(z => z.zone === 'centering')?.note ?? null
+    renderCenteringBanner(banner, item.centering ?? null, claudeNote)
   } else if (isFocused) {
     const sevClass = `lz-badge--${_lightboxFocusedSev ?? 'moderate'}`
     banner.innerHTML =

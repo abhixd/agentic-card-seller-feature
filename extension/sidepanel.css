@@ -911,6 +911,21 @@ main { padding: 16px 14px 32px; }
   color: var(--text-dim);
   font-style: italic;
 }
+/* Claude's textual centering read — always shown when present */
+.centering-claude-note {
+  margin-top: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+}
+.centering-claude-label {
+  font-weight: 700;
+  color: var(--text-dim);
+  margin-right: 4px;
+}
 
 /* Investigation mode banner — shows zone label + full issue text */
 .lightbox-focused-banner {

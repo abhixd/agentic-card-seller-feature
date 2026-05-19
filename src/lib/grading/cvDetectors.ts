@@ -854,7 +854,9 @@ export async function analyseBuffer(buf: Buffer): Promise<CVMeasurements> {
  * Returns null (use full image) when:
  *   • foreground fraction < 5%  (uniform image — can't find a boundary)
  *   • crop covers < 25% of the original (detection almost certainly wrong)
- *   • crop covers > 92% of the original (no meaningful crop — skip the overhead)
+ *   • crop covers > 98% of the original (essentially no background — bounds
+ *     are still useful for centering inspection so we keep them; only the
+ *     extreme case where the bbox covers the entire image is rejected)
  */
 export async function detectCardBounds(
   buf: Buffer,
@@ -865,7 +867,11 @@ export async function detectCardBounds(
   const MARGIN_FRAC     = 0.08
   const MIN_FG_FRAC     = 0.05
   const MIN_CROP_FRAC   = 0.25
-  const MAX_CROP_FRAC   = 0.92
+  // Previously 0.92 — that cap was a "no meaningful crop, skip the overhead"
+  // optimization for the Claude pipeline, but it broke centering inspection
+  // on tightly-shot photos where the card fills almost the whole frame.
+  // The downstream cropping work is cheap; the bounds are valuable.
+  const MAX_CROP_FRAC   = 0.98
 
   try {
     // Original image dimensions (needed to scale bounds back)
