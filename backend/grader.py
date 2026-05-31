@@ -1,0 +1,732 @@
+"""
+grader.py
+=========
+Core PSA card grading pipeline.
+Extracted from psa_grading_eval.ipynb for use in the FastAPI server.
+
+Pipeline:
+  image -> YOLO OBB detection -> perspective warp -> Claude (Opus) -> grade dict
+"""
+
+import os
+import io
+import json
+import base64
+import re
+import math
+from pathlib import Path
+
+import cv2
+import numpy as np
+import anthropic
+from ultralytics import YOLO
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+MODEL       = os.environ.get("CLAUDE_MODEL", "claude-opus-4-5")
+MAX_TOKENS  = 3000
+IMG_MAX_PX  = 2048
+JPEG_Q      = 92
+
+YOLO_WEIGHTS  = os.environ.get(
+    "YOLO_WEIGHTS",
+    "/opt/homebrew/runs/obb/datasets/yolo_obb_cards_v2/train_v2/weights/best.pt",
+)
+YOLO_CONF   = float(os.environ.get("YOLO_CONF", "0.25"))
+YOLO_IMGSZ  = int(os.environ.get("YOLO_IMGSZ", "640"))
+PADDING_FRAC = 0.03
+REFINE_EDGES = True
+
+# Lazy-loaded YOLO model (singleton)
+_yolo_model = None
+
+
+def _get_yolo() -> YOLO:
+    global _yolo_model
+    if _yolo_model is None:
+        _yolo_model = YOLO(YOLO_WEIGHTS)
+    return _yolo_model
+
+
+# ── Image encoding ─────────────────────────────────────────────────────────────
+def encode_image(img_bgr: np.ndarray, max_px: int = IMG_MAX_PX, quality: int = JPEG_Q) -> dict:
+    """Resize to max_px on longest edge, JPEG-encode, return base64 dict for Claude."""
+    h, w = img_bgr.shape[:2]
+    scale = max_px / max(h, w)
+    if scale < 1.0:
+        img_bgr = cv2.resize(img_bgr, (int(w * scale), int(h * scale)),
+                             interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", img_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        raise RuntimeError("JPEG encode failed")
+    return {
+        "media_type": "image/jpeg",
+        "data": base64.standard_b64encode(buf.tobytes()).decode("ascii"),
+    }
+
+
+# ── Corner ordering ────────────────────────────────────────────────────────────
+def _order_corners(pts):
+    """
+    Robust corner ordering: returns (TL, TR, BR, BL) for ANY rotation angle.
+    """
+    pts = np.asarray(pts).reshape(4, 2).astype(np.float32)
+    cx, cy  = pts.mean(axis=0)
+    angles  = np.arctan2(pts[:, 1] - cy, pts[:, 0] - cx)
+    ccw_idx = np.argsort(angles)
+    p = pts[ccw_idx]
+
+    sides = np.array([np.linalg.norm(p[(i+1) % 4] - p[i]) for i in range(4)])
+    pair_02 = (sides[0] + sides[2]) / 2
+    pair_13 = (sides[1] + sides[3]) / 2
+
+    if pair_02 <= pair_13:
+        edge_a = (p[0], p[1]);  edge_a_y = (p[0][1] + p[1][1]) / 2
+        edge_b = (p[2], p[3]);  edge_b_y = (p[2][1] + p[3][1]) / 2
+    else:
+        edge_a = (p[1], p[2]);  edge_a_y = (p[1][1] + p[2][1]) / 2
+        edge_b = (p[3], p[0]);  edge_b_y = (p[3][1] + p[0][1]) / 2
+
+    if edge_a_y <= edge_b_y:
+        top_edge, bot_edge = edge_a, edge_b
+    else:
+        top_edge, bot_edge = edge_b, edge_a
+
+    tl, tr = sorted(top_edge, key=lambda q: q[0])
+    bl, br = sorted(bot_edge, key=lambda q: q[0])
+    return np.array([tl, tr, br, bl], dtype=np.float32)
+
+
+def adaptive_padding(quad_raw, padding_frac=0.03):
+    """Compute padding in pixels as a fraction of the card's longer side."""
+    sides = [np.linalg.norm(quad_raw[(i+1) % 4] - quad_raw[i]) for i in range(4)]
+    return padding_frac * max(sides)
+
+
+# ── Edge refinement ────────────────────────────────────────────────────────────
+def _refine_edge_to_canny(canny, A, B, gx, gy, search=20, n_steps=41,
+                           distance_sigma=0.4, gradient_align_weight=0.7):
+    A = np.asarray(A, dtype=np.float32)
+    B = np.asarray(B, dtype=np.float32)
+    edge_vec = B - A
+    edge_len = float(np.linalg.norm(edge_vec))
+    if edge_len < 1e-6:
+        return A, B
+    edge_dir = edge_vec / edge_len
+    normal   = np.array([-edge_dir[1], edge_dir[0]], dtype=np.float32)
+
+    H, W  = canny.shape
+    n_pts = max(30, int(edge_len))
+    ts    = np.linspace(0, 1, n_pts, dtype=np.float32)
+    best_score, best_d = -np.inf, 0.0
+    sigma_px = max(1.0, distance_sigma * search)
+
+    for d in np.linspace(-search, search, n_steps, dtype=np.float32):
+        offset = d * normal
+        pts    = A[None, :] + ts[:, None] * edge_vec[None, :] + offset[None, :]
+        xs     = np.clip(pts[:, 0].round().astype(int), 0, W - 1)
+        ys     = np.clip(pts[:, 1].round().astype(int), 0, H - 1)
+        edge_mask = canny[ys, xs] > 0
+        if not edge_mask.any():
+            continue
+        gxv = gx[ys, xs];  gyv = gy[ys, xs]
+        mag = np.sqrt(gxv * gxv + gyv * gyv)
+        mag_safe = np.where(mag > 1e-3, mag, 1e-3)
+        dot = np.abs((gxv * normal[0] + gyv * normal[1]) / mag_safe)
+        alignment_factor = (1 - gradient_align_weight) + gradient_align_weight * dot
+        score_per_pt = mag * alignment_factor * edge_mask
+        base_score = float(score_per_pt.sum())
+        weight = float(np.exp(-(d * d) / (2 * sigma_px * sigma_px)))
+        score = base_score * weight
+        if score > best_score:
+            best_score = score
+            best_d = d
+
+    offset = best_d * normal
+    return A + offset, B + offset
+
+
+def _line_intersection(p1, p2, p3, p4):
+    x1, y1 = p1; x2, y2 = p2; x3, y3 = p3; x4, y4 = p4
+    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(denom) < 1e-6:
+        return None
+    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+    return np.array([x1 + t * (x2 - x1), y1 + t * (y2 - y1)], dtype=np.float32)
+
+
+def refine_quad_to_edges(img_bgr, quad, search_frac=0.015):
+    """Snap each of the 4 edges of `quad` to the nearest strong edge in the image."""
+    gray  = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    blur  = cv2.GaussianBlur(gray, (5, 5), 0)
+    med   = float(np.median(blur))
+    canny = cv2.Canny(blur, int(max(0, 0.5 * med)), int(min(255, 1.5 * med)))
+    gx = cv2.Sobel(blur, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(blur, cv2.CV_32F, 0, 1, ksize=3)
+
+    sides  = [float(np.linalg.norm(quad[(i+1) % 4] - quad[i])) for i in range(4)]
+    search = max(6.0, search_frac * min(sides))
+    n_steps = max(31, int(search * 2) + 1)
+
+    refined_edges = []
+    for i in range(4):
+        A, B = quad[i], quad[(i + 1) % 4]
+        refined_edges.append(
+            _refine_edge_to_canny(canny, A, B, gx, gy,
+                                  search=search, n_steps=n_steps))
+
+    refined_quad = np.zeros((4, 2), dtype=np.float32)
+    for i in range(4):
+        prev = refined_edges[(i - 1) % 4]
+        curr = refined_edges[i]
+        ip   = _line_intersection(prev[0], prev[1], curr[0], curr[1])
+        refined_quad[i] = ip if ip is not None else quad[i]
+    return refined_quad
+
+
+def quad_aspect_and_area(quad):
+    sides = [float(np.linalg.norm(quad[(i+1) % 4] - quad[i])) for i in range(4)]
+    short = (min(sides[0], sides[2]) + min(sides[1], sides[3])) / 2
+    long_ = (max(sides[0], sides[2]) + max(sides[1], sides[3])) / 2
+    aspect = short / long_ if long_ > 0 else 0.0
+    x = quad[:, 0]; y = quad[:, 1]
+    area = 0.5 * abs(sum(x[i] * y[(i+1) % 4] - x[(i+1) % 4] * y[i] for i in range(4)))
+    return aspect, area
+
+
+# ── Warping ────────────────────────────────────────────────────────────────────
+def _warp_card(img_bgr, quad_pts, out_w=630, out_h=880):
+    """Perspective-warp a 4-corner quad to an upright out_w x out_h rectangle."""
+    src = _order_corners(quad_pts)
+    dst = np.array([[0, 0], [out_w, 0], [out_w, out_h], [0, out_h]], dtype=np.float32)
+    M   = cv2.getPerspectiveTransform(src, dst)
+    return cv2.warpPerspective(img_bgr, M, (out_w, out_h), flags=cv2.INTER_LANCZOS4)
+
+
+def card_boundary_analytical(quad_raw, quad_padded, out_w=630, out_h=880):
+    """Compute the exact card boundary in warped-image space."""
+    src = _order_corners(quad_padded)
+    dst = np.array([[0, 0], [out_w, 0], [out_w, out_h], [0, out_h]], dtype=np.float32)
+    M   = cv2.getPerspectiveTransform(src, dst)
+    raw_ordered  = _order_corners(quad_raw).reshape(-1, 1, 2)
+    corners_warp = cv2.perspectiveTransform(raw_ordered, M).reshape(4, 2)
+    x1 = float(np.clip(corners_warp[:, 0].min() / out_w, 0.0, 1.0))
+    y1 = float(np.clip(corners_warp[:, 1].min() / out_h, 0.0, 1.0))
+    x2 = float(np.clip(corners_warp[:, 0].max() / out_w, 0.0, 1.0))
+    y2 = float(np.clip(corners_warp[:, 1].max() / out_h, 0.0, 1.0))
+    return corners_warp, (x1, y1, x2, y2)
+
+
+# ── Palette-based centering ────────────────────────────────────────────────────
+BORDER_PALETTE_HSV = {
+    "grass":     [((40,  40,  40), ( 85, 255, 255))],
+    "fire":      [((  0,  80,  60), ( 10, 255, 255)),
+                  ((170,  80,  60), (180, 255, 255))],
+    "water":     [(( 95,  60,  50), (130, 255, 255))],
+    "lightning": [(( 20, 100, 130), ( 35, 255, 255))],
+    "psychic":   [((128,  60,  60), (155, 255, 255))],
+    "fighting":  [((  8,  80,  60), ( 20, 255, 180))],
+    "darkness":  [((  0,   0,   0), (180, 255,  60))],
+    "metal":     [((  0,   0,  90), (180,  35, 200))],
+    "dragon":    [(( 18, 100, 120), ( 32, 255, 255))],
+    "fairy":     [((155,  30, 130), (175, 200, 255))],
+    "colorless": [((  0,   0, 200), (180,  35, 255))],
+}
+
+
+def _match_palette(hsv_pixels):
+    if len(hsv_pixels) == 0:
+        return None, 0.0, {}
+    scores = {}
+    for name, ranges in BORDER_PALETTE_HSV.items():
+        mask = np.zeros(len(hsv_pixels), dtype=bool)
+        for lo, hi in ranges:
+            lo_a, hi_a = np.array(lo, dtype=np.int32), np.array(hi, dtype=np.int32)
+            mask |= np.all((hsv_pixels >= lo_a) & (hsv_pixels <= hi_a), axis=1)
+        scores[name] = float(mask.sum() / len(hsv_pixels))
+    best = max(scores, key=scores.get)
+    return best, scores[best], scores
+
+
+def _build_palette_mask(hsv_img, palette_name):
+    ranges = BORDER_PALETTE_HSV[palette_name]
+    mask   = np.zeros(hsv_img.shape[:2], dtype=np.uint8)
+    for lo, hi in ranges:
+        m = cv2.inRange(hsv_img, np.array(lo, dtype=np.uint8), np.array(hi, dtype=np.uint8))
+        mask = cv2.bitwise_or(mask, m)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+
+def analytical_centering(warped_bgr, card_boundary,
+                          max_band_frac=0.25, coverage_threshold=0.40,
+                          min_palette_match=0.25):
+    """Detect printed-border inner edge using Pokemon type-colour palette."""
+    h, w = warped_bgr.shape[:2]
+    cb_x1, cb_y1, cb_x2, cb_y2 = [int(round(v * d)) for v, d in zip(card_boundary, [w, h, w, h])]
+    cb_x1, cb_y1 = max(0, cb_x1), max(0, cb_y1)
+    cb_x2, cb_y2 = min(w, cb_x2), min(h, cb_y2)
+    iw, ih = cb_x2 - cb_x1, cb_y2 - cb_y1
+    if iw < 20 or ih < 20:
+        return None
+
+    inside_bgr = warped_bgr[cb_y1:cb_y2, cb_x1:cb_x2]
+    inside_hsv = cv2.cvtColor(inside_bgr, cv2.COLOR_BGR2HSV)
+
+    skip = 3
+    strip_dep = max(4, int(min(iw, ih) * 0.05))
+    corner_excl_h = max(8, int(iw * 0.15))
+    corner_excl_v = max(8, int(ih * 0.15))
+
+    strip_pix = np.concatenate([
+        inside_hsv[skip:strip_dep, corner_excl_h:iw-corner_excl_h].reshape(-1, 3),
+        inside_hsv[ih-strip_dep:ih-skip, corner_excl_h:iw-corner_excl_h].reshape(-1, 3),
+        inside_hsv[corner_excl_v:ih-corner_excl_v, skip:strip_dep].reshape(-1, 3),
+        inside_hsv[corner_excl_v:ih-corner_excl_v, iw-strip_dep:iw-skip].reshape(-1, 3),
+    ], axis=0)
+
+    best_name, best_frac, palette_scores = _match_palette(strip_pix)
+
+    band_h = max(8, int(ih * max_band_frac))
+    band_v = max(8, int(iw * max_band_frac))
+
+    if best_frac >= min_palette_match:
+        mask = _build_palette_mask(inside_hsv, best_name)
+
+        def _scan(strip):
+            cov = strip.mean(axis=1) / 255.0
+            below = np.where(cov < coverage_threshold)[0]
+            return max(2, int(below[0])) if len(below) else max(2, len(cov) // 4)
+
+        border_top    = _scan(mask[:band_h, :])
+        border_bottom = _scan(mask[ih-band_h:, :][::-1])
+        border_left   = _scan(mask[:, :band_v].T)
+        border_right  = _scan(mask[:, iw-band_v:].T[::-1])
+        source = "palette"
+        notes_extra = f"palette={best_name} ({best_frac*100:.0f}% perimeter match)."
+    else:
+        side_skip = 4
+        side_dep  = max(4, int(min(iw, ih) * 0.04))
+        cex_h = max(8, int(iw * 0.15))
+        cex_v = max(8, int(ih * 0.15))
+        side_pixels = np.concatenate([
+            inside_bgr[side_skip:side_skip+side_dep, cex_h:iw-cex_h].reshape(-1, 3),
+            inside_bgr[ih-side_skip-side_dep:ih-side_skip, cex_h:iw-cex_h].reshape(-1, 3),
+            inside_bgr[cex_v:ih-cex_v, side_skip:side_skip+side_dep].reshape(-1, 3),
+            inside_bgr[cex_v:ih-cex_v, iw-side_skip-side_dep:iw-side_skip].reshape(-1, 3),
+        ], axis=0)
+        border_color = np.median(side_pixels, axis=0)
+
+        def _scan_uni(strip, axis):
+            diff = np.abs(strip.astype(np.float32) - border_color)
+            dist = diff.mean(axis=(1, 2)) if axis == 0 else diff.mean(axis=(0, 2))
+            k = max(3, len(dist) // 30)
+            smooth = np.convolve(dist, np.ones(k, dtype=np.float32) / k, mode="same")
+            baseline = float(smooth[2:7].mean())
+            above = np.where(smooth[2:] > baseline + 18)[0]
+            return max(2, int(above[0]) + 2) if len(above) else max(2, len(smooth) // 4)
+
+        border_top    = _scan_uni(inside_bgr[:band_h, :], axis=0)
+        border_bottom = _scan_uni(inside_bgr[ih-band_h:, :][::-1], axis=0)
+        border_left   = _scan_uni(inside_bgr[:, :band_v], axis=1)
+        border_right  = _scan_uni(inside_bgr[:, iw-band_v:][:, ::-1], axis=1)
+        source = "uniform"
+        best_name = "uniform_fallback"
+        notes_extra = (f"no palette match; colour-uniformity used.")
+
+    h_total = border_left + border_right
+    v_total = border_top  + border_bottom
+    lr_pct  = int(round(border_left / h_total * 100)) if h_total else 50
+    tb_pct  = int(round(border_top  / v_total * 100)) if v_total else 50
+
+    worst = max(abs(50 - lr_pct), abs(50 - tb_pct))
+    if   worst <=  5: score = 10
+    elif worst <= 10: score =  9
+    elif worst <= 15: score =  8
+    elif worst <= 20: score =  7
+    elif worst <= 25: score =  6
+    elif worst <= 30: score =  5
+    elif worst <= 35: score =  4
+    elif worst <= 40: score =  3
+    elif worst <= 45: score =  2
+    else:             score =  1
+
+    cr_x1 = (cb_x1 + border_left)   / w
+    cr_y1 = (cb_y1 + border_top)    / h
+    cr_x2 = (cb_x2 - border_right)  / w
+    cr_y2 = (cb_y2 - border_bottom) / h
+
+    return {
+        "score":          float(score),
+        "left_right":     f"{lr_pct}/{100 - lr_pct}",
+        "top_bottom":     f"{tb_pct}/{100 - tb_pct}",
+        "content_region": {"x1": cr_x1, "y1": cr_y1, "x2": cr_x2, "y2": cr_y2},
+        "offset":         float(worst),
+        "notes":          f"Borders (px): L={border_left} R={border_right} "
+                          f"T={border_top} B={border_bottom}. " + notes_extra,
+        "border_type":    best_name,
+        "palette_scores": {k: round(v, 3) for k, v in palette_scores.items()},
+        "_source":        source,
+    }
+
+
+# ── Corner crops ───────────────────────────────────────────────────────────────
+def _build_corner_crops(img_bgr, quad_raw, out_size=800, region_frac=0.30):
+    """Warp each of the 4 card-corner regions to an upright square."""
+    q = _order_corners(quad_raw)
+    crops = {}
+    cfg = [
+        ("TL", 0, 1, 3),
+        ("TR", 1, 0, 2),
+        ("BR", 2, 3, 1),
+        ("BL", 3, 2, 0),
+    ]
+    for name, ci, n_top, n_side in cfg:
+        c        = q[ci]
+        top_vec  = q[n_top]  - c
+        sid_vec  = q[n_side] - c
+        top_unit = top_vec / max(1e-6, np.linalg.norm(top_vec))
+        sid_unit = sid_vec / max(1e-6, np.linalg.norm(sid_vec))
+        top_len  = np.linalg.norm(top_vec) * region_frac
+        sid_len  = np.linalg.norm(sid_vec) * region_frac
+        src_quad = np.array([
+            c,
+            c + top_unit * top_len,
+            c + top_unit * top_len + sid_unit * sid_len,
+            c + sid_unit * sid_len,
+        ], dtype=np.float32)
+        dst = np.array([[0, 0], [out_size, 0], [out_size, out_size], [0, out_size]],
+                       dtype=np.float32)
+        M = cv2.getPerspectiveTransform(src_quad, dst)
+        crops[name] = cv2.warpPerspective(img_bgr, M, (out_size, out_size),
+                                          flags=cv2.INTER_LANCZOS4)
+    return crops
+
+
+# ── System prompt ──────────────────────────────────────────────────────────────
+SYSTEM_PROMPT = """You are an expert PSA (Professional Sports Authenticator) card grading specialist with 20+ years of experience grading Pokémon, sports, and collectible cards.
+
+INPUT FORMAT:
+You will receive FIVE images of the same card:
+  Image 1: Full perspective-corrected card view
+  Image 2: TOP-LEFT corner — zoomed and warped to upright (~30% of card width, native source resolution)
+  Image 3: TOP-RIGHT corner
+  Image 4: BOTTOM-RIGHT corner
+  Image 5: BOTTOM-LEFT corner
+
+The corner zooms are at MUCH higher pixel density than the full card — use them for fine-grained corner and adjacent-edge assessment. Use the full card for overall surface and centering.
+
+The user message will provide:
+  - card_boundary: definitive physical card edge in the full-card image (normalised 0-1)
+  - border_type   : a HINT from a color-detection algorithm about the Pokemon type / border colour
+                     (this is a suggestion, not ground truth — verify visually)
+
+POKEMON BORDER COLOUR PALETTE (use this list to identify the card's border):
+  - Grass     = green
+  - Fire      = red
+  - Water     = blue
+  - Lightning = yellow
+  - Psychic   = purple
+  - Fighting  = brown
+  - Darkness  = black
+  - Metal     = gray
+  - Dragon    = gold / yellow
+  - Colorless = white / gray
+  - Fairy     = pink
+  Special variants (Full Art, Special Illustration Rare, Rainbow Rare) may have
+  holographic / silver / multicoloured borders not in this list — the border_type
+  hint will be "uniform_fallback" in those cases.
+
+PSA GRADING STANDARDS (no prior on the grade):
+  - PSA graders use 10x magnification. PSA 10 = imperfections visible only under that magnification, not in normal viewing.
+  - A faintly soft corner requiring magnification to see is still "sharp" by PSA standards.
+  - Distinguish flaws visible at normal viewing vs only under magnification.
+  - Use the full 1-10 range. Grade strictly on what you observe — no assumptions about typical condition.
+
+PILLAR DEFINITIONS:
+
+CENTERING — produce a content_region (the inner edge of the printed border) on which the centering ratio will be computed deterministically. THE GEOMETRY OF YOUR content_region BOX *IS* THE SCORE — be accurate.
+
+CRITICAL: content_region is a RECTANGLE with 4 implicit corners derived from
+(x1, y1) and (x2, y2). Use the 4 corner zoom images (TL, TR, BR, BL) to verify
+EACH corner of the rectangle. Adjust the rectangle until ALL 4 corner zooms show
+the corresponding rectangle corner sitting cleanly inside the artwork — even if
+that forces one side to be more conservative than its midpoint suggests.
+
+CARD-TYPE-SPECIFIC GUIDANCE for content_region inset (fraction of card dimension):
+  - Standard cards (Fire/Water/Grass/etc. — solid colored border):
+      typical inset 6-10% on each side  (≈ 40-65px L/R, 55-90px T/B on 630x880 canvas)
+  - Full Art / SIR / Special Illustration Rare (silver / holographic border):
+      typical inset 3-6% on each side   (≈ 20-40px L/R, 25-55px T/B on 630x880 canvas)
+      The silver border IS the printed border — find where the silver/holo strip
+      ends and the actual artwork begins. DO NOT confuse the physical card edge
+      with the inner content edge — they are different.
+  - Vintage WOTC (thick white border):
+      typical inset 10-15% on each side
+  - Trainer / energy cards (cyan/blue header design):
+      content_region matches the printed frame, not just the colored area
+
+PIXEL ANCHORS (warped canvas is 630x880):
+  - 3% inset =  19px x  26px from card edge
+  - 5% inset =  32px x  44px
+  - 8% inset =  50px x  70px
+  - 12% inset = 76px x 106px
+
+STEP-BY-STEP for centering (do this internally before writing JSON):
+  STEP 1: Identify the card type using border_type hint + the full card image.
+  STEP 2: For each of the 4 sides, look at the corresponding corner zoom image
+          and locate the EXACT pixel position where the printed border ends and
+          the artwork/text begins.
+  STEP 3: Convert those pixel positions to normalised coordinates and set content_region.
+  STEP 4: PER-CORNER VERIFICATION:
+          Examine EACH of the 4 corner zoom images and verify the corresponding
+          implicit rectangle corner sits cleanly inside the artwork.
+          If any corner falls on the printed border, move the relevant side INWARD.
+  STEP 5: For Full Art cards: if computed border widths are all < 3%, re-examine.
+
+The centering score will be computed FROM your content_region values, not from
+your stated ratios — so spend your attention on accurate content_region pixels.
+
+CORNERS — Inspect each of the 4 physical corners using the corresponding zoom image:
+  - sharp / slight_wear / moderate_wear / heavy_wear / bent
+
+EDGES — Inspect each of the 4 physical edges (also visible in corner zooms):
+  - clean / minor_nick / chip / rough / worn
+
+SURFACE — Inspect the face of the card (use the full card image):
+  - scratches, print_lines, stains, creases (each: none / minor / moderate / heavy)
+
+REFERENCE ANCHORS:
+  - PSA 10 (Gem Mint): All 4 corners pin-sharp. All 4 edges no visible damage. Centering ≤ 55/45. Surface free of visible defects.
+  - PSA 9 (Mint): ONE allowable minor flaw.
+  - PSA 8 (NM-MT): Up to 2-3 minor flaws, OR one moderate flaw. Centering up to 65/35.
+  - PSA 7 (NM): Noticeable but not heavy wear across multiple pillars.
+  - PSA 5-6: Multiple visible flaws.
+  - PSA 3-4: Heavy wear, crease, multiple chips.
+  - PSA 1-2: Severely damaged.
+
+Respond with ONLY a valid JSON object — no markdown fences, no extra text.
+Your response must contain exactly these keys and no others:
+{
+  "centering": {
+    "score": <1-10 float>,
+    "left_right": "<e.g. 55/45>",
+    "top_bottom": "<e.g. 50/50>",
+    "content_region": {"x1": <0.0-1.0>, "y1": <0.0-1.0>, "x2": <0.0-1.0>, "y2": <0.0-1.0>},
+    "notes": "<one sentence noting the border colour you identified>"
+  },
+  "corners": {
+    "score": <1-10 float>,
+    "top_left":     "<sharp|slight_wear|moderate_wear|heavy_wear|bent>",
+    "top_right":    "<sharp|slight_wear|moderate_wear|heavy_wear|bent>",
+    "bottom_right": "<sharp|slight_wear|moderate_wear|heavy_wear|bent>",
+    "bottom_left":  "<sharp|slight_wear|moderate_wear|heavy_wear|bent>",
+    "notes": "<one sentence citing what you saw in the corner zooms>"
+  },
+  "edges": {
+    "score": <1-10 float>,
+    "top":    "<clean|minor_nick|chip|rough|worn>",
+    "right":  "<clean|minor_nick|chip|rough|worn>",
+    "bottom": "<clean|minor_nick|chip|rough|worn>",
+    "left":   "<clean|minor_nick|chip|rough|worn>",
+    "notes": "<one sentence>"
+  },
+  "surface": {
+    "score": <1-10 float>,
+    "scratches":   "<none|minor|moderate|heavy>",
+    "print_lines": "<none|minor|moderate|heavy>",
+    "stains":      "<none|minor|moderate|heavy>",
+    "creases":     "<none|minor|moderate|heavy>",
+    "notes": "<one sentence>"
+  },
+  "overall_score": <1-10 float>,
+  "psa_equivalent": "<e.g. PSA 8 NM-MT>",
+  "summary": "<2-3 sentence overall assessment>"
+}
+
+PSA equivalents: 10 Gem Mint | 9 Mint | 8 NM-MT | 7 NM | 6 EX-MT | 5 EX | 4 VG-EX | 3 VG | 2 Good | 1 Poor"""
+
+
+# ── Main grade function ────────────────────────────────────────────────────────
+def grade_card(img_bgr: np.ndarray,
+               quad_raw=None,
+               quad_padded=None,
+               use_multicrop: bool = True,
+               api_key: str = None) -> dict:
+    """
+    Grade a card with Claude.
+
+    Args:
+        img_bgr      : source photo as BGR numpy array
+        quad_raw     : (4,2) un-padded YOLO quad in source pixels
+        quad_padded  : (4,2) padded quad used for warping
+        use_multicrop: if True, send full card + 4 corner zooms (5 images total)
+        api_key      : Anthropic API key (falls back to ANTHROPIC_API_KEY env var)
+
+    Returns:
+        dict with centering, corners, edges, surface, overall_score, psa_equivalent,
+        summary, and debug keys prefixed with _
+    """
+    if api_key is None:
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not set")
+
+    if quad_padded is None and quad_raw is not None:
+        quad_padded = quad_raw
+
+    if quad_padded is not None:
+        warped = _warp_card(img_bgr, quad_padded)
+        _, card_bbox = card_boundary_analytical(
+            quad_raw if quad_raw is not None else quad_padded, quad_padded)
+    else:
+        warped, card_bbox = img_bgr.copy(), (0.0, 0.0, 1.0, 1.0)
+
+    cen_analytic = analytical_centering(warped, card_bbox)
+    border_type  = cen_analytic.get("border_type", "uniform_fallback") if cen_analytic else "unknown"
+
+    images = [encode_image(warped)]
+    if use_multicrop and quad_raw is not None:
+        corner_crops = _build_corner_crops(img_bgr, quad_raw, out_size=800)
+        for key in ("TL", "TR", "BR", "BL"):
+            images.append(encode_image(corner_crops[key]))
+
+    cb_x1, cb_y1, cb_x2, cb_y2 = card_bbox
+    user_text = (
+        f"card_boundary (definitive outer edge of card, normalised): "
+        f"x1={cb_x1:.4f} y1={cb_y1:.4f} x2={cb_x2:.4f} y2={cb_y2:.4f}\n"
+        f"border_type hint (from colour detection): {border_type}\n\n"
+        f"Use card_boundary as the physical card edge — do not re-estimate it. "
+        f"Use the border_type hint as a starting point for centering but verify visually.\n"
+    )
+    if len(images) > 1:
+        user_text += (
+            f"You are receiving {len(images)} images of the same card: "
+            f"image 1 = full card, images 2-5 = top-left, top-right, bottom-right, "
+            f"bottom-left corner zooms at native source resolution.\n"
+        )
+    user_text += "Return only the JSON object."
+
+    content = [
+        {"type": "image",
+         "source": {"type": "base64",
+                    "media_type": img_enc["media_type"],
+                    "data":       img_enc["data"]}}
+        for img_enc in images
+    ]
+    content.append({"type": "text", "text": user_text})
+
+    client  = anthropic.Anthropic(api_key=api_key)
+    message = client.messages.create(
+        model      = MODEL,
+        max_tokens = MAX_TOKENS,
+        system     = SYSTEM_PROMPT,
+        messages   = [{"role": "user", "content": content}],
+    )
+
+    raw       = message.content[0].text.strip()
+    raw_clean = re.sub(r"```json|```", "", raw).strip()
+    m         = re.search(r"\{.*\}", raw_clean, re.DOTALL)
+    if not m:
+        raise ValueError(f"No JSON found in Claude response:\n{raw[:500]}")
+    json_str = m.group()
+    try:
+        result = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        open_b  = json_str[:e.pos].count("{") - json_str[:e.pos].count("}")
+        trimmed = json_str[:e.pos].rstrip().rstrip(",")
+        try:
+            result = json.loads(trimmed + "}" * max(1, open_b))
+            result["_truncated"] = True
+        except json.JSONDecodeError:
+            raise ValueError(f"Unrecoverable JSON from Claude:\n{raw[:2000]}")
+
+    # Deterministic centering from Claude's content_region
+    cen = result.get("centering", {})
+    cr  = cen.get("content_region") if isinstance(cen, dict) else None
+    claude_lr    = cen.get("left_right", "?") if isinstance(cen, dict) else "?"
+    claude_tb    = cen.get("top_bottom", "?") if isinstance(cen, dict) else "?"
+    claude_score = cen.get("score", None) if isinstance(cen, dict) else None
+
+    if cr and all(k in cr for k in ("x1", "y1", "x2", "y2")):
+        cb_x1, cb_y1, cb_x2, cb_y2 = card_bbox
+        cr_x1c = max(cb_x1, min(cb_x2, cr["x1"]))
+        cr_x2c = max(cb_x1, min(cb_x2, cr["x2"]))
+        cr_y1c = max(cb_y1, min(cb_y2, cr["y1"]))
+        cr_y2c = max(cb_y1, min(cb_y2, cr["y2"]))
+
+        bl = max(0.0, cr_x1c - cb_x1)
+        br = max(0.0, cb_x2 - cr_x2c)
+        bt = max(0.0, cr_y1c - cb_y1)
+        bb = max(0.0, cb_y2 - cr_y2c)
+
+        lr_pct = int(round(bl / (bl + br) * 100)) if (bl + br) > 1e-6 else 50
+        tb_pct = int(round(bt / (bt + bb) * 100)) if (bt + bb) > 1e-6 else 50
+
+        worst = max(abs(50 - lr_pct), abs(50 - tb_pct))
+        if   worst <=  5: geo_score = 10.0
+        elif worst <= 10: geo_score =  9.0
+        elif worst <= 15: geo_score =  8.0
+        elif worst <= 20: geo_score =  7.0
+        elif worst <= 25: geo_score =  6.0
+        elif worst <= 30: geo_score =  5.0
+        elif worst <= 35: geo_score =  4.0
+        elif worst <= 40: geo_score =  3.0
+        elif worst <= 45: geo_score =  2.0
+        else:             geo_score =  1.0
+
+        result["centering"] = {
+            **(cen if isinstance(cen, dict) else {}),
+            "score":      geo_score,
+            "left_right": f"{lr_pct}/{100 - lr_pct}",
+            "top_bottom": f"{tb_pct}/{100 - tb_pct}",
+            "_source":    "geometric_from_content_region",
+            "_claude_reported": {
+                "score": claude_score,
+                "left_right": claude_lr,
+                "top_bottom": claude_tb,
+            },
+        }
+
+    result["_analytical_centering"] = cen_analytic
+    result["_model"]         = MODEL
+    result["_card_boundary"] = list(card_bbox)
+    result["_n_images"]      = len(images)
+    result["_border_type"]   = border_type
+    return result
+
+
+# ── YOLO detection ─────────────────────────────────────────────────────────────
+def detect_and_grade(img_bgr: np.ndarray, api_key: str = None) -> dict:
+    """
+    Full pipeline: YOLO OBB detection -> refine -> warp -> Claude grading.
+
+    Returns grade dict. Raises ValueError if no card detected.
+    """
+    model_yolo = _get_yolo()
+    res = model_yolo.predict(img_bgr, conf=YOLO_CONF, imgsz=YOLO_IMGSZ, verbose=False)
+    obb = res[0].obb
+    if obb is None or len(obb) == 0:
+        raise ValueError("No card detected in image (YOLO confidence too low)")
+
+    best     = int(obb.conf.argmax())
+    conf     = float(obb.conf[best])
+    quad_raw_yolo = obb.xyxyxyxy.cpu().numpy()[best].astype(np.float32)
+    quad_raw = _order_corners(quad_raw_yolo)
+
+    if REFINE_EDGES:
+        quad_refined = refine_quad_to_edges(img_bgr, quad_raw, search_frac=0.02)
+        asp, area    = quad_aspect_and_area(quad_refined)
+        if 0.55 <= asp <= 0.85 and area > 0.4 * quad_aspect_and_area(quad_raw)[1]:
+            quad_raw = quad_refined
+
+    pad_px      = adaptive_padding(quad_raw, padding_frac=PADDING_FRAC)
+    centroid    = quad_raw.mean(axis=0)
+    dirs        = quad_raw - centroid
+    norms       = np.linalg.norm(dirs, axis=1, keepdims=True).clip(min=1)
+    quad_padded = quad_raw + (dirs / norms) * pad_px
+
+    result = grade_card(img_bgr, quad_raw=quad_raw, quad_padded=quad_padded,
+                        use_multicrop=True, api_key=api_key)
+    result["_yolo_conf"] = conf
+    result["_quad_raw"]  = quad_raw.tolist()
+    return result

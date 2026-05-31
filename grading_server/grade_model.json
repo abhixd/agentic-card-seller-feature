@@ -1,0 +1,27 @@
+{
+  "intercept": 3.027174,
+  "weights": {
+    "centering": 0.384737,
+    "corners": 0.158582,
+    "edges": 0.296989,
+    "surface": -0.1087
+  },
+  "n": 92,
+  "train": {
+    "mae": 0.5356,
+    "exact": 0.5109,
+    "within1": 0.9783
+  },
+  "cv": {
+    "mae": 0.6978,
+    "exact": 0.1848,
+    "within1": 0.9783
+  },
+  "features": [
+    "centering",
+    "corners",
+    "edges",
+    "surface"
+  ],
+  "note": "Stage-B only: pillar scores -> overall PSA grade. centering feature is the geometric centering score at inference."
+}

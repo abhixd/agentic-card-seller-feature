@@ -5,10 +5,11 @@ Run with:
     uvicorn main:app --reload --port 8000
 
 Endpoints:
-    GET  /api/health
-    GET  /api/user/usage
-    POST /api/analyze-listing
-    POST /api/analyze-images
+    GET  /health
+    GET  /user/usage
+    POST /analyze-listing
+    POST /analyze-images
+    POST /grade           ← YOLO + Claude PSA grading (new)
 """
 from __future__ import annotations
 
@@ -24,8 +25,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import asyncio
-from fastapi import FastAPI, HTTPException
+import traceback
+import numpy as np
+import cv2
+from fastapi import FastAPI, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from schemas import (
     AnalyzeListingRequest,
@@ -150,3 +155,64 @@ async def analyze_images(req: AnalyzeListingRequest) -> AnalyzeListingResponse:
 async def save_analysis(body: dict) -> dict:
     # Stub — persist to Supabase in v2
     return {"saved": True, "id": "stub-id"}
+
+
+# ── /grade — YOLO + Claude PSA detailed grading ──────────────────────────
+# Lazy import so the server starts even if ultralytics/anthropic are absent.
+_grader_module = None
+
+def _get_grader():
+    global _grader_module
+    if _grader_module is None:
+        try:
+            import grader as _g
+            _grader_module = _g
+        except ImportError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Grading module not available: {e}. "
+                       "Install: pip install anthropic ultralytics",
+            )
+    return _grader_module
+
+
+@app.post("/grade")
+async def grade_card_endpoint(
+    image: UploadFile = File(..., description="Card image (JPEG, PNG, WebP)"),
+):
+    """
+    Detailed PSA grading via YOLO OBB detection + Claude (Opus) vision.
+
+    Returns JSON with keys:
+        centering, corners, edges, surface, overall_score, psa_equivalent, summary
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
+
+    # Decode image
+    try:
+        raw = await image.read()
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img_bgr is None:
+            raise ValueError("Unsupported image format")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Image decode error: {e}")
+
+    # Run pipeline in thread pool (CPU-bound YOLO + Claude I/O)
+    grader = _get_grader()
+    loop   = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, grader.detect_and_grade, img_bgr, api_key
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Grading error: {type(e).__name__}: {e}")
+
+    # Strip large debug fields before sending to client
+    strip = {"_raw", "_analytical_centering"}
+    return JSONResponse({k: v for k, v in result.items() if k not in strip})

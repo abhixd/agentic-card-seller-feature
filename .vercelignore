@@ -1,0 +1,11 @@
+# Large directories not needed for Next.js build
+notebooks/
+backend/
+extension/
+data/
+docs/
+forecast-service/
+optimize-service/
+supabase/
+scripts/
+coverage/

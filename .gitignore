@@ -50,3 +50,24 @@ forecast-service/__pycache__/
 
 # local data / scripts output
 data/
+
+# secrets / credentials (never commit)
+agentic_cardseller_passwds
+*.key
+.haiku
+
+# notebooks: heavy training data, artifacts, model binaries (keep out of git)
+notebooks/datasets/
+notebooks/artifacts/
+notebooks/cards/
+**/.ipynb_checkpoints/
+*.pt
+*.pkl
+
+# python envs / caches
+**/venv/
+.venv/
+
+# grading_server runtime collateral
+grading_server/feedback/
+grading_server/__pycache__/

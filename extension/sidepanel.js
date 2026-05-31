@@ -1,1714 +1,1842 @@
 /**
- * sidepanel.js — Side panel UI logic
+ * sidepanel.js — Card Seller OS side panel logic
  *
- * States: idle → loading → result | error
- * Listens for messages from background.js:
- *   ANALYSIS_START    → show loading
- *   ANALYSIS_PROGRESS → update step text
- *   ANALYSIS_RESULT   → render results
- *   ANALYSIS_ERROR    → show error
+ * State machine:
+ *   idle → listing → loading → results | error
+ *
+ * Talks to background.js via chrome.runtime.sendMessage.
+ * Background holds the listing state in chrome.storage.local.
  */
 
-'use strict'
+"use strict";
 
-// ── State ──────────────────────────────────────────────────────────
-const STATES = ['idle', 'select', 'loading', 'result', 'error']
+// ── DOM ───────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
 
-function showState(name) {
-  STATES.forEach(s => {
-    const el = document.getElementById(`state-${s}`)
-    if (el) el.classList.toggle('hidden', s !== name)
-  })
+const VIEWS = ["idle", "listing", "loading", "error", "results", "detail", "offline"];
+
+// ── State ─────────────────────────────────────────────────────────────────
+let currentListing = null;
+let currentResult  = null;   // last analysis result — used by detail views
+let loadingTimer   = null;
+
+// ── Init ──────────────────────────────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", async () => {
+  await checkServer();
+  await restoreState();
+  wireEvents();
+
+  // Listen for listing updates from background
+  chrome.runtime.onMessage.addListener(onMessage);
+
+  // Storage change (listing updated while panel is open)
+  chrome.storage.onChanged.addListener(onStorageChange);
+});
+
+// ── Server health ─────────────────────────────────────────────────────────
+// The grading backend is now the Python grading_server (YOLO + Claude pipeline).
+async function checkServer() {
+  const { ok } = await sendBg({ type: "HEALTH_CHECK_PYTHON" });
+  const dot = $("status-dot");
+  dot.className = `dot ${ok ? "dot-ok" : "dot-error"}`;
+  dot.title = ok
+    ? "Grading server running"
+    : "Grading server offline — run grading_server (uvicorn server:app --port 8000)";
+  return ok;
 }
 
-// ── Settings ───────────────────────────────────────────────────────
-const settingsPanel  = document.getElementById('settings-panel')
-const settingsBtn    = document.getElementById('settings-btn')
-const saveSettingsBtn   = document.getElementById('save-settings-btn')
-const cancelSettingsBtn = document.getElementById('cancel-settings-btn')
-const backendUrlInput   = document.getElementById('backend-url-input')
-const settingsMsg       = document.getElementById('settings-msg')
+// ── State restore ─────────────────────────────────────────────────────────
+async function restoreState() {
+  const { pendingListing, lastResult } = await chrome.storage.local.get([
+    "pendingListing",
+    "lastResult",
+  ]);
 
-function openSettings() {
-  chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, (resp) => {
-    backendUrlInput.value = resp?.backendUrl ?? 'http://localhost:3000'
-  })
-  settingsPanel.classList.remove('hidden')
-}
+  // 1. Detect the listing on the CURRENTLY-open tab first (auto-injects the
+  //    content script if the tab predated an extension reload). This takes
+  //    priority so a stale result from a previous session never hides the card
+  //    the user is actually looking at.
+  let liveListing = null;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) liveListing = await requestListingFromTab(tab.id);
+  } catch { /* not an eBay tab */ }
 
-function closeSettings() {
-  settingsPanel.classList.add('hidden')
-  settingsMsg.textContent = ''
-}
-
-settingsBtn.addEventListener('click', () => {
-  settingsPanel.classList.contains('hidden') ? openSettings() : closeSettings()
-})
-
-cancelSettingsBtn.addEventListener('click', closeSettings)
-
-saveSettingsBtn.addEventListener('click', () => {
-  const url = backendUrlInput.value.trim()
-  if (!url) return
-  chrome.runtime.sendMessage({ type: 'SAVE_SETTINGS', payload: { backendUrl: url } }, () => {
-    settingsMsg.textContent = 'Saved!'
-    setTimeout(() => { settingsMsg.textContent = ''; closeSettings() }, 1200)
-  })
-})
-
-// ── Image selection ────────────────────────────────────────────────
-
-/** Holds the current listing payload while the user picks images. */
-let _pendingListing = null
-/** Set of selected image URLs. */
-const _selected = new Set()
-/** URLs that were submitted for the most recent analysis (in selection order). */
-let _analyzedUrls = []
-
-const thumbGrid       = document.getElementById('thumb-grid')
-const selCountEl      = document.getElementById('sel-count')
-const analyzeSelBtn   = document.getElementById('analyze-selected-btn')
-const selectTitleEl   = document.getElementById('select-title')
-const selectAllBtn    = document.getElementById('select-all-btn')
-const clearSelBtn     = document.getElementById('clear-sel-btn')
-
-function refreshSelectionUI() {
-  const n = _selected.size
-  selCountEl.textContent = n
-  analyzeSelBtn.disabled = n === 0
-  // Dim un-selected once something is chosen
-  thumbGrid.classList.toggle('has-selection', n > 0)
-  // Sync item borders
-  thumbGrid.querySelectorAll('.thumb-item').forEach(item => {
-    item.classList.toggle('selected', _selected.has(item.dataset.url))
-  })
-}
-
-function buildThumbGrid(imageUrls) {
-  thumbGrid.innerHTML = ''
-  _selected.clear()
-
-  imageUrls.forEach((url, i) => {
-    const item = document.createElement('div')
-    item.className = 'thumb-item'
-    item.dataset.url = url
-    item.title = `Image ${i + 1}`
-
-    const img = document.createElement('img')
-    img.alt = `Card image ${i + 1}`
-    img.loading = 'lazy'
-    // Show a small preview (s-l300) for fast load; full-res s-l1600 URL is
-    // stored in item.dataset.url and sent to the backend for analysis.
-    img.src = url.replace(/s-l\d+/g, 's-l300')
-    img.onerror = () => {
-      img.remove()
-      const err = document.createElement('div')
-      err.className = 'thumb-err'
-      err.textContent = '🖼'
-      item.appendChild(err)
+  // 2. Show a cached result ONLY if it's for the same card (or we can't detect a
+  //    live one). Otherwise the user moved to a new card → show its analyze view.
+  if (lastResult?.result) {
+    const cached = lastResult.listing;
+    const sameCard = liveListing && cached &&
+      (cached.url === liveListing.url || cached.title === liveListing.title);
+    if (sameCard || !liveListing) {
+      currentListing = cached || liveListing || pendingListing || null;
+      if (isPsaShape(lastResult.result)) renderPSAResult(lastResult.result, currentListing);
+      else renderResults(lastResult.result, currentListing);
+      show("results");
+      return;
     }
+  }
 
-    item.appendChild(img)
-    item.addEventListener('click', () => {
-      if (_selected.has(url)) {
-        _selected.delete(url)
+  // 3. Show the analyze view for the live (or last cached) listing.
+  const listing = liveListing || pendingListing;
+  if (listing) {
+    currentListing = listing;
+    await chrome.storage.local.set({ pendingListing: listing });
+    populateListingView(listing);
+    show("listing");
+    return;
+  }
+
+  // 4. Nothing found — idle with instructions.
+  show("idle");
+}
+
+// ── Message handler ───────────────────────────────────────────────────────
+function onMessage(msg) {
+  if (msg.type === "LISTING_READY" && msg.listing) {
+    currentListing = msg.listing;
+    chrome.storage.local.remove("lastResult");
+    populateListingView(msg.listing);
+    show("listing");
+  }
+}
+
+function onStorageChange(changes) {
+  if (changes.pendingListing?.newValue) {
+    const listing = changes.pendingListing.newValue;
+    currentListing = listing;
+    populateListingView(listing);
+    const loadingEl = document.getElementById("view-loading");
+    const isLoading = loadingEl && !loadingEl.classList.contains("hidden");
+    if (!isLoading) {
+      chrome.storage.local.remove("lastResult");
+      show("listing");
+    }
+  }
+}
+
+// ── Populate listing view ─────────────────────────────────────────────────
+// ── Front/back image selection ─────────────────────────────────────────────
+let selFront = 0;          // index into the listing's image_urls (graded image)
+let selBack  = null;       // index, or null
+let gallerySig = null;     // url of the listing the current selection applies to
+
+function populateListingView(listing) {
+  // Reset the front/back selection when a different card is loaded.
+  if (gallerySig !== listing.url) {
+    gallerySig = listing.url;
+    selFront = 0;
+    selBack  = listing.image_urls.length > 1 ? 1 : null;
+  }
+
+  $("listing-title").textContent    = listing.title;
+  $("listing-price").textContent    = `$${listing.price.toFixed(2)}`;
+  $("listing-shipping").textContent = listing.shipping
+    ? `+ $${listing.shipping.toFixed(2)} shipping`
+    : "Free shipping";
+  $("listing-imgs").textContent     = `${listing.image_urls.length} image${listing.image_urls.length !== 1 ? "s" : ""} found`;
+
+  renderGallery(listing);
+}
+
+// Render every thumbnail with Front/Back role badges. The big thumb mirrors the
+// chosen front image.
+function renderGallery(listing) {
+  const thumb = $("listing-thumb");
+  const frontUrl = listing.image_urls[selFront] ?? listing.image_urls[0];
+  if (frontUrl) {
+    thumb.src = frontUrl;
+    thumb.style.display = "";
+    thumb.onerror = () => { thumb.style.display = "none"; };
+  }
+
+  const gallery = $("listing-gallery");
+  gallery.innerHTML = "";
+  listing.image_urls.forEach((url, i) => {
+    const cell = document.createElement("div");
+    cell.className = "thumb-cell";
+    cell.dataset.idx = String(i);
+    if (i === selFront) cell.classList.add("is-front");
+    if (i === selBack)  cell.classList.add("is-back");
+
+    const img = document.createElement("img");
+    img.className = "thumb-img";
+    img.src = url;
+    img.loading = "lazy";
+    img.onerror = () => { cell.style.display = "none"; };
+    cell.appendChild(img);
+
+    // Hover to see the photo large (so front vs back is easy to tell apart).
+    cell.addEventListener("mouseenter", () => showGalleryPreview(url));
+    cell.addEventListener("mouseleave", hideGalleryPreview);
+
+    if (i === selFront || i === selBack) {
+      const badge = document.createElement("div");
+      badge.className = `thumb-badge ${i === selFront ? "tb-front" : "tb-back"}`;
+      badge.textContent = i === selFront ? "Front" : "Back";
+      cell.appendChild(badge);
+    }
+    gallery.appendChild(cell);
+  });
+}
+
+// Large hover preview so small thumbnails are legible (front vs back).
+function showGalleryPreview(url) {
+  let el = document.getElementById("gallery-preview");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "gallery-preview";
+    el.className = "gallery-preview";
+    const img = document.createElement("img");
+    el.appendChild(img);
+    document.body.appendChild(el);
+  }
+  el.querySelector("img").src = url;
+  el.classList.add("visible");
+}
+function hideGalleryPreview() {
+  document.getElementById("gallery-preview")?.classList.remove("visible");
+}
+
+// Intent-based selection: first tap → Front, next different tap → Back, tapping
+// an already-selected photo deselects it, a further tap replaces Front.
+function onGalleryClick(e) {
+  const cell = e.target.closest(".thumb-cell");
+  if (!cell || !currentListing) return;
+  const i = Number(cell.dataset.idx);
+
+  if (i === selFront)        selFront = null;
+  else if (i === selBack)    selBack = null;
+  else if (selFront === null) { selFront = i; }
+  else if (selBack === null)  { selBack = i; }
+  else                        { selFront = i; }   // both set → replace front
+
+  renderGallery(currentListing);
+}
+
+// ── Events ────────────────────────────────────────────────────────────────
+function wireEvents() {
+  $("btn-analyze").addEventListener("click", runAnalysis);
+  $("listing-gallery").addEventListener("click", onGalleryClick);
+
+  $("btn-reload-listing").addEventListener("click", async () => {
+    $("btn-reload-listing").textContent = "⏳ Loading…";
+    $("btn-reload-listing").disabled = true;
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id) throw new Error("No active tab");
+      const listing = await requestListingFromTab(tab.id);
+      if (listing) {
+        currentListing = listing;
+        await chrome.storage.local.set({ pendingListing: listing });
+        populateListingView(listing);
+        show("listing");
       } else {
-        _selected.add(url)
+        $("btn-reload-listing").textContent = "⚠️ No listing found — are you on an eBay item page?";
       }
-      refreshSelectionUI()
-    })
-
-    thumbGrid.appendChild(item)
-  })
-
-  refreshSelectionUI()
-}
-
-selectAllBtn.addEventListener('click', () => {
-  thumbGrid.querySelectorAll('.thumb-item').forEach(item => _selected.add(item.dataset.url))
-  refreshSelectionUI()
-})
-
-clearSelBtn.addEventListener('click', () => {
-  _selected.clear()
-  refreshSelectionUI()
-})
-
-analyzeSelBtn.addEventListener('click', () => {
-  if (!_pendingListing || _selected.size === 0) return
-  _analyzedUrls = [..._selected]   // snapshot URLs before state clears
-  const payload = {
-    ..._pendingListing,
-    image_urls: _analyzedUrls,
-  }
-  chrome.runtime.sendMessage({ type: 'ANALYZE_SELECTED', payload })
-})
-
-// ── Helpers ────────────────────────────────────────────────────────
-
-function fmt(n) {
-  if (n === null || n === undefined) return '—'
-  return '$' + Number(n).toFixed(0)
-}
-
-function pct(n) {
-  return (n * 100).toFixed(0) + '%'
-}
-
-const BUCKET_LABELS = {
-  poor:      'Poor (1–3)',
-  vg:        'VG (4–5)',
-  excellent: 'Excellent (6)',
-  nm:        'NM (7–8)',
-  mint:      'Mint (9–10)',
-}
-
-const DECISION_META = {
-  buy:   { emoji: '✅', css: 'buy' },
-  maybe: { emoji: '🤔', css: 'maybe' },
-  skip:  { emoji: '❌', css: 'skip' },
-}
-
-// ── CV Detectors renderer ──────────────────────────────────────────
-
-function renderCVDetectors(payload) {
-  const SEV_CSS   = { none: 'cv-sev--none', light: 'cv-sev--light', moderate: 'cv-sev--moderate', heavy: 'cv-sev--heavy' }
-  const SEV_LABEL = { none: 'Clean', light: 'Light', moderate: 'Moderate', heavy: 'Heavy' }
-
-  function setDet(sevId, detailId, result, detailFn) {
-    const sev = result?.severity ?? 'none'
-    const sevEl = document.getElementById(sevId)
-    sevEl.textContent = SEV_LABEL[sev] ?? sev
-    sevEl.className = `cv-sev-badge ${SEV_CSS[sev] ?? ''}`
-    document.getElementById(detailId).textContent = result ? detailFn(result) : '—'
-  }
-
-  setDet('cv-border-sev', 'cv-border-detail', payload.border_irregularity,
-    r => `${(r.total_grad_fraction * 100).toFixed(1)}% grad · ${r.component_count} clusters · largest ${r.max_component_area}px`)
-
-  setDet('cv-surface-sev', 'cv-surface-detail', payload.surface_lines,
-    r => `diag ${(r.diagonal_energy_fraction * 100).toFixed(0)}% · imbal ${r.energy_imbalance.toFixed(2)} · ${r.confidence} conf`)
-}
-
-// ── Analyzed images strip + lightbox ──────────────────────────────
-
-// Zone geometry: [x%, y%, w%, h%] in a 100×100 viewBox
-const ZONE_RECTS = {
-  'tl-corner':   [0,   0,   20,  22],
-  'tr-corner':   [80,  0,   20,  22],
-  'bl-corner':   [0,   78,  20,  22],
-  'br-corner':   [80,  78,  20,  22],
-  'top-edge':    [20,  0,   60,  14],
-  'bottom-edge': [20,  86,  60,  14],
-  'left-edge':   [0,   22,  14,  56],
-  'right-edge':  [86,  22,  14,  56],
-  'surface':     [14,  14,  72,  64],
-  'centering':   [4,   4,   92,  92],   // fallback — see CENTERING_STRIPS below
-}
-
-
-/** Returns the list of [x,y,w,h] rects to draw for a given zone name.
- *  Centering returns [] — the SVG overlay maps to photo edges, not card borders,
- *  so it's misleading. The banner text (e.g. "52/48 L/R") is the right display. */
-function _zoneRects(zone) {
-  if (zone === 'centering') return []
-  const r = ZONE_RECTS[zone]
-  return r ? [r] : []
-}
-
-const ZONE_LABELS = {
-  'tl-corner':   'Top-Left Corner',
-  'tr-corner':   'Top-Right Corner',
-  'bl-corner':   'Bottom-Left Corner',
-  'br-corner':   'Bottom-Right Corner',
-  'top-edge':    'Top Edge',
-  'bottom-edge': 'Bottom Edge',
-  'left-edge':   'Left Edge',
-  'right-edge':  'Right Edge',
-  'surface':     'Surface',
-  'centering':   'Centering',
-}
-
-// Claude zone colours (yellow → orange → red by severity)
-const SEV_FILL   = { light: 'rgba(234,179,8,0.35)',  moderate: 'rgba(249,115,22,0.45)', heavy: 'rgba(220,38,38,0.55)' }
-const SEV_STROKE = { light: 'rgba(234,179,8,0.90)',  moderate: 'rgba(249,115,22,1.00)', heavy: 'rgba(220,38,38,1.00)' }
-const SEV_HEX    = { light: '#eab308',               moderate: '#f97316',               heavy: '#ef4444'              }
-const SEV_LABEL  = { light: 'Light',                 moderate: 'Moderate',              heavy: 'Heavy'                }
-
-// CV surface-grid colours (teal — visually distinct from Claude zones)
-// Dashed stroke signals "measured, not annotated".
-const GRID_FILL   = { light: 'rgba(20,184,166,0.18)', moderate: 'rgba(20,184,166,0.30)', heavy: 'rgba(20,184,166,0.45)' }
-const GRID_STROKE = { light: 'rgba(20,184,166,0.60)', moderate: 'rgba(20,184,166,0.80)', heavy: 'rgba(20,184,166,1.00)' }
-const GRID_GLARE_FILL   = 'rgba(156,163,175,0.12)'
-const GRID_GLARE_STROKE = 'rgba(156,163,175,0.40)'
-
-/**
- * Build solid-teal SVG rects for whitened corners.
- * Solid stroke (vs dashed for grid cells) signals high location confidence —
- * we know exactly which corner patch was scanned.
- */
-function buildCornerBoxSVG(cornerBoxes) {
-  if (!cornerBoxes || cornerBoxes.length === 0) return null
-  const NS  = 'http://www.w3.org/2000/svg'
-  const svg = document.createElementNS(NS, 'svg')
-  svg.setAttribute('class',               'zone-overlay cv-corner-overlay')
-  svg.setAttribute('viewBox',             '0 0 100 100')
-  svg.setAttribute('preserveAspectRatio', 'none')
-
-  const CORNER_NAMES = { TL: 'Top-Left', TR: 'Top-Right', BL: 'Bottom-Left', BR: 'Bottom-Right' }
-
-  cornerBoxes.forEach(box => {
-    const el = document.createElementNS(NS, 'rect')
-    el.setAttribute('x',            String(box.x_pct))
-    el.setAttribute('y',            String(box.y_pct))
-    el.setAttribute('width',        String(box.w_pct))
-    el.setAttribute('height',       String(box.h_pct))
-    el.setAttribute('fill',         GRID_FILL[box.severity]   ?? GRID_FILL.light)
-    el.setAttribute('stroke',       GRID_STROKE[box.severity] ?? GRID_STROKE.light)
-    el.setAttribute('stroke-width', '2')
-    el.setAttribute('rx',           '2')
-    const title = document.createElementNS(NS, 'title')
-    title.textContent = `CV: ${CORNER_NAMES[box.corner] ?? box.corner} corner — ${box.severity} whitening`
-    el.appendChild(title)
-    svg.appendChild(el)
-  })
-
-  return svg
-}
-
-/**
- * Build solid-teal SVG rects for anomalous edge bands.
- * Corner areas are excluded so these don't overlap with corner boxes.
- */
-function buildEdgeBandSVG(edgeBands) {
-  if (!edgeBands || edgeBands.length === 0) return null
-  const NS  = 'http://www.w3.org/2000/svg'
-  const svg = document.createElementNS(NS, 'svg')
-  svg.setAttribute('class',               'zone-overlay cv-edge-overlay')
-  svg.setAttribute('viewBox',             '0 0 100 100')
-  svg.setAttribute('preserveAspectRatio', 'none')
-
-  edgeBands.forEach(band => {
-    const el = document.createElementNS(NS, 'rect')
-    el.setAttribute('x',            String(band.x_pct))
-    el.setAttribute('y',            String(band.y_pct))
-    el.setAttribute('width',        String(band.w_pct))
-    el.setAttribute('height',       String(band.h_pct))
-    el.setAttribute('fill',         GRID_FILL[band.severity]   ?? GRID_FILL.light)
-    el.setAttribute('stroke',       GRID_STROKE[band.severity] ?? GRID_STROKE.light)
-    el.setAttribute('stroke-width', '2')
-    el.setAttribute('rx',           '2')
-    const title = document.createElementNS(NS, 'title')
-    title.textContent = `CV: ${band.side} edge — ${band.severity} border irregularity`
-    el.appendChild(title)
-    svg.appendChild(el)
-  })
-
-  return svg
-}
-
-/**
- * Build a teal dashed-border SVG overlay from CV surface_grid cells.
- * Grid cells use x_pct/y_pct/w_pct/h_pct (already in 0–100 scale matching viewBox).
- * Glare-masked cells are shown in grey — they hide signal, not confirm cleanliness.
- * Returns null when there are no cells to draw.
- */
-function buildSurfaceGridSVG(gridCells) {
-  if (!gridCells || gridCells.length === 0) return null
-  const NS  = 'http://www.w3.org/2000/svg'
-  const svg = document.createElementNS(NS, 'svg')
-  svg.setAttribute('class',               'zone-overlay surface-grid-overlay')
-  svg.setAttribute('viewBox',             '0 0 100 100')
-  svg.setAttribute('preserveAspectRatio', 'none')
-
-  gridCells.forEach(cell => {
-    const el = document.createElementNS(NS, 'rect')
-    el.setAttribute('x',      String(cell.x_pct))
-    el.setAttribute('y',      String(cell.y_pct))
-    el.setAttribute('width',  String(cell.w_pct))
-    el.setAttribute('height', String(cell.h_pct))
-    el.setAttribute('rx',     '2')
-
-    if (cell.glare_masked) {
-      el.setAttribute('fill',             GRID_GLARE_FILL)
-      el.setAttribute('stroke',           GRID_GLARE_STROKE)
-      el.setAttribute('stroke-width',     '1')
-      el.setAttribute('stroke-dasharray', '2 2')
-    } else {
-      el.setAttribute('fill',             GRID_FILL[cell.severity]   ?? GRID_FILL.light)
-      el.setAttribute('stroke',           GRID_STROKE[cell.severity] ?? GRID_STROKE.light)
-      el.setAttribute('stroke-width',     '1.5')
-      el.setAttribute('stroke-dasharray', '3 2')
+    } catch (err) {
+      $("btn-reload-listing").textContent = `⚠️ ${err.message}`;
+    } finally {
+      setTimeout(() => {
+        if ($("btn-reload-listing")) {
+          $("btn-reload-listing").textContent = "🔄 Load current eBay listing";
+          $("btn-reload-listing").disabled = false;
+        }
+      }, 3000);
     }
+  });
 
-    const title = document.createElementNS(NS, 'title')
-    title.textContent = cell.glare_masked
-      ? `CV: row ${cell.row} col ${cell.col} — glare masked (signal hidden)`
-      : `CV: row ${cell.row} col ${cell.col} — ${cell.severity} surface anomaly (score ${cell.score})`
-    el.appendChild(title)
-    svg.appendChild(el)
-  })
+  $("btn-retry").addEventListener("click",   () => { show(currentListing ? "listing" : "idle"); });
+  $("btn-new").addEventListener("click",     () => {
+    chrome.storage.local.remove("lastResult");
+    show(currentListing ? "listing" : "idle");
+  });
+  $("btn-recheck").addEventListener("click", async () => {
+    const ok = await checkServer();
+    if (ok) show(currentListing ? "listing" : "idle");
+  });
+  $("upload-input").addEventListener("change", onUpload);
+  $("btn-feedback-good").addEventListener("click", () => sendFeedback(true));
+  $("btn-feedback-bad").addEventListener("click",  () => sendFeedback(false));
 
-  return svg
+  // Pillar drill-down — event delegation so it survives re-renders
+  document.addEventListener("click", (e) => {
+    const pillar = e.target.closest(".pillar-clickable");
+    if (pillar) openPillarDetail(pillar.dataset.pillar);
+  });
+
+  $("btn-back-summary").addEventListener("click", () => show("results"));
 }
 
-/**
- * Build zones from Claude's text issues when Claude didn't return explicit
- * zone data — Haiku may omit the field on clean cards or short responses.
- * Returns zones[] (may be empty on a clean side).
- */
-function inferZonesFromIssues(sideAnalysis) {
-  if (!sideAnalysis || sideAnalysis.assessable === false) return []
-  // Prefer Claude's explicit zones
-  if (Array.isArray(sideAnalysis.zones) && sideAnalysis.zones.length > 0) return sideAnalysis.zones
+// ── Run analysis ──────────────────────────────────────────────────────────
+async function runAnalysis() {
+  if (!currentListing) return;
 
-  const zones = []
-  const issues = sideAnalysis.issues ?? {}
+  show("loading");
+  startLoadingAnimation();
 
-  function sev(texts) {
-    const j = texts.join(' ').toLowerCase()
-    return j.includes('heavy') || j.includes('major') || j.includes('severe') || j.includes('significant')
-      ? 'heavy' : j.includes('moderate') ? 'moderate' : 'light'
+  const options = { category: "pokemon" };
+
+  // Order images so the chosen Front is graded first, Back second, rest after.
+  const urls  = currentListing.image_urls;
+  const front = urls[selFront] ?? urls[0];
+  const back  = (selBack != null) ? urls[selBack] : null;
+  const ordered = [
+    front,
+    ...(back ? [back] : []),
+    ...urls.filter((u) => u !== front && u !== back),
+  ];
+  const listingForGrade = {
+    ...currentListing,
+    image_urls: ordered,
+    front_url: front,
+    back_url: back,
+  };
+
+  try {
+    const { ok, result, error } = await sendBg({
+      type:    "ANALYZE_LISTING",
+      listing: listingForGrade,
+      options,
+    }, 150_000); // Claude Vision + CV detectors can take 30-90 s
+
+    stopLoadingAnimation();
+
+    if (!ok) throw new Error(error || "No response from background (check chrome://extensions Service Worker console)");
+
+    // Persist result
+    await chrome.storage.local.set({
+      lastResult: { listing: currentListing, result, timestamp: Date.now() },
+    });
+
+    renderPSAResult(result, currentListing);
+    show("results");
+  } catch (err) {
+    stopLoadingAnimation();
+    $("error-msg").textContent = err.message;
+    show("error");
   }
-
-  function push(zone, severity, note) {
-    if (!zones.find(z => z.zone === zone)) zones.push({ zone, severity, note: note.slice(0, 60) })
-  }
-
-  if (issues.centering?.length)
-    push('centering', sev(issues.centering), issues.centering[0])
-
-  ;(issues.corners ?? []).forEach(text => {
-    const t = text.toLowerCase()
-    const zone =
-      t.includes('top-left')  || t.includes(' tl') ? 'tl-corner' :
-      t.includes('top-right') || t.includes(' tr') ? 'tr-corner' :
-      t.includes('bottom-left')  || t.includes(' bl') ? 'bl-corner' :
-      t.includes('bottom-right') || t.includes(' br') ? 'br-corner' :
-      t.includes('top')    ? 'tr-corner' :   // default top → tr (most common PSA corner)
-      t.includes('bottom') ? 'bl-corner' : 'tl-corner'
-    push(zone, sev([text]), text)
-  })
-
-  ;(issues.edges ?? []).forEach(text => {
-    const t = text.toLowerCase()
-    const zone =
-      t.includes('top')    ? 'top-edge'    :
-      t.includes('bottom') ? 'bottom-edge' :
-      t.includes('left')   ? 'left-edge'   :
-      t.includes('right')  ? 'right-edge'  : 'top-edge'
-    push(zone, sev([text]), text)
-  })
-
-  if (issues.surface?.length)
-    push('surface', sev(issues.surface), issues.surface[0])
-
-  return zones
 }
 
-/**
- * Map an issue category + text to its card zone name.
- * Returns null for 'other' issues that can't be located spatially.
- */
-function getZoneForIssue(category, text) {
-  if (category === 'centering') return 'centering'
-  if (category === 'surface')   return 'surface'
-  if (category === 'other')     return null   // no reliable location
+// ── Upload mode ───────────────────────────────────────────────────────────
+async function onUpload(e) {
+  const file = e.target.files[0];
+  if (!file) return;
 
-  const t = text.toLowerCase()
+  const reader = new FileReader();
+  reader.onload = async (ev) => {
+    const dataUrl = ev.target.result;
+    const b64     = dataUrl.split(",")[1];
 
-  if (category === 'corners') {
-    if (t.includes('top-left')     || t.match(/\btl\b/)) return 'tl-corner'
-    if (t.includes('top-right')    || t.match(/\btr\b/)) return 'tr-corner'
-    if (t.includes('bottom-left')  || t.match(/\bbl\b/)) return 'bl-corner'
-    if (t.includes('bottom-right') || t.match(/\bbr\b/)) return 'br-corner'
-    // Ambiguous — pick the most common PSA problem corner
-    if (t.includes('top'))    return 'tr-corner'
-    if (t.includes('bottom')) return 'bl-corner'
-    return 'tl-corner'
-  }
+    show("loading");
+    $("loading-step").textContent = "YOLO detection + Claude grading…";
 
-  if (category === 'edges') {
-    if (t.includes('top'))    return 'top-edge'
-    if (t.includes('bottom')) return 'bottom-edge'
-    if (t.includes('left'))   return 'left-edge'
-    if (t.includes('right'))  return 'right-edge'
-    return 'top-edge'
-  }
-
-  return null
-}
-
-/** Build a reusable SVG element with coloured zone rects. */
-function buildZoneSVG(zones, extraClass) {
-  const NS  = 'http://www.w3.org/2000/svg'
-  const svg = document.createElementNS(NS, 'svg')
-  svg.setAttribute('class',               ['zone-overlay', extraClass].filter(Boolean).join(' '))
-  svg.setAttribute('viewBox',             '0 0 100 100')
-  svg.setAttribute('preserveAspectRatio', 'none')
-
-  zones.forEach(({ zone, severity, note }) => {
-    const rects = _zoneRects(zone)
-    if (!rects.length) return
-    rects.forEach(([x, y, w, h]) => {
-      const el = document.createElementNS(NS, 'rect')
-      el.setAttribute('x',            String(x))
-      el.setAttribute('y',            String(y))
-      el.setAttribute('width',        String(w))
-      el.setAttribute('height',       String(h))
-      el.setAttribute('fill',         SEV_FILL[severity]   ?? SEV_FILL.light)
-      el.setAttribute('stroke',       SEV_STROKE[severity] ?? SEV_STROKE.light)
-      el.setAttribute('stroke-width', '2.5')
-      el.setAttribute('rx',           '3')
-      const title = document.createElementNS(NS, 'title')
-      title.textContent = note
-      el.appendChild(title)
-      svg.appendChild(el)
-    })
-  })
-
-  return svg
-}
-
-/**
- * Build an SVG where `focusedZone` is highlighted at full intensity
- * and every other zone in `allZones` is drawn as a faint ghost outline —
- * giving spatial context without stealing attention from the active zone.
- */
-function buildZoneSVGFocused(allZones, focusedZone, focusedSeverity) {
-  const NS  = 'http://www.w3.org/2000/svg'
-  const svg = document.createElementNS(NS, 'svg')
-  svg.setAttribute('class',               'zone-overlay')
-  svg.setAttribute('viewBox',             '0 0 100 100')
-  svg.setAttribute('preserveAspectRatio', 'none')
-
-  // Ghost pass — all other zones from this side, very dim
-  allZones.forEach(({ zone }) => {
-    if (zone === focusedZone) return
-    _zoneRects(zone).forEach(([x, y, w, h]) => {
-      const el = document.createElementNS(NS, 'rect')
-      el.setAttribute('x',            String(x))
-      el.setAttribute('y',            String(y))
-      el.setAttribute('width',        String(w))
-      el.setAttribute('height',       String(h))
-      el.setAttribute('fill',         'rgba(255,255,255,0.04)')
-      el.setAttribute('stroke',       'rgba(255,255,255,0.18)')
-      el.setAttribute('stroke-width', '1')
-      el.setAttribute('rx',           '3')
-      svg.appendChild(el)
-    })
-  })
-
-  // Focused zone — bright fill + animated stroke (supports multi-rect zones like centering)
-  const sev = focusedSeverity ?? 'moderate'
-  _zoneRects(focusedZone).forEach(([x, y, w, h], i) => {
-    const el = document.createElementNS(NS, 'rect')
-    el.setAttribute('x',            String(x))
-    el.setAttribute('y',            String(y))
-    el.setAttribute('width',        String(w))
-    el.setAttribute('height',       String(h))
-    el.setAttribute('fill',         SEV_FILL[sev]   ?? SEV_FILL.moderate)
-    el.setAttribute('stroke',       SEV_STROKE[sev] ?? SEV_STROKE.moderate)
-    el.setAttribute('stroke-width', '3')
-    el.setAttribute('rx',           '3')
-    if (i === 0) el.setAttribute('class', 'zone-focused-rect')  // animate first strip
-    svg.appendChild(el)
-  })
-
-  return svg
-}
-
-// ── Lightbox ───────────────────────────────────────────────────────
-
-let _lightboxItems = []   // [{url, zones, label, centering?, ...}]
-let _lightboxIndex = 0
-// Mode: 'normal' (clean image + tappable zone list) | 'focused' (issue investigation)
-// | 'centering' (centering inspection — outer + inner frame overlay with T/B/L/R labels)
-let _lightboxMode = 'normal'
-let _lightboxFocusedZone = null   // populated in 'focused' mode
-let _lightboxFocusedNote = null
-let _lightboxFocusedSev  = null
-
-// Human-readable strings for the centering interpretation buckets returned by the backend
-const CENTERING_INTERPRETATION_TEXT = {
-  well_centered:  'Well-centered',
-  slightly_off:   'Slightly off-center',
-  noticeably_off: 'Noticeably off-center',
-  severely_off:   'Severely off-center',
-  unavailable:    'Centering measurement unavailable',
-}
-
-function openLightbox(index) {
-  _lightboxMode        = 'normal'
-  _lightboxFocusedZone = null
-  _lightboxFocusedNote = null
-  _lightboxFocusedSev  = null
-  _lightboxIndex = Math.max(0, Math.min(index, _lightboxItems.length - 1))
-  resetZoom()
-  renderLightboxFrame()
-  document.getElementById('thumb-lightbox').classList.remove('hidden')
-}
-
-/** Open lightbox focused on a specific issue zone — the "Show" button entry point. */
-function openLightboxFocused(thumbIndex, zone, issueText, severity) {
-  _lightboxMode        = 'focused'
-  _lightboxFocusedZone = zone
-  _lightboxFocusedNote = issueText
-  _lightboxFocusedSev  = severity ?? 'moderate'
-  _lightboxIndex = Math.max(0, Math.min(thumbIndex, _lightboxItems.length - 1))
-  resetZoom()
-  renderLightboxFrame()
-  document.getElementById('thumb-lightbox').classList.remove('hidden')
-}
-
-/**
- * Open lightbox in centering inspection mode — shows outer card + inner frame
- * overlay with T/B/L/R margin labels. Falls back gracefully when measurement
- * is null (no card bounds detected) or inner frame is null (borderless card).
- */
-function openLightboxCenteringMode(thumbIndex) {
-  _lightboxMode        = 'centering'
-  _lightboxFocusedZone = null
-  _lightboxFocusedNote = null
-  _lightboxFocusedSev  = null
-  _lightboxIndex = Math.max(0, Math.min(thumbIndex, _lightboxItems.length - 1))
-  resetZoom()
-  renderLightboxFrame()
-  document.getElementById('thumb-lightbox').classList.remove('hidden')
-}
-
-function closeLightbox() {
-  document.getElementById('thumb-lightbox').classList.add('hidden')
-  resetZoom()
-}
-
-/**
- * When a Claude zone is focused, show the matching CV evidence SVG underneath —
- * corner box for corner zones, edge band for edge zones, grid cells for surface.
- * Returns null when no matching CV data exists (e.g. clean card, CV found nothing).
- */
-function buildCVEvidenceSVG(item, focusedZone) {
-  if (!focusedZone) return null
-  const NS  = 'http://www.w3.org/2000/svg'
-  const svg = document.createElementNS(NS, 'svg')
-  svg.setAttribute('class',               'zone-overlay cv-evidence-overlay')
-  svg.setAttribute('viewBox',             '0 0 100 100')
-  svg.setAttribute('preserveAspectRatio', 'none')
-  let hasContent = false
-
-  const CORNER_KEY = { 'tl-corner': 'TL', 'tr-corner': 'TR', 'bl-corner': 'BL', 'br-corner': 'BR' }
-  const EDGE_KEY   = { 'top-edge': 'top', 'bottom-edge': 'bottom', 'left-edge': 'left', 'right-edge': 'right' }
-
-  const ck = CORNER_KEY[focusedZone]
-  const ek = EDGE_KEY[focusedZone]
-
-  if (ck) {
-    const box = (item.cornerBoxes ?? []).find(b => b.corner === ck)
-    if (box) {
-      const el = document.createElementNS(NS, 'rect')
-      el.setAttribute('x',            String(box.x_pct))
-      el.setAttribute('y',            String(box.y_pct))
-      el.setAttribute('width',        String(box.w_pct))
-      el.setAttribute('height',       String(box.h_pct))
-      el.setAttribute('fill',         'rgba(20,184,166,0.22)')
-      el.setAttribute('stroke',       'rgba(20,184,166,0.90)')
-      el.setAttribute('stroke-width', '2')
-      el.setAttribute('rx',           '2')
-      const t = document.createElementNS(NS, 'title')
-      t.textContent = `CV confirmed: ${box.severity} whitening`
-      el.appendChild(t)
-      svg.appendChild(el)
-      hasContent = true
+    try {
+      const { ok, result, error } = await sendBg({
+        type:        "GRADE_IMAGE",
+        imageData:   b64,
+      }, 150_000); // YOLO + Claude takes 20-60 s
+      if (!ok) throw new Error(error || "Grade failed");
+      renderPSAResult(result);
+      show("results");
+    } catch (err) {
+      $("error-msg").textContent = err.message;
+      show("error");
     }
-  } else if (ek) {
-    const band = (item.edgeBands ?? []).find(b => b.side === ek)
-    if (band) {
-      const el = document.createElementNS(NS, 'rect')
-      el.setAttribute('x',            String(band.x_pct))
-      el.setAttribute('y',            String(band.y_pct))
-      el.setAttribute('width',        String(band.w_pct))
-      el.setAttribute('height',       String(band.h_pct))
-      el.setAttribute('fill',         'rgba(20,184,166,0.18)')
-      el.setAttribute('stroke',       'rgba(20,184,166,0.80)')
-      el.setAttribute('stroke-width', '2')
-      el.setAttribute('rx',           '2')
-      const t = document.createElementNS(NS, 'title')
-      t.textContent = `CV confirmed: ${band.severity} border irregularity`
-      el.appendChild(t)
-      svg.appendChild(el)
-      hasContent = true
+  };
+  reader.readAsDataURL(file);
+}
+
+// ── Loading animation ─────────────────────────────────────────────────────
+const STEPS = ["step-1", "step-2", "step-3"];
+const STEP_LABELS = [
+  "Detecting & cropping card (YOLO)…",
+  "Perspective warp + palette centering…",
+  "Grading 4 pillars with Claude…",
+];
+
+function startLoadingAnimation() {
+  let i = 0;
+  STEPS.forEach((id) => $( id).className = "step");
+  $("step-1").classList.add("active");
+  $("loading-step").textContent = STEP_LABELS[0];
+
+  loadingTimer = setInterval(() => {
+    if (i < STEPS.length) {
+      $( STEPS[i]).classList.remove("active");
+      $( STEPS[i]).classList.add("done");
+      $( STEPS[i]).textContent = `✓ ${$( STEPS[i]).textContent.replace("✓ ", "")}`;
     }
-  } else if (focusedZone === 'surface') {
-    const hotCells = (item.gridCells ?? []).filter(c => !c.glare_masked)
-    hotCells.forEach(cell => {
-      const el = document.createElementNS(NS, 'rect')
-      el.setAttribute('x',            String(cell.x_pct))
-      el.setAttribute('y',            String(cell.y_pct))
-      el.setAttribute('width',        String(cell.w_pct))
-      el.setAttribute('height',       String(cell.h_pct))
-      el.setAttribute('fill',         GRID_FILL[cell.severity]   ?? GRID_FILL.light)
-      el.setAttribute('stroke',       GRID_STROKE[cell.severity] ?? GRID_STROKE.light)
-      el.setAttribute('stroke-width', '1.5')
-      el.setAttribute('stroke-dasharray', '3 2')
-      el.setAttribute('rx',           '2')
-      svg.appendChild(el)
-      hasContent = true
-    })
-  }
-
-  return hasContent ? svg : null
+    i++;
+    if (i < STEPS.length) {
+      $( STEPS[i]).classList.add("active");
+      $("loading-step").textContent = STEP_LABELS[i];
+    }
+  }, 5000);
 }
 
-function exitFocusedMode() {
-  _lightboxMode        = 'normal'
-  _lightboxFocusedZone = null
-  _lightboxFocusedNote = null
-  _lightboxFocusedSev  = null
-  renderLightboxFrame()
+function stopLoadingAnimation() {
+  if (loadingTimer) { clearInterval(loadingTimer); loadingTimer = null; }
 }
 
-/** Exit centering inspection mode back to the clean browse view. */
-function exitCenteringMode() {
-  _lightboxMode = 'normal'
-  renderLightboxFrame()
-}
+// ── Render results (from /api/grade/analyze) ──────────────────────────────
+function renderResults(r, listing) {
+  currentResult  = r;
+  currentListing = listing || currentListing;
+  // Decision banner
+  const dec     = r.decision ?? {};
+  const banner  = $("decision-banner");
+  const label   = dec.label ?? "skip";
+  banner.className = `decision-banner ${label}`;
+  $("decision-label").textContent  = label.toUpperCase();
+  $("decision-reason").textContent = dec.reason ?? "";
 
-/**
- * Render the centering inspection banner. Three states:
- *  1. No measurement at all (image missing / bounds undetected)
- *  2. Borderless / full-art card — outer detected, inner not
- *  3. Full measurement — ratios + interpretation
- *
- * claudeNote: the textual centering note from Claude (e.g.
- *   "Centering is well-balanced; very slight favour to left and top").
- *   Always displayed when present so the user gets Claude's qualitative
- *   read even when the CV measurement couldn't be computed.
- */
-function renderCenteringBanner(banner, measurement, claudeNote) {
-  banner.classList.remove('hidden')
-  banner.classList.add('lightbox-centering-banner')
-  banner.innerHTML = ''
+  // Card images (trust anchor — show what was analyzed)
+  const imgContainer = $("result-images");
+  imgContainer.innerHTML = "";
+  const urls = listing?.image_urls ?? [];
+  urls.slice(0, 4).forEach((url, i) => {
+    const wrap  = document.createElement("div"); wrap.className = "img-wrap";
+    const img   = document.createElement("img"); img.className = "result-img";
+    const lbl   = document.createElement("div"); lbl.className = "result-img-label";
+    img.src = url; img.alt = `Image ${i + 1}`;
+    img.onerror = () => wrap.remove();
+    lbl.textContent = i === 0 ? "Front" : i === 1 ? "Back" : `#${i + 1}`;
+    wrap.appendChild(img); wrap.appendChild(lbl); imgContainer.appendChild(wrap);
+  });
 
-  const headerRow = document.createElement('div')
-  headerRow.className = 'centering-banner-header'
+  // Grade estimate
+  const ge = r.grade_estimate ?? {};
+  $("grade-band").textContent     = ge.grade_range ?? "—";
+  const conf = ge.confidence ?? "low";
+  const confEl = $("grade-conf");
+  confEl.textContent = conf.charAt(0).toUpperCase() + conf.slice(1);
+  confEl.className   = `grade-conf ${conf}`;
 
-  const badge = document.createElement('span')
-  badge.className = 'lz-badge lz-badge--moderate centering-badge'
-  badge.textContent = 'Centering'
-  headerRow.appendChild(badge)
+  // Card identity
+  const ci = r.card_identity ?? {};
+  const nameParts = [ci.name, ci.set, ci.number].filter(Boolean);
+  $("card-name").textContent = nameParts.join(" · ") || "";
 
-  // Build the headline based on what we have
-  let headline = ''
-  let interpretation = ''
-  let helper = ''
+  // Grade distribution bar chart
+  renderGradeDist(ge.distribution ?? {});
 
-  if (!measurement) {
-    headline       = 'Card fills frame'
-    interpretation = 'CV measurement unavailable for tightly-cropped photos'
-    helper         = 'Visual overlay disabled — see Claude\'s read below.'
-  } else if (!measurement.inner_frame_bbox_pct || !measurement.margins_pct) {
-    headline       = 'Outer card detected'
-    interpretation = CENTERING_INTERPRETATION_TEXT[measurement.interpretation] ?? 'Centering measurement unavailable'
-    helper         = measurement.fallback_reason === 'borderless_card'
-      ? 'Inner frame not detected — common for full-art / borderless cards.'
-      : 'Inner frame could not be measured reliably for this image.'
+  // Limiting factor
+  const lf = ge.limiting_factor;
+  const lfEl = $("grade-limiting");
+  if (lf) {
+    const lfText = {
+      front_only:     "⚠ Front-only — back not assessed",
+      image_quality:  "⚠ Limited by image quality",
+      visible_damage: "⚠ Visible damage noted",
+    };
+    lfEl.textContent = lfText[lf] ?? `⚠ ${lf}`;
+    lfEl.classList.remove("hidden");
   } else {
-    const r = measurement.ratios
-    headline       = `${r.top_bottom} T/B  ·  ${r.left_right} L/R`
-    interpretation = CENTERING_INTERPRETATION_TEXT[measurement.interpretation] ?? ''
-    helper         = 'Measured from outer card edge to inner print frame.'
+    lfEl.classList.add("hidden");
   }
 
-  const headlineEl = document.createElement('span')
-  headlineEl.className = 'centering-headline'
-  headlineEl.textContent = headline
-  headerRow.appendChild(headlineEl)
+  // 4 Pillars
+  const issues = r.issues ?? {};
+  renderPillarIssues("centering", issues.centering);
+  renderPillarIssues("corners",   issues.corners);
+  renderPillarIssues("edges",     issues.edges);
+  renderPillarIssues("surface",   issues.surface);
 
-  const back = document.createElement('button')
-  back.className = 'lz-back-btn'
-  back.textContent = '← All issues'
-  back.addEventListener('click', exitCenteringMode)
-  headerRow.appendChild(back)
+  // Economics
+  renderEconomics(r.economics ?? {}, listing);
 
-  banner.appendChild(headerRow)
-
-  if (interpretation) {
-    const interp = document.createElement('p')
-    interp.className = 'centering-interpretation'
-    interp.textContent = interpretation
-    banner.appendChild(interp)
+  // AI Reasoning
+  const fa = r.front_analysis ?? {};
+  const ba = r.back_analysis  ?? {};
+  $("reasoning-front").textContent = fa.observations ?? fa.notes ?? "";
+  $("reasoning-back").textContent  = ba.observations ?? ba.notes ?? "";
+  if (!$("reasoning-front").textContent && !$("reasoning-back").textContent) {
+    document.querySelector(".reasoning-details").style.display = "none";
   }
 
-  // Claude's textual centering note — always shown when present, so the user
-  // gets the qualitative read whether or not the CV measurement succeeded.
-  if (claudeNote) {
-    const claudeBlock = document.createElement('div')
-    claudeBlock.className = 'centering-claude-note'
-    const labelEl = document.createElement('span')
-    labelEl.className = 'centering-claude-label'
-    labelEl.textContent = 'Claude\'s read: '
-    const textEl = document.createElement('span')
-    textEl.textContent = claudeNote
-    claudeBlock.appendChild(labelEl)
-    claudeBlock.appendChild(textEl)
-    banner.appendChild(claudeBlock)
-  }
-
-  if (helper) {
-    const help = document.createElement('p')
-    help.className = 'centering-helper'
-    help.textContent = helper
-    banner.appendChild(help)
+  // Caveats
+  const caveats = r.grading_decision?.caveats ?? [];
+  const caveatEl = $("caveats-list");
+  if (caveats.length) {
+    caveatEl.innerHTML = caveats.map((c) =>
+      `<div class="caveat">${c}</div>`
+    ).join("");
+    caveatEl.classList.remove("hidden");
+  } else {
+    caveatEl.classList.add("hidden");
   }
 }
 
-/**
- * Build the centering inspection SVG: thin-stroke outer card boundary
- * (blue), thin-stroke inner printed frame (yellow), and four T/B/L/R
- * margin labels positioned just outside the inner frame.
- *
- * The SVG is rendered inside #lightbox-svg-slot which is positioned by
- * _positionSvgSlot() to cover only the card region of the photo. As a
- * result, the SVG viewBox (0–100) maps to the card region — so the
- * outer card boundary is at (0,0,100,100) and inner_frame_bbox_pct
- * (already in card-fraction space) is scaled up by 100.
- *
- * Returns null when card bounds are unavailable — caller is responsible
- * for displaying the appropriate fallback message in the banner.
- */
-function buildCenteringSVG(measurement) {
-  if (!measurement) return null
-  const NS  = 'http://www.w3.org/2000/svg'
-  const svg = document.createElementNS(NS, 'svg')
-  svg.setAttribute('class',               'centering-overlay')
-  svg.setAttribute('viewBox',             '0 0 100 100')
-  svg.setAttribute('preserveAspectRatio', 'none')
+function renderGradeDist(dist) {
+  const container = $("grade-dist");
+  container.innerHTML = "";
+  if (!Object.keys(dist).length) return;
 
-  // ── Outer card boundary (blue, thin stroke, inset 0.4 so the stroke
-  // sits inside the viewBox rather than half-clipped at the edges) ──
-  const OUTER_INSET = 0.4
-  const outer = document.createElementNS(NS, 'rect')
-  outer.setAttribute('x',            String(OUTER_INSET))
-  outer.setAttribute('y',            String(OUTER_INSET))
-  outer.setAttribute('width',        String(100 - 2 * OUTER_INSET))
-  outer.setAttribute('height',       String(100 - 2 * OUTER_INSET))
-  outer.setAttribute('fill',         'none')
-  outer.setAttribute('stroke',       '#5fa8ff')
-  outer.setAttribute('stroke-width', '0.5')
-  outer.setAttribute('class',        'centering-outer-rect')
-  const outerTitle = document.createElementNS(NS, 'title')
-  outerTitle.textContent = 'Outer card edge'
-  outer.appendChild(outerTitle)
-  svg.appendChild(outer)
+  const grades = ["1","2","3","4","5","6","7","8","9","10"];
+  const maxP   = Math.max(...Object.values(dist));
 
-  // ── Inner frame (yellow, thin stroke) — only when detected ──
-  const inner = measurement.inner_frame_bbox_pct
-  if (inner) {
-    const ix = inner.x * 100
-    const iy = inner.y * 100
-    const iw = inner.w * 100
-    const ih = inner.h * 100
+  for (const g of grades) {
+    const p = dist[g] ?? 0;
+    const wrap  = document.createElement("div"); wrap.className = "grade-dist-bar-wrap";
+    const bar   = document.createElement("div");
+    bar.className = `grade-dist-bar${p === maxP && p > 0 ? " peak" : ""}`;
+    bar.style.height = `${Math.max(2, Math.round((p / Math.max(maxP, 0.01)) * 32))}px`;
+    const lbl = document.createElement("div"); lbl.className = "grade-dist-label";
+    lbl.textContent = g;
+    wrap.appendChild(bar); wrap.appendChild(lbl); container.appendChild(wrap);
+  }
+}
 
-    const innerRect = document.createElementNS(NS, 'rect')
-    innerRect.setAttribute('x',            String(ix))
-    innerRect.setAttribute('y',            String(iy))
-    innerRect.setAttribute('width',        String(iw))
-    innerRect.setAttribute('height',       String(ih))
-    innerRect.setAttribute('fill',         'none')
-    innerRect.setAttribute('stroke',       '#ffd84a')
-    innerRect.setAttribute('stroke-width', '0.5')
-    innerRect.setAttribute('class',        'centering-inner-rect')
-    const innerTitle = document.createElementNS(NS, 'title')
-    innerTitle.textContent = 'Inner printed frame'
-    innerRect.appendChild(innerTitle)
-    svg.appendChild(innerRect)
+function renderPillarIssues(name, items) {
+  const el = $(`issues-${name}`);
+  if (!items || items.length === 0) {
+    el.innerHTML = `<span class="issue-clean">✓ Clean</span>`;
+    return;
+  }
+  const combined = items.join(" ").toLowerCase();
+  let label, cls;
+  if (combined.includes("heavy") || combined.includes("bent") || combined.includes("severe")) {
+    label = "⚠ Heavy"; cls = "issue-bad";
+  } else if (combined.includes("moderate") || combined.includes("chip")) {
+    label = "⚠ Moderate"; cls = "issue-warn";
+  } else {
+    label = "⚠ Minor"; cls = "issue-warn";
+  }
+  const n = items.length;
+  el.innerHTML = `<span class="${cls}">${label}</span><span class="pillar-count">${n} finding${n !== 1 ? "s" : ""}</span>`;
+}
 
-    // ── T/B/L/R margin labels — only when margins were computed ──
-    const m = measurement.margins_pct
-    if (m) {
-      // Label positions: each label sits inside the gap between the inner
-      // frame edge and the outer card edge, centered on the relevant axis.
-      // We render labels with a dark stroke for legibility on any background.
-      const labelDefs = [
-        // T: above inner top, centered horizontally on inner rect
-        { text: `T: ${m.top}`,    x: ix + iw / 2, y: iy / 2,              anchor: 'middle', baseline: 'middle' },
-        // B: below inner bottom
-        { text: `B: ${m.bottom}`, x: ix + iw / 2, y: iy + ih + (100 - iy - ih) / 2, anchor: 'middle', baseline: 'middle' },
-        // L: left of inner left, centered vertically on inner rect
-        { text: `L: ${m.left}`,   x: ix / 2,                              y: iy + ih / 2, anchor: 'middle', baseline: 'middle' },
-        // R: right of inner right
-        { text: `R: ${m.right}`,  x: ix + iw + (100 - ix - iw) / 2,       y: iy + ih / 2, anchor: 'middle', baseline: 'middle' },
-      ]
+function renderEconomics(econ, listing) {
+  const rows = $("economics-rows");
+  rows.innerHTML = "";
 
-      labelDefs.forEach(({ text, x, y, anchor, baseline }) => {
-        const t = document.createElementNS(NS, 'text')
-        t.setAttribute('x',                 String(x))
-        t.setAttribute('y',                 String(y))
-        t.setAttribute('text-anchor',       anchor)
-        t.setAttribute('dominant-baseline', baseline)
-        t.setAttribute('class',             'centering-margin-label')
-        t.textContent = text
-        svg.appendChild(t)
-      })
+  const price    = listing?.price ?? econ.listing_price ?? 0;
+  const shipping = listing?.shipping ?? 0;
+  const fee      = econ.grading_fee ?? 25;
+
+  const items = [
+    { label: "Listing + shipping", value: price + shipping, format: "$" },
+    { label: "PSA grading fee",    value: fee,              format: "$" },
+    null, // divider
+    { label: "Raw value",  value: econ.raw_estimate,  format: "$", fallback: "—" },
+    { label: "PSA 8 est.", value: econ.psa8_estimate,  format: "$", fallback: "—" },
+    { label: "PSA 9 est.", value: econ.psa9_estimate,  format: "$", fallback: "—" },
+    { label: "PSA 10 est.",value: econ.psa10_estimate, format: "$", fallback: "—" },
+    null,
+    { label: "Expected value", value: econ.expected_value, format: "$", highlight: true },
+    { label: "Max buy (PSA 9 target)",
+      value: econ.max_buy_price_for_psa9_target, format: "$", fallback: "—" },
+  ];
+
+  for (const item of items) {
+    if (item === null) {
+      const div = document.createElement("div"); div.className = "econ-divider";
+      rows.appendChild(div);
+      continue;
     }
-  }
-
-  return svg
-}
-
-/**
- * Compute the actual rendered rect of an <img> with object-fit:contain
- * within a container of known dimensions. Returns {x, y, w, h} in px.
- */
-function _containedImageRect(imgEl, containerW, containerH) {
-  const iw = imgEl.naturalWidth
-  const ih = imgEl.naturalHeight
-  if (!iw || !ih) return { x: 0, y: 0, w: containerW, h: containerH }
-  const containerAspect = containerW / containerH
-  const imageAspect = iw / ih
-  if (imageAspect > containerAspect) {
-    // Image wider relative to container: fit to width, letterbox top/bottom
-    const h = containerW / imageAspect
-    return { x: 0, y: (containerH - h) / 2, w: containerW, h }
-  } else {
-    // Image taller relative to container: fit to height, pillarbox left/right
-    const w = containerH * imageAspect
-    return { x: (containerW - w) / 2, y: 0, w, h: containerH }
-  }
-}
-
-/**
- * Position #lightbox-svg-slot to cover only the card region within the
- * displayed image, using the normalized card bounds returned by the backend.
- * Falls back to full-area when bounds are null (card fills frame, or detection failed).
- */
-function _positionSvgSlot(svgSlot, imgEl, bounds) {
-  if (!bounds) {
-    svgSlot.style.cssText = ''   // revert to CSS inset:0
-    return
-  }
-  const inner = _zInner()
-  if (!inner) { svgSlot.style.cssText = ''; return }
-
-  const apply = () => {
-    const W = inner.clientWidth
-    const H = inner.clientHeight
-    if (!W || !H) return
-    const r = _containedImageRect(imgEl, W, H)
-    const cardX = r.x + bounds.x * r.w
-    const cardY = r.y + bounds.y * r.h
-    const cardW = bounds.w * r.w
-    const cardH = bounds.h * r.h
-    svgSlot.style.position = 'absolute'
-    svgSlot.style.left   = `${cardX}px`
-    svgSlot.style.top    = `${cardY}px`
-    svgSlot.style.width  = `${cardW}px`
-    svgSlot.style.height = `${cardH}px`
-    svgSlot.style.right  = 'auto'
-    svgSlot.style.bottom = 'auto'
-  }
-
-  if (imgEl.complete && imgEl.naturalWidth > 0) {
-    apply()
-  } else {
-    imgEl.addEventListener('load', apply, { once: true })
-  }
-}
-
-function renderLightboxFrame() {
-  const item = _lightboxItems[_lightboxIndex]
-  if (!item) return
-
-  const isFocused   = _lightboxMode === 'focused'
-  const isCentering = _lightboxMode === 'centering'
-
-  // ── Image ────────────────────────────────────────────────────────
-  const imgEl = document.getElementById('lightbox-img')
-  imgEl.src = item.url
-  imgEl.alt = item.label
-  // The img element has pointer-events:none (zoom wrap owns all pointer events),
-  // so we wire the focused-mode exit click onto lightbox-zoom-inner instead.
-  // Guard against drag: _zDragged is true if the pointer moved > 3px (pan gesture).
-  const zInner = document.getElementById('lightbox-zoom-inner')
-  if (isFocused || isCentering) {
-    zInner.style.cursor = _zs <= 1.005 ? 'pointer' : ''
-    zInner.onclick = (e) => {
-      if (_zDragged) { _zDragged = false; return }
-      if (isCentering) exitCenteringMode()
-      else             exitFocusedMode()
-    }
-  } else {
-    zInner.style.cursor = ''
-    zInner.onclick = null
-  }
-
-  // ── Label ────────────────────────────────────────────────────────
-  const sideLabel = _lightboxItems.length > 1
-    ? `${item.label}  ·  ${_lightboxIndex + 1} / ${_lightboxItems.length}`
-    : item.label
-  document.getElementById('lightbox-label').textContent = sideLabel
-
-  // ── SVG overlays — mode-driven ──────────────────────────────────
-  // Normal:    clean image (no overlay noise)
-  // Focused:   CV evidence + Claude zone highlight
-  // Centering: outer card boundary + inner frame + T/B/L/R labels
-  const svgSlot = document.getElementById('lightbox-svg-slot')
-  svgSlot.innerHTML = ''
-  if (isFocused) {
-    const cvSvg = buildCVEvidenceSVG(item, _lightboxFocusedZone)
-    if (cvSvg) svgSlot.appendChild(cvSvg)
-    svgSlot.appendChild(buildZoneSVGFocused(item.zones, _lightboxFocusedZone, _lightboxFocusedSev))
-  } else if (isCentering) {
-    const centeringSvg = buildCenteringSVG(item.centering ?? null)
-    if (centeringSvg) svgSlot.appendChild(centeringSvg)
-  }
-
-  // Position the SVG slot over the actual card region (not the full eBay photo)
-  _positionSvgSlot(svgSlot, imgEl, item.cardBounds ?? null)
-
-  // ── Banner ───────────────────────────────────────────────────────
-  const banner = document.getElementById('lightbox-focused-banner')
-  if (isCentering) {
-    // Surface Claude's textual centering note (from item.zones) so the user
-    // sees it even when the visual measurement is unavailable (borderless
-    // card, bounds undetected, etc.) — never strand the user with only an
-    // "unavailable" message when Claude actually said something useful.
-    const claudeNote = item.zones.find(z => z.zone === 'centering')?.note ?? null
-    renderCenteringBanner(banner, item.centering ?? null, claudeNote)
-  } else if (isFocused) {
-    const sevClass = `lz-badge--${_lightboxFocusedSev ?? 'moderate'}`
-    banner.innerHTML =
-      `<span class="lz-badge ${sevClass}">${ZONE_LABELS[_lightboxFocusedZone] ?? _lightboxFocusedZone}</span>` +
-      `<span class="lightbox-focused-note">${_lightboxFocusedNote ?? ''}</span>` +
-      `<button class="lz-back-btn">← All issues</button>`
-    banner.classList.remove('hidden')
-    banner.querySelector('.lz-back-btn').addEventListener('click', exitFocusedMode)
-  } else if (item.zones.length > 0) {
-    banner.innerHTML = `<span class="lz-hint">Tap an issue below to locate it on the card</span>`
-    banner.classList.remove('hidden')
-  } else {
-    banner.classList.add('hidden')
-  }
-
-  // ── Zone list — hidden in centering mode (banner is the whole UI) ──
-  const list = document.getElementById('lightbox-zones-list')
-  if (isCentering) {
-    list.classList.add('hidden')
-    list.innerHTML = ''
-  } else {
-    list.classList.remove('hidden')
-    list.innerHTML = ''
-
-    if (item.zones.length === 0) {
-      const li = document.createElement('li')
-      li.className = 'lz-clean'
-      li.textContent = '✓ No defects detected on this side'
-      list.appendChild(li)
-    } else {
-      item.zones.forEach(({ zone, severity, note }) => {
-        const isActive = isFocused && zone === _lightboxFocusedZone
-        const li = document.createElement('li')
-        li.className = `lz-item lz-item--tappable${isActive ? ' lz-item--active' : ''}`
-
-        const badge = document.createElement('span')
-        badge.className = `lz-badge lz-badge--${severity}`
-        badge.textContent = ZONE_LABELS[zone] ?? zone
-
-        const txt = document.createElement('span')
-        txt.className = 'lz-note'
-        txt.textContent = note
-
-        const arrow = document.createElement('span')
-        arrow.className = 'lz-locate-arrow'
-        arrow.textContent = isActive ? '✕' : '→'
-
-        li.appendChild(badge)
-        li.appendChild(txt)
-        li.appendChild(arrow)
-
-        li.addEventListener('click', () => {
-          if (isActive) {
-            exitFocusedMode()
-          } else if (zone === 'centering') {
-            // Centering has its own dedicated inspection mode — don't try to
-            // render it as a generic zone overlay (which would draw nothing,
-            // since _zoneRects('centering') returns []).
-            openLightboxCenteringMode(_lightboxIndex)
-          } else {
-            _lightboxMode        = 'focused'
-            _lightboxFocusedZone = zone
-            _lightboxFocusedNote = note
-            _lightboxFocusedSev  = severity
-            renderLightboxFrame()
-          }
-        })
-
-        list.appendChild(li)
-      })
-    }
-  }
-
-  // ── Prev / next navigation ───────────────────────────────────────
-  const nav = document.getElementById('lightbox-nav')
-  nav.classList.toggle('hidden', _lightboxItems.length <= 1)
-  document.getElementById('lightbox-prev').disabled = _lightboxIndex === 0
-  document.getElementById('lightbox-next').disabled = _lightboxIndex === _lightboxItems.length - 1
-}
-
-// ── Lightbox zoom engine ───────────────────────────────────────────
-//
-// State: scale + translate(tx, ty) with transform-origin 0 0.
-// Transform applied as: translate(tx, ty) scale(scale)
-// A point (px, py) in wrap-space maps to inner-space as: ((px-tx)/s, (py-ty)/s)
-// Zooming toward cursor: newTx = px - (newS/s) * (px - tx)
-
-let _zs = 1      // current zoom scale
-let _ztx = 0     // current translate X (px, wrap coords)
-let _zty = 0     // current translate Y (px, wrap coords)
-
-// Pan drag state
-let _zPanActive = false
-let _zPanX0 = 0, _zPanY0 = 0   // pointer start
-let _zTx0   = 0, _zTy0   = 0   // translate at drag start
-let _zDragged = false           // true once pointer moves > threshold
-
-// Pinch state
-let _zPinchDist0  = 0
-let _zPinchScale0 = 1
-let _zPinchTx0    = 0, _zPinchTy0 = 0
-let _zPinchMx     = 0, _zPinchMy  = 0  // midpoint in wrap coords
-
-function _zWrap() { return document.getElementById('lightbox-img-wrap') }
-function _zInner() { return document.getElementById('lightbox-zoom-inner') }
-
-function resetZoom() {
-  _zs = 1; _ztx = 0; _zty = 0
-  _zPanActive = false
-  _zDragged   = false
-  _applyZoom()
-}
-
-function _clampPan(w, h) {
-  // Element is (s*w) × (s*h); keep it from drifting outside the wrap
-  _ztx = Math.min(0, Math.max((1 - _zs) * w, _ztx))
-  _zty = Math.min(0, Math.max((1 - _zs) * h, _zty))
-}
-
-function _applyZoom() {
-  const inner = _zInner()
-  const wrap  = _zWrap()
-  if (!inner || !wrap) return
-
-  const zoomed = _zs > 1.005
-  inner.style.transform = `translate(${_ztx}px,${_zty}px) scale(${_zs})`
-  wrap.style.cursor = zoomed ? (_zPanActive ? 'grabbing' : 'grab') : 'zoom-in'
-
-  const badge = document.getElementById('lightbox-zoom-badge')
-  const hint  = document.getElementById('lightbox-zoom-hint')
-  if (badge) {
-    badge.textContent = `${Math.round(_zs * 100)}%`
-    badge.classList.toggle('hidden', !zoomed)
-  }
-  if (hint) hint.classList.toggle('hidden', !zoomed)
-}
-
-// ── Wheel zoom ─────────────────────────────────────────────────────
-function _onWheel(e) {
-  e.preventDefault()
-  const wrap = _zWrap()
-  if (!wrap) return
-  const rect = wrap.getBoundingClientRect()
-
-  const factor = e.deltaY < 0 ? 1.12 : (1 / 1.12)
-  const newS   = Math.min(8, Math.max(1, _zs * factor))
-  if (newS === _zs) return
-
-  const px = e.clientX - rect.left
-  const py = e.clientY - rect.top
-  const r  = newS / _zs
-  _ztx = px - r * (px - _ztx)
-  _zty = py - r * (py - _zty)
-  _zs  = newS
-
-  if (_zs <= 1.005) { _zs = 1; _ztx = 0; _zty = 0 }
-  else _clampPan(rect.width, rect.height)
-  _applyZoom()
-}
-
-// ── Double-click: zoom 2× toward click, or reset if already zoomed ──
-function _onDblClick(e) {
-  e.preventDefault()
-  const wrap = _zWrap()
-  if (!wrap) return
-  if (_zs > 1.005) {
-    resetZoom()
-    return
-  }
-  const rect = wrap.getBoundingClientRect()
-  const px   = e.clientX - rect.left
-  const py   = e.clientY - rect.top
-  const newS = 2.5
-  const r    = newS / _zs
-  _ztx = px - r * (px - _ztx)
-  _zty = py - r * (py - _zty)
-  _zs  = newS
-  _clampPan(rect.width, rect.height)
-  _applyZoom()
-}
-
-// ── Pointer drag (pan when zoomed) ─────────────────────────────────
-function _onPointerDown(e) {
-  if (e.button !== 0 || _zs <= 1.005) return
-  e.preventDefault()
-  _zPanActive = true
-  _zDragged   = false
-  _zPanX0     = e.clientX
-  _zPanY0     = e.clientY
-  _zTx0       = _ztx
-  _zTy0       = _zty
-  _applyZoom()
-  window.addEventListener('pointermove', _onPointerMove, { passive: false })
-  window.addEventListener('pointerup',   _onPointerUp)
-}
-
-function _onPointerMove(e) {
-  if (!_zPanActive) return
-  const dx = e.clientX - _zPanX0
-  const dy = e.clientY - _zPanY0
-  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) _zDragged = true
-  const wrap = _zWrap()
-  if (!wrap) return
-  const rect = wrap.getBoundingClientRect()
-  _ztx = _zTx0 + dx
-  _zty = _zTy0 + dy
-  _clampPan(rect.width, rect.height)
-  _applyZoom()
-}
-
-function _onPointerUp() {
-  _zPanActive = false
-  window.removeEventListener('pointermove', _onPointerMove)
-  window.removeEventListener('pointerup',   _onPointerUp)
-  _applyZoom()
-}
-
-// ── Touch pinch-to-zoom ────────────────────────────────────────────
-function _touchDist(t) { return Math.hypot(t[1].clientX - t[0].clientX, t[1].clientY - t[0].clientY) }
-
-function _onTouchStart(e) {
-  if (e.touches.length !== 2) return
-  e.preventDefault()
-  const wrap = _zWrap()
-  if (!wrap) return
-  const rect = wrap.getBoundingClientRect()
-  _zPinchDist0  = _touchDist(e.touches)
-  _zPinchScale0 = _zs
-  _zPinchTx0    = _ztx
-  _zPinchTy0    = _zty
-  _zPinchMx     = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left
-  _zPinchMy     = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top
-}
-
-function _onTouchMove(e) {
-  if (e.touches.length !== 2) return
-  e.preventDefault()
-  const wrap = _zWrap()
-  if (!wrap) return
-  const rect  = wrap.getBoundingClientRect()
-  const dist  = _touchDist(e.touches)
-  const newS  = Math.min(8, Math.max(1, _zPinchScale0 * (dist / _zPinchDist0)))
-  const r     = newS / _zPinchScale0
-  _ztx = _zPinchMx - r * (_zPinchMx - _zPinchTx0)
-  _zty = _zPinchMy - r * (_zPinchMy - _zPinchTy0)
-  _zs  = newS
-  if (_zs <= 1.005) { _zs = 1; _ztx = 0; _zty = 0 }
-  else _clampPan(rect.width, rect.height)
-  _applyZoom()
-}
-
-// ── Wire zoom events to the wrap ───────────────────────────────────
-;(function attachZoomListeners() {
-  const wrap = _zWrap()
-  if (!wrap) return
-  wrap.addEventListener('wheel',       _onWheel,      { passive: false })
-  wrap.addEventListener('dblclick',    _onDblClick)
-  wrap.addEventListener('pointerdown', _onPointerDown)
-  wrap.addEventListener('touchstart',  _onTouchStart, { passive: false })
-  wrap.addEventListener('touchmove',   _onTouchMove,  { passive: false })
-})()
-
-// ── Reset zoom when lightbox opens / navigates ─────────────────────
-// (called from openLightbox, openLightboxFocused, and nav buttons)
-
-document.getElementById('lightbox-close').addEventListener('click', closeLightbox)
-document.getElementById('lightbox-backdrop').addEventListener('click', closeLightbox)
-document.getElementById('lightbox-prev').addEventListener('click', () => {
-  if (_lightboxIndex > 0) { _lightboxIndex--; resetZoom(); renderLightboxFrame() }
-})
-document.getElementById('lightbox-next').addEventListener('click', () => {
-  if (_lightboxIndex < _lightboxItems.length - 1) { _lightboxIndex++; resetZoom(); renderLightboxFrame() }
-})
-
-// ── Strip renderer ─────────────────────────────────────────────────
-
-/**
- * Render the analyzed-images strip.
- *
- * allZones:      ZoneAnnotation[][] — one zone array per image (from Claude)
- * cvSurfaceGrid: SurfaceGridCell[]  — hot cells from Detector C (front image only)
- * cvCornerBoxes: CornerBox[]        — whitened corners (front image only)
- * cvEdgeBands:   EdgeBand[]         — anomalous edge bands (front image only)
- *
- * Layer order (bottom → top):
- *   1. CV surface grid  — teal dashed (uncertain surface regions)
- *   2. CV corner boxes  — teal solid  (precise whitened corners)
- *   3. CV edge bands    — teal solid  (precise anomalous edges)
- *   4. Claude zones     — yellow/orange/red solid (textual annotations)
- */
-function renderAnalyzedImages(urls, allZones, cvSurfaceGrid, cvCornerBoxes, cvEdgeBands, cardBoundsPct, centeringData) {
-  const strip   = document.getElementById('analyzed-images-strip')
-  const section = strip.closest('.analyzed-images-section')
-
-  section.querySelector('.zone-legend')?.remove()
-  strip.innerHTML = ''
-  _lightboxItems  = []
-
-  if (!urls || urls.length === 0) { section.classList.add('hidden'); return }
-  section.classList.remove('hidden')
-
-  const LABELS = ['Front', 'Back']
-
-  urls.forEach((url, i) => {
-    const label     = LABELS[i] ?? `Image ${i + 1}`
-    const zones     = allZones?.[i] ?? []
-    // CV overlays only apply to the front image — CV runs on the first buffer
-    const gridCells   = i === 0 ? (cvSurfaceGrid  ?? []) : []
-    const cornerBoxes = i === 0 ? (cvCornerBoxes  ?? []) : []
-    const edgeBands   = i === 0 ? (cvEdgeBands    ?? []) : []
-    const cardBounds = cardBoundsPct?.[i] ?? null
-    const centering  = centeringData?.[i] ?? null
-    _lightboxItems.push({ url, zones, label, gridCells, cornerBoxes, edgeBands, cardBounds, centering })
-
-    const item = document.createElement('div')
-    item.className = 'analyzed-thumb'
-    item.dataset.index = String(i)
-
-    const wrap = document.createElement('div')
-    wrap.className = 'analyzed-thumb-wrap'
-
-    const img = document.createElement('img')
-    img.alt     = label
-    img.loading = 'lazy'
-    img.src     = url.replace(/s-l\d+/g, 's-l300')
-    img.onerror = () => {
-      img.remove()
-      const err = document.createElement('div')
-      err.className = 'analyzed-thumb-err'
-      err.textContent = '🖼'
-      wrap.appendChild(err)
-    }
-    wrap.appendChild(img)
-
-    // Thumbnails are kept clean — no overlay noise.
-    // A small severity dot signals "issues found; tap to explore in lightbox."
-    const worstSev =
-      zones.find(z => z.severity === 'heavy')    ? 'heavy'    :
-      cornerBoxes.find(b => b.severity === 'heavy')   ? 'heavy'    :
-      zones.find(z => z.severity === 'moderate') ? 'moderate' :
-      cornerBoxes.find(b => b.severity === 'moderate') ? 'moderate' :
-      edgeBands.find(b => b.severity === 'moderate')   ? 'moderate' :
-      zones.length > 0 || cornerBoxes.length > 0 || edgeBands.length > 0 ||
-        gridCells.some(c => !c.glare_masked) ? 'light' : null
-
-    if (worstSev) {
-      const dot = document.createElement('div')
-      dot.className = `thumb-issue-dot thumb-issue-dot--${worstSev}`
-      dot.title = 'Issues detected — tap to explore'
-      wrap.appendChild(dot)
-    }
-
-    const lbl = document.createElement('span')
-    lbl.className = 'analyzed-thumb-label'
-    lbl.textContent = label
-
-    item.appendChild(wrap)
-    item.appendChild(lbl)
-    item.addEventListener('click', () => openLightbox(i))
-    strip.appendChild(item)
-  })
-
-  // No always-on legend — interaction happens in the lightbox.
-}
-
-// ── Side analysis renderer ─────────────────────────────────────────
-// Module-level (not nested inside renderResult) to avoid V8 hoisting the
-// function declaration above const variables in renderResult's TDZ scope.
-//
-// thumbIndex: 0 = front image, 1 = back image (aligns with _lightboxItems)
-// sideZones:  inferred zones for this side, used to look up "Show" severity
-
-const ISSUE_CATEGORY_LABELS = {
-  centering: 'Centering',
-  corners:   'Corners',
-  edges:     'Edges',
-  surface:   'Surface',
-  other:     'Other',
-}
-
-function renderSideAnalysis(side, prefix, thumbIndex, sideZones) {
-  const notAvailEl  = document.getElementById(`${prefix}-not-available`)
-  const centeringEl = document.getElementById(`${prefix}-centering`)
-  const issuesEl    = document.getElementById(`${prefix}-issues-list`)
-
-  if (!side || side.assessable === false) {
-    notAvailEl.classList.remove('hidden')
-    centeringEl.classList.add('hidden')
-    issuesEl.classList.add('hidden')
-    return
-  }
-
-  notAvailEl.classList.add('hidden')
-  issuesEl.innerHTML = ''
-  let hasIssue = false
-
-  if (side.centering) {
-    centeringEl.textContent = `Centering: ${side.centering}`
-    centeringEl.classList.remove('hidden')
-  } else {
-    centeringEl.classList.add('hidden')
-  }
-
-  const sideIssues = side.issues ?? {}
-  Object.entries(ISSUE_CATEGORY_LABELS).forEach(([key, label]) => {
-    const items = sideIssues[key]
-    if (!Array.isArray(items) || items.length === 0) return
-    hasIssue = true
-
-    const header = document.createElement('li')
-    header.className = 'issue-category-header'
-    header.textContent = label
-    issuesEl.appendChild(header)
-
-    items.forEach(issueText => {
-      const zone = getZoneForIssue(key, issueText)
-
-      const li  = document.createElement('li')
-      li.className = 'issue-item'
-
-      const txt = document.createElement('span')
-      txt.className = 'issue-text'
-      txt.textContent = issueText
-      li.appendChild(txt)
-
-      // "Show" button — only when the issue can be located on the card image
-      if (zone !== null && thumbIndex < _lightboxItems.length) {
-        const matchedZone = sideZones?.find(z => z.zone === zone)
-        const severity    = matchedZone?.severity ?? 'moderate'
-
-        const btn = document.createElement('button')
-        btn.className = 'issue-locate-btn'
-        btn.textContent = 'Show'
-        btn.title = `Locate on card: ${ZONE_LABELS[zone] ?? zone}`
-        btn.addEventListener('click', (e) => {
-          e.stopPropagation()
-          if (zone === 'centering') {
-            // Centering has its own inspection mode — outer + inner frame
-            // overlay with T/B/L/R margin labels, not a generic zone highlight.
-            openLightboxCenteringMode(thumbIndex)
-          } else {
-            openLightboxFocused(thumbIndex, zone, issueText, severity)
-          }
-        })
-        li.appendChild(btn)
+    const row = document.createElement("div");
+    row.className = `econ-row${item.highlight ? " highlight" : ""}`;
+    const lbl = document.createElement("span"); lbl.className = "econ-label";
+    const val = document.createElement("span"); val.className = "econ-value";
+    lbl.textContent = item.label;
+    if (item.value != null) {
+      val.textContent = `$${item.value.toFixed(2)}`;
+      if (item.highlight) {
+        const total = price + shipping + fee;
+        val.classList.add(item.value > total ? "positive" : "negative");
       }
-
-      issuesEl.appendChild(li)
-    })
-  })
-
-  if (!hasIssue) {
-    const li = document.createElement('li')
-    li.className = 'no-issues'
-    li.textContent = '✓ No issues detected'
-    li.style.listStyle = 'none'
-    issuesEl.appendChild(li)
+    } else {
+      val.textContent = item.fallback ?? "—";
+    }
+    row.appendChild(lbl); row.appendChild(val); rows.appendChild(row);
   }
-
-  issuesEl.classList.remove('hidden')
 }
 
-// ── Render results ─────────────────────────────────────────────────
+// ── Render PSA result (from Python YOLO+Claude grading_server pipeline) ─────
+// Result shape: { centering{score,left_right,top_bottom,content_region,notes},
+//                 corners{score,top_left,...}, edges{score,top,...},
+//                 surface{score,scratches,...}, overall_score, psa_equivalent,
+//                 summary, _warped_jpeg_b64, _corner_crops_b64, _card_boundary }
+function renderPSAResult(r, listing) {
+  currentResult  = r;
+  currentListing = listing ?? currentListing;
 
-const GD_META = {
-  yes:   { emoji: '✅', css: 'gd-yes',   label: 'Gradable' },
-  maybe: { emoji: '🤔', css: 'gd-maybe', label: 'Possibly Gradable' },
-  no:    { emoji: '❌', css: 'gd-no',    label: 'Not Recommended' },
+  // When both sides were graded, the server sends a combined (worst-side) grade.
+  const combined = r._combined || null;
+  const overall  = (combined?.overall_score ?? r.overall_score) ?? 0;
+  const psaEquiv = combined?.psa_equivalent ?? r.psa_equivalent;
+
+  // Decision banner — prefer the eBay/ROI buy/maybe/skip decision when present,
+  // otherwise fall back to a grade-tier banner.
+  const banner = $("decision-banner");
+  if (r.decision?.label) {
+    banner.className = `decision-banner ${r.decision.label}`;
+    $("decision-label").textContent  =
+      r.decision.label === "unknown" ? "NO DATA" : r.decision.label.toUpperCase();
+    $("decision-reason").textContent = r.decision.reason ?? r.summary ?? "";
+  } else {
+    const tier = overall >= 9 ? "buy" : overall >= 7 ? "maybe" : "skip";
+    banner.className = `decision-banner ${tier}`;
+    $("decision-label").textContent  = psaEquiv ?? `Score ${overall.toFixed(1)}`;
+    $("decision-reason").textContent = r.summary ?? "";
+  }
+
+  // Trust anchors — show the perspective-corrected card(s) that were graded.
+  const imgContainer = $("result-images");
+  imgContainer.innerHTML = "";
+  const addWarped = (b64, label) => {
+    if (!b64) return;
+    const wrap = document.createElement("div"); wrap.className = "img-wrap";
+    const img  = document.createElement("img"); img.className = "result-img";
+    img.src = `data:image/jpeg;base64,${b64}`;
+    img.alt = label;
+    const lbl = document.createElement("div"); lbl.className = "result-img-label";
+    lbl.textContent = label;
+    wrap.appendChild(img); wrap.appendChild(lbl); imgContainer.appendChild(wrap);
+  };
+  addWarped(r._warped_jpeg_b64, r._back ? "Front" : "Warped");
+  if (r._back) addWarped(r._back._warped_jpeg_b64, "Back");
+
+  // Grade estimate block — overall score + PSA equivalent
+  $("grade-band").textContent = overall ? overall.toFixed(1) : "—";
+  $("grade-conf").textContent = psaEquiv ? psaEquiv.replace(/^PSA\s*/i, "PSA ") : "AI";
+  $("grade-conf").className   = `grade-conf ${psaScoreClass(overall)}`;
+  let nameParts = [];
+  if (r._back) nameParts.push("Front + Back");
+  else if (r._back_error) nameParts.push("Front only (back: no card)");
+  if (r._border_type && r._border_type !== "uniform_fallback") nameParts.push(`${r._border_type} border`);
+  if (r._adjusted) nameParts.unshift("✎ adjusted");
+  $("card-name").textContent = nameParts.join(" · ");
+  $("grade-dist").innerHTML   = "";
+  $("grade-limiting").classList.add("hidden");
+
+  // Pillar summary cards — score badge (combined/worst-side when both sides
+  // graded) + descriptor from the front reading.
+  const cen  = r.centering ?? {};
+  const cor  = r.corners   ?? {};
+  const edg  = r.edges     ?? {};
+  const surf = r.surface   ?? {};
+  const C = combined;
+
+  renderPsaPillar("centering", C ? C.centering_score : cen.score,
+    `${cen.left_right ?? "—"} L/R · ${cen.top_bottom ?? "—"} T/B`);
+  renderPsaPillar("corners", C ? C.corners_score : cor.score,
+    worstSeverityLabel([cor.top_left, cor.top_right, cor.bottom_right, cor.bottom_left]));
+  renderPsaPillar("edges", C ? C.edges_score : edg.score,
+    worstSeverityLabel([edg.top, edg.right, edg.bottom, edg.left]));
+  renderPsaPillar("surface", C ? C.surface_score : surf.score,
+    worstSeverityLabel([surf.scratches, surf.print_lines, surf.stains, surf.creases]));
+
+  // Economics — shown when the server attached eBay comps + ROI.
+  if (r.economics) {
+    $("economics-block").style.display = "";
+    renderEconomics(r.economics, currentListing);
+  } else {
+    $("economics-block").style.display = "none";
+  }
+
+  // PSA summary text in the collapsible "AI Reasoning" panel (the decision
+  // banner already carries the ROI reason, so surface the grade summary here).
+  const summaryText = (r.decision?.label && r.summary) ? r.summary : "";
+  $("reasoning-front").textContent = summaryText;
+  $("reasoning-back").textContent  = "";
+  const reasoningEl = document.querySelector(".reasoning-details");
+  if (reasoningEl) reasoningEl.style.display = summaryText ? "" : "none";
+
+  // Caveat when economics are based on active asking prices (sold-comp fallback).
+  const caveatEl = $("caveats-list");
+  if (r._comps_basis === "active") {
+    caveatEl.innerHTML =
+      `<div class="caveat">Estimates use active <em>asking</em> prices (sold-comp quota exhausted) — actual sold prices are typically lower.</div>`;
+    caveatEl.classList.remove("hidden");
+  } else {
+    caveatEl.classList.add("hidden");
+  }
 }
 
-const IQ_CHIP_DEFS = [
-  { key: 'front_present',     label: 'Front' },
-  { key: 'back_present',      label: 'Back' },
-  { key: 'centering_visible', label: 'Centering' },
-  { key: 'corners_visible',   label: 'Corners' },
-  { key: 'edges_visible',     label: 'Edges' },
-  { key: 'surface_visible',   label: 'Surface' },
-]
+function psaScoreClass(score) {
+  return score >= 9 ? "high" : score >= 7 ? "medium" : "low";
+}
 
-function renderResult(payload) {
-  const {
-    analysis_mode   = 'front_only',
-    card_identity   = {},
-    image_quality   = {},
-    grade_estimate  = {},
-    issues          = {},
-    grading_decision = {},
-    economics       = {},
-    decision        = {},
-    _meta           = {},
-  } = payload
+// Render one PSA pillar summary card: a big score + a one-line descriptor.
+function renderPsaPillar(name, score, descriptor) {
+  const cls = score >= 9 ? "issue-clean" : score >= 7 ? "issue-warn" : "issue-bad";
+  const scoreText = (typeof score === "number") ? score.toFixed(1) : "—";
+  $(`issues-${name}`).innerHTML =
+    `<span class="${cls}" style="font-weight:700">${scoreText}</span>` +
+    `<span class="pillar-count">${descriptor}</span>`;
+}
 
-  // ── Card identity + mode badge ──────────────────────────────────
-  document.getElementById('res-title').textContent =
-    card_identity.name || payload.title || 'Unknown card'
-  document.getElementById('res-set').textContent  = card_identity.set    ?? ''
-  document.getElementById('res-year').textContent = card_identity.year   ?? ''
-  document.getElementById('res-num').textContent  = card_identity.number ? `#${card_identity.number}` : ''
+// Reduce a list of severity words to the single worst-case descriptor.
+function worstSeverityLabel(words) {
+  const order = ["bent","worn","heavy","heavy_wear","rough","creases",
+                 "moderate","moderate_wear","chip","stains","print_lines",
+                 "minor","minor_nick","slight_wear","scratches",
+                 "clean","sharp","none"];
+  const present = words.filter(Boolean).map((w) => String(w).toLowerCase());
+  if (present.length === 0) return "—";
+  let worst = null, worstRank = Infinity;
+  for (const w of present) {
+    const rank = order.indexOf(w);
+    const r = rank === -1 ? 50 : rank;
+    if (r < worstRank) { worstRank = r; worst = w; }
+  }
+  return prettySeverity(worst);
+}
 
-  const modeEl = document.getElementById('res-mode')
-  modeEl.textContent = analysis_mode === 'front_back' ? 'FRONT + BACK' : 'FRONT ONLY'
-  modeEl.className   = `mode-badge mode-badge--${analysis_mode === 'front_back' ? 'full' : 'partial'}`
+function prettySeverity(w) {
+  const map = {
+    sharp: "✓ Sharp", clean: "✓ Clean", none: "✓ Clean",
+    slight_wear: "Slight wear", minor: "Minor", minor_nick: "Minor nick",
+    moderate: "Moderate", moderate_wear: "Moderate wear", chip: "Chip",
+    rough: "Rough", worn: "Worn", heavy: "Heavy", heavy_wear: "Heavy wear",
+    bent: "⚠ Bent", scratches: "Scratches", print_lines: "Print lines",
+    stains: "Stains", creases: "⚠ Creases",
+  };
+  return map[w] ?? w;
+}
 
-  const idConf = card_identity.confidence ?? null
-  const idConfEl = document.getElementById('res-id-conf')
-  if (idConf && idConf !== 'high') {
-    idConfEl.textContent = `ID: ${idConf} confidence`
-    idConfEl.className = 'tag tag--id-conf'
+// ── Feedback ──────────────────────────────────────────────────────────────
+async function sendFeedback(accurate) {
+  const { lastResult } = await chrome.storage.local.get("lastResult");
+  if (!lastResult) return;
+  // TODO: wire to /api/grade/feedback when endpoint exists
+  console.log("Feedback:", { accurate, listing: lastResult.listing?.url });
+  const btn = accurate ? $("btn-feedback-good") : $("btn-feedback-bad");
+  btn.textContent = accurate ? "✅" : "❌";
+  btn.disabled = true;
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────
+function show(viewName) {
+  VIEWS.forEach((v) => {
+    const el = document.getElementById(`view-${v}`);
+    if (el) el.classList.toggle("hidden", v !== viewName);
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// PILLAR DETAIL VIEWS
+// ══════════════════════════════════════════════════════════════════════════
+
+const PILLAR_TITLES = {
+  centering: "Centering",
+  corners:   "Corners",
+  edges:     "Edges",
+  surface:   "Surface",
+};
+
+// Distinguishes the Python grading_server PSA result (centering.content_region,
+// per-side severity words, psa_equivalent) from the older Next.js _cv result.
+function isPsaShape(r) {
+  return !!(r && (r.psa_equivalent || r.centering?.content_region));
+}
+
+function openPillarDetail(pillar) {
+  if (!currentResult) return;
+  if (isPsaShape(currentResult)) return openPillarDetailPsa(pillar);
+  $("detail-title").textContent = PILLAR_TITLES[pillar] ?? pillar;
+
+  // Compute and display overall severity for this pillar
+  const sev = computePillarSeverity(pillar, currentResult);
+  const sevEl = $("detail-severity");
+  sevEl.className = `detail-severity sev-${sev.level}`;
+  sevEl.textContent = sev.label;
+
+  // Build the two image cards (front + back if assessable)
+  renderDetailImages(pillar, currentResult, currentListing);
+
+  // Findings list (from Claude's per-side analysis + top-level issues)
+  renderDetailFindings(pillar, currentResult);
+
+  // Numerical measurements (CV-derived)
+  renderDetailMeasurements(pillar, currentResult);
+
+  show("detail");
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// PSA-shape pillar detail (Python grading_server result)
+// ══════════════════════════════════════════════════════════════════════════
+
+const NS_SVG = "http://www.w3.org/2000/svg";
+
+function openPillarDetailPsa(pillar) {
+  const r = currentResult;
+  const back = r._back || null;
+  $("detail-title").textContent = PILLAR_TITLES[pillar] ?? pillar;
+
+  // Combined (worst-side) score drives the severity header when both sides graded.
+  const score = r._combined ? r._combined[`${pillar}_score`] : r[pillar]?.score;
+  const sev   = psaSeverityFromScore(score);
+  const sevEl = $("detail-severity");
+  sevEl.className = `detail-severity sev-${sev.level}`;
+  sevEl.textContent = `${sev.label}${typeof score === "number" ? ` — score ${score.toFixed(1)}` : ""}`
+    + (back ? " · front + back" : "");
+
+  const imgContainer = $("detail-images");
+  imgContainer.innerHTML = "";
+
+  if (pillar === "centering") {
+    imgContainer.appendChild(buildCenteringAuditCard(r, back ? "Front" : null));  // interactive
+    if (back) imgContainer.appendChild(buildCenteringAuditCard(back, "Back"));    // interactive
+  } else if (pillar === "corners") {
+    buildCornerCropCards(r, imgContainer, back ? "Front" : "");
+    if (back) buildCornerCropCards(back, imgContainer, "Back");
   } else {
-    idConfEl.textContent = ''
+    imgContainer.appendChild(buildWarpedCard(r, pillar, back ? "Front" : null));
+    if (back) imgContainer.appendChild(buildWarpedCard(back, pillar, "Back"));
   }
 
-  // ── Image quality chips + warnings ─────────────────────────────
-  const iqChips = document.getElementById('iq-chips')
-  iqChips.innerHTML = ''
-  IQ_CHIP_DEFS.forEach(({ key, label }) => {
-    const val = image_quality[key]
-    if (val === undefined) return
-    const chip = document.createElement('span')
-    chip.className = `iq-chip ${val ? 'iq-chip--ok' : 'iq-chip--warn'}`
-    chip.textContent = `${val ? '✓' : '✗'} ${label}`
-    iqChips.appendChild(chip)
-  })
+  renderPsaFindings(pillar, r);
+  renderPsaMeasurements(pillar, r);
+  show("detail");
+}
 
-  const iqWarnings = document.getElementById('iq-warnings')
-  iqWarnings.innerHTML = ''
-  const warnings = image_quality.warnings ?? []
-  warnings.forEach(w => {
-    const li = document.createElement('li')
-    li.textContent = w
-    iqWarnings.appendChild(li)
-  })
-  iqWarnings.classList.toggle('hidden', warnings.length === 0)
-
-  // ── Economic decision banner ────────────────────────────────────
-  const dec    = decision.label ?? 'skip'
-  const decMeta = DECISION_META[dec] ?? DECISION_META.skip
-  const banner  = document.getElementById('decision-banner')
-  banner.className = `decision-banner ${decMeta.css}`
-  document.getElementById('dec-emoji').textContent  = decMeta.emoji
-  document.getElementById('dec-label').textContent  = dec.toUpperCase()
-  document.getElementById('dec-reason').textContent = decision.reason ?? ''
-
-  // ── Grading candidate banner (Claude visual viability) ─────────
-  const gdc   = grading_decision.gradable_candidate ?? 'maybe'
-  const gdMeta = GD_META[gdc] ?? GD_META.maybe
-  const gdBanner = document.getElementById('grading-decision-banner')
-  gdBanner.className = `grading-decision-banner ${gdMeta.css}`
-  document.getElementById('gd-emoji').textContent  = gdMeta.emoji
-  document.getElementById('gd-label').textContent  = gdMeta.label
-  document.getElementById('gd-reason').textContent = grading_decision.reason ?? ''
-
-  const caveats    = grading_decision.caveats ?? []
-  const caveatsList = document.getElementById('gd-caveats')
-  caveatsList.innerHTML = ''
-  if (caveats.length > 0) {
-    caveats.forEach(c => {
-      const li = document.createElement('li')
-      li.textContent = c
-      caveatsList.appendChild(li)
-    })
-    caveatsList.classList.remove('hidden')
+// Re-derive the headline grade from the current per-side pillar scores. With both
+// sides graded, headline = combined worst-side per pillar (run through the Stage-B
+// aggregator); otherwise front-only. Called after a boundary adjustment.
+function recomputeGrade() {
+  const r = currentResult;
+  const minS = (a, b) => {
+    const v = [a, b].filter((x) => typeof x === "number");
+    return v.length ? Math.min(...v) : null;
+  };
+  if (r._back) {
+    const b = r._back;
+    const cp = {
+      centering: minS(r.centering?.score, b.centering?.score),
+      corners:   minS(r.corners?.score,   b.corners?.score),
+      edges:     minS(r.edges?.score,     b.edges?.score),
+      surface:   minS(r.surface?.score,   b.surface?.score),
+    };
+    const co = aggregateGrade(cp);
+    r._combined = {
+      centering_score: cp.centering, corners_score: cp.corners,
+      edges_score: cp.edges, surface_score: cp.surface,
+      overall_score: Math.round(co * 10) / 10,
+      psa_equivalent: psaLabelFromScore(co),
+    };
   } else {
-    caveatsList.classList.add('hidden')
+    const o = aggregateGrade({
+      centering: r.centering?.score, corners: r.corners?.score,
+      edges: r.edges?.score, surface: r.surface?.score,
+    });
+    r.overall_score  = Math.round(o * 10) / 10;
+    r.psa_equivalent = psaLabelFromScore(o);
+  }
+}
+
+function psaSeverityFromScore(score) {
+  if (typeof score !== "number") return { level: "minor", label: "Assessed" };
+  if (score >= 9) return { level: "clean",    label: "✓ Excellent" };
+  if (score >= 7) return { level: "minor",    label: "Minor wear" };
+  if (score >= 5) return { level: "moderate", label: "⚠ Moderate wear" };
+  return { level: "heavy", label: "⚠ Heavy wear" };
+}
+
+// Centering audit — the notebook's exact visualization: green = physical card
+// boundary, gold = content_region (printed border inner edge), with L/R/T/B
+// border-width labels. card_boundary and content_region are both normalised
+// (0–1) in the WARPED card's coordinate space, so they map directly onto the
+// warped image we render here.
+// Interactive centering audit: the green box = physical card edge (outer), the
+// gold box = printed-border inner edge (content_region). Both are editable —
+// drag the edge handles to refine, and L/R · T/B · score recompute live. The
+// image supports scroll-zoom / drag-pan via attachZoomPan().
+function buildCenteringAuditCard(src, label = null) {
+  const card = document.createElement("div");
+  card.className = "detail-img-card";
+  card.style.maxWidth = "100%";
+
+  const lbl = document.createElement("div");
+  lbl.className = "detail-img-label";
+  const prefix = label ? `${label} centering` : "Centering audit";
+  lbl.innerHTML = `${prefix} — <span style="color:var(--sub);font-weight:500;text-transform:none;letter-spacing:0">drag handles to refine</span>`;
+  card.appendChild(lbl);
+
+  const wrap = document.createElement("div");
+  wrap.className = "image-overlay-wrap";
+
+  if (src._warped_jpeg_b64) {
+    const img = document.createElement("img");
+    img.className = "overlay-img";
+    img.src = `data:image/jpeg;base64,${src._warped_jpeg_b64}`;
+    wrap.appendChild(img);
   }
 
-  // ── Front / Back analysis ───────────────────────────────────────
-  const frontZones = inferZonesFromIssues(payload.front_analysis)
-  const backZones  = inferZonesFromIssues(payload.back_analysis)
+  const svg = document.createElementNS(NS_SVG, "svg");
+  svg.setAttribute("class", "overlay-svg");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("preserveAspectRatio", "none");
+  wrap.appendChild(svg);
+  card.appendChild(wrap);
 
-  renderSideAnalysis(payload.front_analysis, 'front', 0, frontZones)
-  renderSideAnalysis(payload.back_analysis,  'back',  1, backZones)
+  // Live readout + reset
+  const readout = document.createElement("div");
+  readout.className = "centering-readout";
+  card.appendChild(readout);
 
-  // ── Grade estimate ──────────────────────────────────────────────
-  const dist       = grade_estimate.distribution ?? {}
-  const gradeRange = grade_estimate.grade_range   ?? '?'
-  const confidence = grade_estimate.confidence    ?? 'unknown'
+  const actions = document.createElement("div");
+  actions.className = "cen-actions";
+  const applyBtn = document.createElement("button");
+  applyBtn.className = "cen-apply-btn";
+  applyBtn.textContent = "✓ Apply adjustment";
+  const resetBtn = document.createElement("button");
+  resetBtn.className = "cen-reset-btn";
+  resetBtn.textContent = "↺ Reset";
+  actions.appendChild(applyBtn);
+  actions.appendChild(resetBtn);
+  card.appendChild(actions);
 
-  document.getElementById('res-grade-range').textContent = gradeRange
-  document.getElementById('res-grade-conf').textContent  = `(${confidence} confidence)`
+  // ── Seed boundaries (viewBox units 0..100) ──
+  const cb = src._card_boundary;            // [x1,y1,x2,y2] (0..1)
+  const cr = src.centering?.content_region; // {x1,y1,x2,y2} (0..1)
+  let seedOuter = (cb && cb.length === 4)
+    ? { x1: cb[0]*100, y1: cb[1]*100, x2: cb[2]*100, y2: cb[3]*100 }
+    : { x1: 4, y1: 4, x2: 96, y2: 96 };
+  let seedInner = (cr && ["x1","y1","x2","y2"].every((k) => k in cr))
+    ? { x1: cr.x1*100, y1: cr.y1*100, x2: cr.x2*100, y2: cr.y2*100 }
+    : { x1: seedOuter.x1 + (seedOuter.x2-seedOuter.x1)*0.10,
+        y1: seedOuter.y1 + (seedOuter.y2-seedOuter.y1)*0.10,
+        x2: seedOuter.x2 - (seedOuter.x2-seedOuter.x1)*0.10,
+        y2: seedOuter.y2 - (seedOuter.y2-seedOuter.y1)*0.10 };
 
-  const barsContainer = document.getElementById('grade-bars')
-  barsContainer.innerHTML = ''
-  for (let g = 10; g >= 1; g--) {
-    const prob = dist[String(g)] ?? 0
-    const row  = document.createElement('div')
-    row.className = 'grade-bar-row'
-    row.innerHTML = `
-      <span class="grade-bar-label">PSA ${g}</span>
-      <div class="grade-bar-track">
-        <div class="grade-bar-fill" style="width:${Math.round(prob * 100)}%"></div>
+  let outer = { ...seedOuter };
+  let inner = { ...seedInner };
+  let active = null;
+
+  function redraw() {
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+    addRect(svg, outer.x1, outer.y1, outer.x2-outer.x1, outer.y2-outer.y1,
+            "sv-bounds", { "stroke-width": "0.5", stroke: "var(--green)" });
+    addRect(svg, inner.x1, inner.y1, inner.x2-inner.x1, inner.y2-inner.y1,
+            "sv-content", { "stroke-width": "0.6" });
+
+    // Border widths (units → px on the 630×880 warped canvas)
+    const L = inner.x1 - outer.x1, R = outer.x2 - inner.x2;
+    const T = inner.y1 - outer.y1, B = outer.y2 - inner.y2;
+    const midX = (inner.x1+inner.x2)/2, midY = (inner.y1+inner.y2)/2;
+    addLabel(svg, NS_SVG, (outer.x1+inner.x1)/2, midY, `L ${(L*6.3)|0}`);
+    addLabel(svg, NS_SVG, (inner.x2+outer.x2)/2, midY, `R ${(R*6.3)|0}`);
+    addLabel(svg, NS_SVG, midX, (outer.y1+inner.y1)/2, `T ${(T*8.8)|0}`);
+    addLabel(svg, NS_SVG, midX, (inner.y2+outer.y2)/2, `B ${(B*8.8)|0}`);
+
+    // Edge handles (midpoint of each side, for both rects)
+    const oMidX=(outer.x1+outer.x2)/2, oMidY=(outer.y1+outer.y2)/2;
+    [
+      [outer.x1,oMidY,"outer","left"],[outer.x2,oMidY,"outer","right"],
+      [oMidX,outer.y1,"outer","top"], [oMidX,outer.y2,"outer","bottom"],
+      [inner.x1,midY,"inner","left"], [inner.x2,midY,"inner","right"],
+      [midX,inner.y1,"inner","top"],  [midX,inner.y2,"inner","bottom"],
+    ].forEach(([hx,hy,rect,side]) => addHandle(hx,hy,rect,side));
+
+    // Live readout
+    const lr = (L+R)>1e-6 ? Math.round(L/(L+R)*100) : 50;
+    const tb = (T+B)>1e-6 ? Math.round(T/(T+B)*100) : 50;
+    const score = centeringScore(lr, tb);
+    const sc = score>=9 ? "issue-clean" : score>=7 ? "issue-warn" : "issue-bad";
+    readout.innerHTML =
+      `<span>L/R <b>${lr}/${100-lr}</b></span>` +
+      `<span>T/B <b>${tb}/${100-tb}</b></span>` +
+      `<span>score <b class="${sc}">${score}</b></span>`;
+  }
+
+  function addHandle(cx, cy, rect, side) {
+    const c = document.createElementNS(NS_SVG, "circle");
+    c.setAttribute("cx", cx); c.setAttribute("cy", cy); c.setAttribute("r", 1.8);
+    c.setAttribute("class", `bound-handle bh-${rect}`);
+    c.dataset.rect = rect; c.dataset.side = side;
+    c.addEventListener("pointerdown", onHandleDown);
+    svg.appendChild(c);
+  }
+
+  function svgPoint(e) {
+    const m = svg.getScreenCTM(); if (!m) return null;
+    const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(m.inverse());
+    return { x: Math.max(0, Math.min(100, p.x)), y: Math.max(0, Math.min(100, p.y)) };
+  }
+  function onHandleDown(e) {
+    e.stopPropagation(); e.preventDefault();   // don't start a pan
+    active = { rect: e.currentTarget.dataset.rect, side: e.currentTarget.dataset.side };
+    window.addEventListener("pointermove", onHandleMove);
+    window.addEventListener("pointerup", onHandleUp, { once: true });
+  }
+  function onHandleMove(e) {
+    if (!active) return;
+    const p = svgPoint(e); if (!p) return;
+    const GAP = 2; // keep inner from collapsing
+    if (active.rect === "outer") {
+      if (active.side==="left")   outer.x1 = Math.min(p.x, inner.x1);
+      if (active.side==="right")  outer.x2 = Math.max(p.x, inner.x2);
+      if (active.side==="top")    outer.y1 = Math.min(p.y, inner.y1);
+      if (active.side==="bottom") outer.y2 = Math.max(p.y, inner.y2);
+    } else {
+      if (active.side==="left")   inner.x1 = Math.max(outer.x1, Math.min(p.x, inner.x2-GAP));
+      if (active.side==="right")  inner.x2 = Math.min(outer.x2, Math.max(p.x, inner.x1+GAP));
+      if (active.side==="top")    inner.y1 = Math.max(outer.y1, Math.min(p.y, inner.y2-GAP));
+      if (active.side==="bottom") inner.y2 = Math.min(outer.y2, Math.max(p.y, inner.y1+GAP));
+    }
+    redraw();
+  }
+  function onHandleUp() {
+    active = null;
+    window.removeEventListener("pointermove", onHandleMove);
+  }
+
+  resetBtn.addEventListener("click", () => {
+    outer = { ...seedOuter }; inner = { ...seedInner }; redraw();
+  });
+
+  // Commit: recompute centering (geometry) + re-aggregate overall (Stage B, no
+  // Claude), reflect across all pillars, persist into currentResult, save the
+  // correction for YOLO retraining, then return to the summary.
+  applyBtn.addEventListener("click", () => {
+    const L = inner.x1 - outer.x1, R = outer.x2 - inner.x2;
+    const T = inner.y1 - outer.y1, B = outer.y2 - inner.y2;
+    const lr = (L+R) > 1e-6 ? Math.round(L/(L+R)*100) : 50;
+    const tb = (T+B) > 1e-6 ? Math.round(T/(T+B)*100) : 50;
+    const cenScore = centeringScore(lr, tb);
+
+    const isBack = (src === currentResult._back);
+    const before = {
+      side:            isBack ? "back" : "front",
+      card_boundary:   Array.isArray(src._card_boundary) ? [...src._card_boundary] : null,
+      content_region:  src.centering?.content_region ? { ...src.centering.content_region } : null,
+      centering_score: src.centering?.score ?? null,
+    };
+
+    // Write the adjusted boundaries back onto the edited side (front or back).
+    const newOuter = { x1: outer.x1/100, y1: outer.y1/100, x2: outer.x2/100, y2: outer.y2/100 };
+    const newInner = { x1: inner.x1/100, y1: inner.y1/100, x2: inner.x2/100, y2: inner.y2/100 };
+    src._card_boundary = [newOuter.x1, newOuter.y1, newOuter.x2, newOuter.y2];
+    src.centering = {
+      ...(src.centering ?? {}),
+      score: cenScore,
+      left_right: `${lr}/${100-lr}`,
+      top_bottom: `${tb}/${100-tb}`,
+      content_region: newInner,
+      _source: "user_adjusted",
+    };
+
+    // Re-derive the headline grade (combined worst-side if both sides graded).
+    recomputeGrade();
+    currentResult._adjusted = true;
+
+    chrome.storage.local.set({ lastResult: { listing: currentListing, result: currentResult, timestamp: Date.now() } });
+    saveAdjustmentFeedback(src, isBack ? "back" : "front", before);
+
+    // Refresh the summary DOM in the background, but STAY in the detail view so
+    // the other side can still be adjusted. This commit becomes the new baseline
+    // (Reset returns here, not to the original detection).
+    renderPSAResult(currentResult, currentListing);
+    show("detail");
+    seedOuter = { ...outer };
+    seedInner = { ...inner };
+    applyBtn.textContent = "✓ Applied";
+    applyBtn.disabled = true;
+    setTimeout(() => {
+      applyBtn.textContent = "✓ Apply adjustment";
+      applyBtn.disabled = false;
+    }, 1400);
+  });
+
+  redraw();
+  attachZoomPan(wrap);
+
+  const cap = document.createElement("div");
+  cap.className = "detail-image-caption";
+  const cen = src.centering ?? {};
+  cap.textContent = cen.notes
+    ? cen.notes
+    : "Green = card edge · gold = printed border. Drag to re-measure.";
+  card.appendChild(cap);
+  return card;
+}
+
+// Corner crops — the high-res zooms Claude actually inspected, each labelled
+// with the severity it returned for that corner.
+function buildCornerCropCards(r, container, prefix = "") {
+  const crops = r._corner_crops_b64 ?? {};
+  const cor   = r.corners ?? {};
+  const cfg = [
+    ["TL", "top_left",     "Top-left"],
+    ["TR", "top_right",    "Top-right"],
+    ["BR", "bottom_right", "Bottom-right"],
+    ["BL", "bottom_left",  "Bottom-left"],
+  ];
+  for (const [key, field, label] of cfg) {
+    const card = document.createElement("div");
+    card.className = "detail-img-card";
+    const lbl = document.createElement("div");
+    lbl.className = "detail-img-label";
+    lbl.textContent = prefix ? `${prefix} ${label}` : label;
+    card.appendChild(lbl);
+
+    const wrap = document.createElement("div");
+    wrap.className = "image-overlay-wrap";
+    wrap.style.aspectRatio = "1 / 1";
+    if (crops[key]) {
+      const img = document.createElement("img");
+      img.className = "overlay-img";
+      img.src = `data:image/jpeg;base64,${crops[key]}`;
+      wrap.appendChild(img);
+      attachZoomPan(wrap);
+    } else {
+      wrap.style.display = "flex";
+      wrap.style.alignItems = "center";
+      wrap.style.justifyContent = "center";
+      wrap.style.color = "var(--sub)";
+      wrap.style.fontSize = "11px";
+      wrap.textContent = "No crop";
+    }
+    card.appendChild(wrap);
+
+    const sevWord = cor[field];
+    const cap = document.createElement("div");
+    cap.className = "detail-image-caption";
+    const cls = /bent|heavy/.test(String(sevWord)) ? "issue-bad"
+      : /moderate|rough/.test(String(sevWord)) ? "issue-warn"
+      : "issue-clean";
+    cap.innerHTML = `<span class="${cls}">${prettySeverity(String(sevWord ?? "—").toLowerCase())}</span>`;
+    card.appendChild(cap);
+    container.appendChild(card);
+  }
+}
+
+// Plain warped card; for edges, tint the four sides by their severity.
+function buildWarpedCard(r, pillar, label = null) {
+  const card = document.createElement("div");
+  card.className = "detail-img-card";
+  card.style.maxWidth = "100%";
+  const lbl = document.createElement("div");
+  lbl.className = "detail-img-label";
+  lbl.textContent = label ? `${label} — perspective-corrected` : "Perspective-corrected card";
+  card.appendChild(lbl);
+
+  const wrap = document.createElement("div");
+  wrap.className = "image-overlay-wrap";
+  if (r._warped_jpeg_b64) {
+    const img = document.createElement("img");
+    img.className = "overlay-img";
+    img.src = `data:image/jpeg;base64,${r._warped_jpeg_b64}`;
+    wrap.appendChild(img);
+  }
+
+  if (pillar === "edges") {
+    const svg = document.createElementNS(NS_SVG, "svg");
+    svg.setAttribute("class", "overlay-svg");
+    svg.setAttribute("viewBox", "0 0 100 100");
+    svg.setAttribute("preserveAspectRatio", "none");
+    const edg = r.edges ?? {};
+    const sevClass = (w) => /worn|rough/.test(String(w)) ? "sv-heavy"
+      : /chip/.test(String(w)) ? "sv-moderate"
+      : /minor_nick/.test(String(w)) ? "sv-minor" : null;
+    const bands = {
+      top:    [4, 0, 92, 4], bottom: [4, 96, 92, 4],
+      left:   [0, 4, 4, 92], right:  [96, 4, 4, 92],
+    };
+    for (const side of ["top", "bottom", "left", "right"]) {
+      const c = sevClass(edg[side]);
+      if (!c) continue;
+      const [x, y, w, h] = bands[side];
+      addRect(svg, x, y, w, h, c, { "stroke-width": "0.4" });
+    }
+    wrap.appendChild(svg);
+  }
+
+  card.appendChild(wrap);
+  if (r._warped_jpeg_b64) attachZoomPan(wrap);
+  return card;
+}
+
+function renderPsaFindings(pillar, r) {
+  const findings = $("detail-findings");
+  findings.innerHTML = "";
+
+  const sideRows = (p) => {
+    if (pillar === "centering") return [["Left / Right", p.left_right], ["Top / Bottom", p.top_bottom]];
+    if (pillar === "corners")   return [["Top-left", p.top_left], ["Top-right", p.top_right],
+                                        ["Bottom-right", p.bottom_right], ["Bottom-left", p.bottom_left]];
+    if (pillar === "edges")     return [["Top", p.top], ["Right", p.right], ["Bottom", p.bottom], ["Left", p.left]];
+    if (pillar === "surface")   return [["Scratches", p.scratches], ["Print lines", p.print_lines],
+                                        ["Stains", p.stains], ["Creases", p.creases]];
+    return [];
+  };
+
+  const renderSide = (src, sideLabel) => {
+    const p = src[pillar] ?? {};
+    if (sideLabel) {
+      const hdr = document.createElement("div");
+      hdr.className = "finding-side-hdr";
+      hdr.textContent = sideLabel;
+      findings.appendChild(hdr);
+    }
+    for (const [label, val] of sideRows(p)) {
+      if (val == null) continue;
+      const w = String(val).toLowerCase();
+      const sev = /bent|heavy|worn|severe/.test(w) ? "heavy"
+        : /moderate|chip|rough/.test(w) ? "moderate"
+        : /minor|slight|nick/.test(w) ? "minor" : "clean";
+      const row = document.createElement("div");
+      row.className = `finding-row f-${sev}`;
+      row.innerHTML = `<strong style="color:var(--sub);font-weight:600">${label}:</strong> ${prettySeverity(w)}`;
+      findings.appendChild(row);
+    }
+    if (p.notes) {
+      const note = document.createElement("div");
+      note.className = "finding-row f-clean";
+      note.style.borderLeftColor = "var(--accent)";
+      note.textContent = p.notes;
+      findings.appendChild(note);
+    }
+  };
+
+  const back = r._back || null;
+  renderSide(r, back ? "Front" : null);
+  if (back) renderSide(back, "Back");
+
+  if (!findings.children.length) {
+    findings.innerHTML = `<div class="finding-empty">No detail returned for ${(PILLAR_TITLES[pillar]||pillar).toLowerCase()}.</div>`;
+  }
+}
+
+function renderPsaMeasurements(pillar, r) {
+  const block  = $("detail-measurements-block");
+  const target = $("detail-measurements");
+  target.innerHTML = "";
+  const rows = [];
+
+  if (pillar === "centering") {
+    const cen = r.centering ?? {};
+    const cb  = r._card_boundary;
+    const cr  = cen.content_region;
+    rows.push(["L/R ratio", cen.left_right ?? "—"]);
+    rows.push(["T/B ratio", cen.top_bottom ?? "—"]);
+    if (cb && cr && ["x1","y1","x2","y2"].every((k) => k in cr)) {
+      rows.push(["Left border",   `${((cr.x1 - cb[0]) * 630) | 0}px`]);
+      rows.push(["Right border",  `${((cb[2] - cr.x2) * 630) | 0}px`]);
+      rows.push(["Top border",    `${((cr.y1 - cb[1]) * 880) | 0}px`]);
+      rows.push(["Bottom border", `${((cb[3] - cr.y2) * 880) | 0}px`]);
+    }
+    const claude = cen._claude_reported;
+    if (claude) rows.push(["Claude (pre-geom)", `${claude.left_right ?? "?"} · ${claude.top_bottom ?? "?"}`]);
+    if (r._centering_self_consistent != null)
+      rows.push(["Self-consistent", r._centering_self_consistent ? "yes" : "no (±>5pp)"]);
+  } else {
+    const score = r[pillar]?.score;
+    rows.push(["Pillar score", typeof score === "number" ? `${score.toFixed(1)} / 10` : "—"]);
+    rows.push(["Overall", typeof r.overall_score === "number" ? `${r.overall_score.toFixed(1)} (${r.psa_equivalent ?? "—"})` : "—"]);
+  }
+
+  if (!rows.length) { block.style.display = "none"; return; }
+  block.style.display = "";
+  for (const [label, value] of rows) {
+    const row = document.createElement("div");
+    row.className = "measurement-row";
+    row.innerHTML = `<span class="measurement-label">${label}</span><span class="measurement-value">${value}</span>`;
+    target.appendChild(row);
+  }
+}
+
+// Small SVG rect helper (class + attribute overrides).
+function addRect(svg, x, y, w, h, cls, attrs = {}) {
+  const rect = document.createElementNS(NS_SVG, "rect");
+  rect.setAttribute("x", x); rect.setAttribute("y", y);
+  rect.setAttribute("width", w); rect.setAttribute("height", h);
+  rect.setAttribute("class", cls);
+  for (const [k, v] of Object.entries(attrs)) rect.setAttribute(k, v);
+  svg.appendChild(rect);
+}
+
+// ── Stage-B aggregator (client-side, no Claude) ────────────────────────────
+// Combines the 4 pillar scores into an overall PSA grade using the linear model
+// in grade_model.js (generated by grading_server/train_aggregator.py). Falls back
+// to a plain mean if the model file is missing. Stage A (pillar scores) is
+// unchanged — this only re-blends pillars into the overall grade.
+function aggregateGrade(p) {
+  const m = window.GRADE_MODEL;
+  let g;
+  if (m && m.weights) {
+    g = m.intercept
+      + m.weights.centering * (p.centering ?? 0)
+      + m.weights.corners   * (p.corners   ?? 0)
+      + m.weights.edges     * (p.edges     ?? 0)
+      + m.weights.surface   * (p.surface   ?? 0);
+  } else {
+    const vals = [p.centering, p.corners, p.edges, p.surface].filter((v) => typeof v === "number");
+    g = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+  }
+  return Math.max(1, Math.min(10, g));
+}
+
+const PSA_NAMES = {
+  10: "Gem Mint", 9: "Mint", 8: "NM-MT", 7: "NM", 6: "EX-MT",
+  5: "EX", 4: "VG-EX", 3: "VG", 2: "Good", 1: "Poor",
+};
+function psaLabelFromScore(score) {
+  const g = Math.max(1, Math.min(10, Math.round(score)));
+  return `PSA ${g} ${PSA_NAMES[g] ?? ""}`.trim();
+}
+
+// Persist a boundary correction so it can be turned into YOLO OBB training labels
+// (the corrected green/outer box is YOLO's target; warp context lets the offline
+// converter map it back to original-image coordinates). Best-effort, non-blocking.
+async function saveAdjustmentFeedback(src, side, before) {
+  try {
+    // The graded image for THIS side is what YOLO ran on; the converter downloads it.
+    const imageUrl = side === "back"
+      ? (currentListing?.back_url  ?? currentListing?.image_urls?.[1] ?? "")
+      : (currentListing?.front_url ?? currentListing?.image_urls?.[0] ?? "");
+
+    const record = {
+      title:       currentListing?.title ?? "",
+      listing_url: currentListing?.url ?? "",
+      image_url:   imageUrl,
+      side,
+      original:    before,
+      corrected: {
+        card_boundary:   src._card_boundary ?? null,
+        content_region:  src.centering?.content_region ?? null,
+        centering_score: src.centering?.score ?? null,
+        left_right:      src.centering?.left_right ?? null,
+        top_bottom:      src.centering?.top_bottom ?? null,
+      },
+      grade: {
+        overall_score: currentResult.overall_score ?? null,
+        combined:      currentResult._combined ?? null,
+      },
+      // Warp context needed to map the warped-space box back to the original image
+      warp: {
+        quad_raw:    src._quad_raw ?? null,
+        quad_padded: src._quad_padded ?? null,
+        orig_dims:   src._orig_dims ?? null,
+      },
+      warped_jpeg_b64: src._warped_jpeg_b64 ?? null,
+      model:           src._model ?? null,
+      client_ts:       Date.now(),
+    };
+    await sendBg({ type: "SAVE_ADJUSTMENT", record }, 15_000);
+  } catch { /* best-effort — never block the UI */ }
+}
+
+// PSA centering score from L/R + T/B percentages (mirrors the server thresholds).
+function centeringScore(lr, tb) {
+  const worst = Math.max(Math.abs(50 - lr), Math.abs(50 - tb));
+  return worst <= 5 ? 10 : worst <= 10 ? 9 : worst <= 15 ? 8 : worst <= 20 ? 7
+       : worst <= 25 ? 6 : worst <= 30 ? 5 : worst <= 35 ? 4 : worst <= 40 ? 3
+       : worst <= 45 ? 2 : 1;
+}
+
+// Zoom + pan for a `.image-overlay-wrap`: scroll to zoom (toward cursor), drag to
+// pan, double-click to reset. Moves the wrap's children (img + svg overlay) into a
+// single transform layer so the image and its overlay stay perfectly aligned at
+// any zoom. SVG handles re-enable pointer-events, so dragging a handle edits
+// rather than pans (getScreenCTM accounts for this transform).
+function attachZoomPan(wrap) {
+  if (wrap.dataset.zoomable) return;       // idempotent
+  wrap.dataset.zoomable = "1";
+
+  const layer = document.createElement("div");
+  layer.className = "zoom-layer";
+  while (wrap.firstChild) layer.appendChild(wrap.firstChild);
+  wrap.appendChild(layer);
+
+  const MIN = 1, MAX = 6;
+  let scale = 1, tx = 0, ty = 0;
+  const apply = () => { layer.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`; };
+  const clampPan = () => {
+    const w = wrap.clientWidth, h = wrap.clientHeight;
+    tx = Math.min(0, Math.max(-(scale - 1) * w, tx));
+    ty = Math.min(0, Math.max(-(scale - 1) * h, ty));
+  };
+
+  wrap.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const rect = wrap.getBoundingClientRect();
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    const prev = scale;
+    scale = Math.min(MAX, Math.max(MIN, scale * (e.deltaY < 0 ? 1.15 : 1/1.15)));
+    // keep the point under the cursor fixed
+    const px = (cx - tx) / prev, py = (cy - ty) / prev;
+    tx = cx - px * scale; ty = cy - py * scale;
+    if (scale === MIN) { tx = 0; ty = 0; }
+    clampPan(); apply();
+  }, { passive: false });
+
+  let panning = false, sx = 0, sy = 0, stx = 0, sty = 0;
+  wrap.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".bound-handle")) return; // handle drag, not pan
+    if (scale <= MIN) return;
+    panning = true; sx = e.clientX; sy = e.clientY; stx = tx; sty = ty;
+    wrap.style.cursor = "grabbing";
+    try { wrap.setPointerCapture(e.pointerId); } catch {}
+  });
+  wrap.addEventListener("pointermove", (e) => {
+    if (!panning) return;
+    tx = stx + (e.clientX - sx); ty = sty + (e.clientY - sy);
+    clampPan(); apply();
+  });
+  const endPan = (e) => {
+    if (!panning) return;
+    panning = false; wrap.style.cursor = "";
+    try { wrap.releasePointerCapture(e.pointerId); } catch {}
+  };
+  wrap.addEventListener("pointerup", endPan);
+  wrap.addEventListener("pointercancel", endPan);
+  wrap.addEventListener("dblclick", () => { scale = 1; tx = 0; ty = 0; apply(); });
+
+  const hint = document.createElement("div");
+  hint.className = "zoom-hint";
+  hint.textContent = "scroll: zoom · drag: pan · dbl-click: reset";
+  wrap.appendChild(hint);
+}
+
+// ── Severity summary ──────────────────────────────────────────────────────
+function computePillarSeverity(pillar, r) {
+  const issues = r.issues?.[pillar] ?? [];
+  if (issues.length === 0) {
+    return { level: "clean", label: "✓ Clean — no notable defects detected" };
+  }
+  const txt = issues.join(" ").toLowerCase();
+  if (txt.includes("heavy") || txt.includes("bent") || txt.includes("severe")) {
+    return { level: "heavy", label: `⚠ Heavy — ${issues.length} issue${issues.length>1?"s":""} flagged` };
+  }
+  if (txt.includes("moderate") || txt.includes("chip")) {
+    return { level: "moderate", label: `⚠ Moderate — ${issues.length} issue${issues.length>1?"s":""}` };
+  }
+  return { level: "minor", label: `Minor — ${issues.length} issue${issues.length>1?"s":""}` };
+}
+
+// ── Per-image overlay rendering ───────────────────────────────────────────
+function renderDetailImages(pillar, r, listing) {
+  const container = $("detail-images");
+  container.innerHTML = "";
+
+  const urls = listing?.image_urls ?? [];
+
+  // Front
+  if (urls[0]) {
+    container.appendChild(buildImageCard({
+      label: "Front",
+      url:   urls[0],
+      pillar,
+      result: r,
+      sideIndex: 0,
+      analysis:  r.front_analysis,
+      caption:   r.front_analysis?.assessable === false ? "Not assessable" : null,
+    }));
+  }
+
+  // Back (only if user provided one — many listings are front-only)
+  if (urls[1]) {
+    container.appendChild(buildImageCard({
+      label: "Back",
+      url:   urls[1],
+      pillar,
+      result: r,
+      sideIndex: 1,
+      analysis:  r.back_analysis,
+      caption:   r.back_analysis?.assessable === false ? "Not assessable" : null,
+    }));
+  } else {
+    const placeholder = document.createElement("div");
+    placeholder.className = "detail-img-card";
+    placeholder.innerHTML = `
+      <div class="detail-img-label">Back</div>
+      <div class="image-overlay-wrap" style="display:flex;align-items:center;justify-content:center;color:var(--sub);font-size:11px;">
+        Not provided
       </div>
-      <span class="grade-bar-pct">${pct(prob)}</span>
-    `
-    barsContainer.appendChild(row)
+      <div class="detail-image-caption">Back image not in listing</div>
+    `;
+    container.appendChild(placeholder);
   }
-
-  // ── Issues (categorized) ────────────────────────────────────────
-  const issuesList = document.getElementById('issues-list')
-  issuesList.innerHTML = ''
-  let hasAnyIssue = false
-
-  if (issues && typeof issues === 'object' && !Array.isArray(issues)) {
-    Object.entries(ISSUE_CATEGORY_LABELS).forEach(([key, label]) => {
-      const items = issues[key]
-      if (!Array.isArray(items) || items.length === 0) return
-      hasAnyIssue = true
-
-      const header = document.createElement('li')
-      header.className = 'issue-category-header'
-      header.textContent = label
-      issuesList.appendChild(header)
-
-      items.forEach(issue => {
-        const li = document.createElement('li')
-        li.className = 'issue-item'
-        li.textContent = issue
-        issuesList.appendChild(li)
-      })
-    })
-  }
-
-  if (!hasAnyIssue) {
-    const li = document.createElement('li')
-    li.className = 'no-issues'
-    li.textContent = '✓ No significant issues detected'
-    li.style.listStyle = 'none'
-    issuesList.appendChild(li)
-  }
-
-  // ── Economics ───────────────────────────────────────────────────
-  document.getElementById('price-raw').textContent   = fmt(economics.raw_estimate)
-  document.getElementById('price-psa8').textContent  = fmt(economics.psa8_estimate)
-  document.getElementById('price-psa9').textContent  = fmt(economics.psa9_estimate)
-  document.getElementById('price-psa10').textContent = fmt(economics.psa10_estimate)
-
-  document.getElementById('roi-listing').textContent   = fmt(economics.listing_price)
-  document.getElementById('roi-grade-fee').textContent = fmt(economics.grading_fee)
-  document.getElementById('roi-ev').textContent        = fmt(economics.expected_value)
-  document.getElementById('roi-max9').textContent      = fmt(economics.max_buy_price_for_psa9_target)
-  document.getElementById('roi-max8').textContent      = fmt(economics.max_buy_price_for_psa8_target)
-
-  const compsNote = document.getElementById('comps-note')
-  compsNote.textContent = (_meta.comps_source && _meta.comps_source !== 'none')
-    ? `Prices from: ${_meta.comps_source}`
-    : 'Prices: estimated (no live comps)'
-
-  renderCVDetectors(payload)
-  // CV overlay data — all apply to the front image only (CV runs on first buffer)
-  const cvSurfaceGrid  = Array.isArray(payload.surface_grid) ? payload.surface_grid  : null
-  const cvCornerBoxes  = Array.isArray(payload.corner_boxes) ? payload.corner_boxes  : null
-  const cvEdgeBands    = Array.isArray(payload.edge_bands)   ? payload.edge_bands    : null
-  const cardBoundsPct = Array.isArray(payload.card_bounds_pct) ? payload.card_bounds_pct : null
-  const centeringData = Array.isArray(payload.centering)       ? payload.centering       : null
-  renderAnalyzedImages(_analyzedUrls, [frontZones, backZones], cvSurfaceGrid, cvCornerBoxes, cvEdgeBands, cardBoundsPct, centeringData)
-  showState('result')
 }
 
-// ── Message listener ───────────────────────────────────────────────
+function buildImageCard({ label, url, pillar, result, sideIndex, analysis, caption }) {
+  const card = document.createElement("div");
+  card.className = "detail-img-card";
 
-chrome.runtime.onMessage.addListener((msg) => {
-  switch (msg.type) {
+  // Detail image label
+  const lbl = document.createElement("div");
+  lbl.className = "detail-img-label";
+  lbl.textContent = label;
+  card.appendChild(lbl);
 
-    case 'TAB_CHANGED': {
-      const url = msg.payload?.url ?? ''
-      const onEbay = url.startsWith('https://www.ebay.com/itm/')
-      // Only reset to idle if we're not already showing a result/analysis
-      const currentlyActive = !document.getElementById('state-idle').classList.contains('hidden') ||
-                              !document.getElementById('state-select').classList.contains('hidden')
-      if (!onEbay && currentlyActive) {
-        document.getElementById('idle-heading').textContent = 'Not on an eBay listing'
-        document.getElementById('idle-sub').innerHTML =
-          'Navigate to an eBay Pokémon listing and click <strong>Select &amp; Analyze</strong> to get started.'
-        showState('idle')
-      } else if (onEbay) {
-        document.getElementById('idle-heading').textContent = 'Ready to analyze'
-        document.getElementById('idle-sub').innerHTML =
-          'Click <strong>Select &amp; Analyze</strong> on the listing to pick images.'
-      }
-      break
+  // Image + SVG overlay container
+  const wrap = document.createElement("div");
+  wrap.className = "image-overlay-wrap";
+
+  const img = document.createElement("img");
+  img.className = "overlay-img";
+  img.src = url;
+  img.onerror = () => { img.style.display = "none"; };
+  wrap.appendChild(img);
+
+  // SVG overlay — viewBox 0..100 so we use percentages directly
+  const NS  = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("class",   "overlay-svg");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("preserveAspectRatio", "none");
+
+  // Card boundary outline (always shown — anchors the overlay)
+  const cardBounds = result.card_bounds_pct?.[sideIndex];
+  if (cardBounds) {
+    const rect = document.createElementNS(NS, "rect");
+    rect.setAttribute("x", cardBounds.x * 100);
+    rect.setAttribute("y", cardBounds.y * 100);
+    rect.setAttribute("width",  cardBounds.w * 100);
+    rect.setAttribute("height", cardBounds.h * 100);
+    rect.setAttribute("class", "sv-bounds");
+    rect.setAttribute("stroke-width", "0.4");
+    rect.setAttribute("stroke", "rgba(139,148,158,0.7)");
+    svg.appendChild(rect);
+  }
+
+  // Pillar-specific shapes — only on the side that has CV data (usually front)
+  const isFront = sideIndex === 0;
+  if (isFront) {
+    if (pillar === "centering") drawCenteringOverlay(svg, NS, result, cardBounds);
+    if (pillar === "corners")   drawCornersOverlay(svg, NS, result, cardBounds);
+    if (pillar === "edges")     drawEdgesOverlay(svg, NS, result, cardBounds);
+    if (pillar === "surface")   drawSurfaceOverlay(svg, NS, result, cardBounds);
+  }
+
+  // Per-side zones from Claude (works for back too)
+  if (analysis?.zones?.length) {
+    drawZoneOverlays(svg, NS, analysis.zones, pillar, cardBounds);
+  }
+
+  wrap.appendChild(svg);
+  card.appendChild(wrap);
+
+  // Caption
+  const cap = document.createElement("div");
+  cap.className = "detail-image-caption";
+  cap.textContent = caption ?? overlayCaption(pillar, result, sideIndex);
+  card.appendChild(cap);
+
+  return card;
+}
+
+function overlayCaption(pillar, r, sideIndex) {
+  if (pillar === "centering") {
+    const c = r.centering?.[sideIndex];
+    if (!c) return "";
+    if (c.ratios?.left_right && c.ratios?.top_bottom) return `L/R ${c.ratios.left_right} · T/B ${c.ratios.top_bottom}`;
+    return c.interpretation ?? "";
+  }
+  if (pillar === "surface" && sideIndex === 0) {
+    const sl = r.surface_lines;
+    return sl ? `Glare ${(sl.glare_fraction*100|0)}% · scratch score ${sl.score?.toFixed?.(2)}` : "";
+  }
+  return "";
+}
+
+// ── CENTERING overlay ─────────────────────────────────────────────────────
+function drawCenteringOverlay(svg, NS, r, cardBounds) {
+  const c = r.centering?.[0];
+  if (!c || !c.inner_frame_bbox_pct) return;
+
+  const inner = c.inner_frame_bbox_pct;
+  // inner_frame_bbox_pct is in card-fraction space (0–1 relative to the cropped card).
+  // The SVG viewBox is 0..100 over the full photo, so we must offset by cardBounds.
+  const cb = cardBounds ?? { x: 0, y: 0, w: 1, h: 1 };
+  const fx = (cb.x + inner.x * cb.w) * 100;
+  const fy = (cb.y + inner.y * cb.h) * 100;
+  const fw = inner.w * cb.w * 100;
+  const fh = inner.h * cb.h * 100;
+
+  const rect = document.createElementNS(NS, "rect");
+  rect.setAttribute("x", fx);
+  rect.setAttribute("y", fy);
+  rect.setAttribute("width",  fw);
+  rect.setAttribute("height", fh);
+  rect.setAttribute("class", "sv-content");
+  rect.setAttribute("stroke-width", "0.6");
+  svg.appendChild(rect);
+
+  // Margin labels — placed at the midpoint of each margin band
+  if (c.margins_pct) {
+    const { left, right, top, bottom } = c.margins_pct;
+    const cLeft   = cb.x * 100;
+    const cRight  = (cb.x + cb.w) * 100;
+    const cTop    = cb.y * 100;
+    const cBottom = (cb.y + cb.h) * 100;
+    addLabel(svg, NS, (cLeft + fx) / 2,         fy + fh / 2, `${left}%`);
+    addLabel(svg, NS, (fx + fw + cRight) / 2,   fy + fh / 2, `${right}%`);
+    addLabel(svg, NS, fx + fw / 2, (cTop + fy) / 2,          `${top}%`);
+    addLabel(svg, NS, fx + fw / 2, (fy + fh + cBottom) / 2,  `${bottom}%`);
+  }
+}
+
+// ── Coordinate helper ─────────────────────────────────────────────────────
+// CV measurements (corner_boxes, edge_bands, surface_grid, zone boxes) are in
+// card-percentage space (0–100 of the cropped card). The SVG viewBox covers the
+// full eBay photo (0–100). cardBounds {x,y,w,h} in 0–1 photo fractions maps
+// the card region inside the photo — apply it to all card-space coordinates.
+function cardPctToSvg(x, y, w, h, cb) {
+  const c = cb ?? { x: 0, y: 0, w: 1, h: 1 };
+  return {
+    x: (c.x + (x / 100) * c.w) * 100,
+    y: (c.y + (y / 100) * c.h) * 100,
+    w: (w / 100) * c.w * 100,
+    h: (h / 100) * c.h * 100,
+  };
+}
+
+// ── CORNERS overlay ───────────────────────────────────────────────────────
+function drawCornersOverlay(svg, NS, r, cardBounds) {
+  for (const c of (r.corner_boxes ?? [])) {
+    const s = cardPctToSvg(c.x_pct, c.y_pct, c.w_pct, c.h_pct, cardBounds);
+    const rect = document.createElementNS(NS, "rect");
+    rect.setAttribute("x", s.x);
+    rect.setAttribute("y", s.y);
+    rect.setAttribute("width",  s.w);
+    rect.setAttribute("height", s.h);
+    rect.setAttribute("class", `sv-${c.severity}`);
+    rect.setAttribute("stroke-width", "0.8");
+    svg.appendChild(rect);
+    addLabel(svg, NS, s.x + s.w / 2, s.y + s.h / 2, c.corner);
+  }
+}
+
+// ── EDGES overlay ─────────────────────────────────────────────────────────
+function drawEdgesOverlay(svg, NS, r, cardBounds) {
+  for (const e of (r.edge_bands ?? [])) {
+    const s = cardPctToSvg(e.x_pct, e.y_pct, e.w_pct, e.h_pct, cardBounds);
+    const rect = document.createElementNS(NS, "rect");
+    rect.setAttribute("x", s.x);
+    rect.setAttribute("y", s.y);
+    rect.setAttribute("width",  s.w);
+    rect.setAttribute("height", s.h);
+    rect.setAttribute("class", `sv-${e.severity}`);
+    rect.setAttribute("stroke-width", "0.6");
+    svg.appendChild(rect);
+  }
+}
+
+// ── SURFACE heatmap overlay ───────────────────────────────────────────────
+function drawSurfaceOverlay(svg, NS, r, cardBounds) {
+  for (const cell of (r.surface_grid ?? [])) {
+    const s = cardPctToSvg(cell.x_pct, cell.y_pct, cell.w_pct, cell.h_pct, cardBounds);
+    const rect = document.createElementNS(NS, "rect");
+    rect.setAttribute("x", s.x);
+    rect.setAttribute("y", s.y);
+    rect.setAttribute("width",  s.w);
+    rect.setAttribute("height", s.h);
+    rect.setAttribute("class", `sv-${cell.severity}`);
+    rect.setAttribute("stroke-width", "0.15");
+    // Glare-masked cells are shown dim — Claude couldn't see them
+    if (cell.glare_masked) {
+      rect.setAttribute("fill", "rgba(120,120,120,0.35)");
+      rect.setAttribute("stroke", "rgba(180,180,180,0.5)");
+    } else {
+      const opacity = Math.min(0.55, 0.15 + (cell.score ?? 0) * 0.5);
+      rect.setAttribute("fill-opacity", opacity);
     }
+    svg.appendChild(rect);
+  }
+}
 
-    case 'IMAGES_LOADED': {
-      const listing = msg.payload ?? {}
-      _pendingListing = listing
-      // Populate header
-      const t = listing.title ?? ''
-      selectTitleEl.textContent = t.length > 80 ? t.slice(0, 77) + '…' : t
-      // Build thumbnail grid
-      buildThumbGrid(listing.image_urls ?? [])
-      showState('select')
-      break
+// ── Per-side Claude zones (works on back too) ─────────────────────────────
+function drawZoneOverlays(svg, NS, zones, pillar, cardBounds) {
+  const PILLAR_MATCH = {
+    centering: (z) => false, // covered by drawCenteringOverlay
+    corners:   (z) => /-corner$/.test(z.zone),
+    edges:     (z) => /-edge$/.test(z.zone),
+    surface:   (z) => z.zone === "surface" || /^surface/.test(z.zone),
+  };
+  const isMatch = PILLAR_MATCH[pillar] ?? (() => false);
+
+  // Zone positions as percentages of the card (0–100)
+  const ZONE_BOXES = {
+    "tl-corner": { x: 0,  y: 0,  w: 18, h: 18 },
+    "tr-corner": { x: 82, y: 0,  w: 18, h: 18 },
+    "bl-corner": { x: 0,  y: 82, w: 18, h: 18 },
+    "br-corner": { x: 82, y: 82, w: 18, h: 18 },
+    "top-edge":     { x: 18, y: 0,  w: 64, h: 8  },
+    "bottom-edge":  { x: 18, y: 92, w: 64, h: 8  },
+    "left-edge":    { x: 0,  y: 18, w: 8,  h: 64 },
+    "right-edge":   { x: 92, y: 18, w: 8,  h: 64 },
+    "surface":      { x: 18, y: 18, w: 64, h: 64 },
+  };
+
+  for (const z of zones) {
+    if (!isMatch(z)) continue;
+    const box = ZONE_BOXES[z.zone];
+    if (!box) continue;
+    const s = cardPctToSvg(box.x, box.y, box.w, box.h, cardBounds);
+    const rect = document.createElementNS(NS, "rect");
+    rect.setAttribute("x", s.x);
+    rect.setAttribute("y", s.y);
+    rect.setAttribute("width",  s.w);
+    rect.setAttribute("height", s.h);
+    rect.setAttribute("class", `sv-${z.severity ?? "minor"}`);
+    rect.setAttribute("stroke-width", "0.5");
+    rect.setAttribute("fill-opacity", "0.18");
+    svg.appendChild(rect);
+  }
+}
+
+function addLabel(svg, NS, x, y, text) {
+  const t = document.createElementNS(NS, "text");
+  t.setAttribute("x", x);
+  t.setAttribute("y", y);
+  t.setAttribute("class", "sv-label");
+  t.textContent = text;
+  svg.appendChild(t);
+}
+
+// ── Findings list ─────────────────────────────────────────────────────────
+function renderDetailFindings(pillar, r) {
+  const findings = $("detail-findings");
+  findings.innerHTML = "";
+
+  // Combine top-level issues + per-side issues (deduped, side-tagged)
+  const combined = [];
+  const top      = r.issues?.[pillar] ?? [];
+  for (const i of top) combined.push({ text: i, side: null });
+
+  const fIssues = r.front_analysis?.issues?.[pillar] ?? [];
+  for (const i of fIssues) {
+    if (!top.some(t => t.includes(i))) combined.push({ text: i, side: "front" });
+  }
+  const bIssues = r.back_analysis?.issues?.[pillar] ?? [];
+  for (const i of bIssues) combined.push({ text: i, side: "back" });
+
+  if (combined.length === 0) {
+    findings.innerHTML = `<div class="finding-empty">No issues detected for ${PILLAR_TITLES[pillar].toLowerCase()}.</div>`;
+    return;
+  }
+
+  for (const f of combined) {
+    const row = document.createElement("div");
+    const sev = severityFromText(f.text);
+    row.className = `finding-row f-${sev}`;
+    const sideTag = f.side ? `<strong style="color:var(--sub);font-weight:600">[${f.side}]</strong> ` : "";
+    row.innerHTML = `${sideTag}${f.text}`;
+    findings.appendChild(row);
+  }
+}
+
+function severityFromText(text) {
+  const t = String(text).toLowerCase();
+  if (t.includes("heavy") || t.includes("severe") || t.includes("bent")) return "heavy";
+  if (t.includes("moderate") || t.includes("chip")) return "moderate";
+  if (t.includes("minor") || t.includes("slight") || t.includes("light")) return "minor";
+  return "minor";
+}
+
+// ── Measurements ──────────────────────────────────────────────────────────
+function renderDetailMeasurements(pillar, r) {
+  const block  = $("detail-measurements-block");
+  const target = $("detail-measurements");
+  target.innerHTML = "";
+
+  const rows = [];
+
+  if (pillar === "centering") {
+    const c = r.centering?.[0];
+    if (c?.ratios) {
+      rows.push(["L/R ratio", c.ratios.left_right ?? "—"]);
+      rows.push(["T/B ratio", c.ratios.top_bottom ?? "—"]);
     }
-
-    case 'ANALYSIS_START': {
-      const title = msg.payload?.title ?? ''
-      document.getElementById('loading-title').textContent =
-        title.length > 60 ? title.slice(0, 57) + '…' : title
-      document.getElementById('loading-step').textContent = 'Starting…'
-      showState('loading')
-      break
+    if (c?.margins_pct) {
+      rows.push(["Left margin",   pct(c.margins_pct.left)]);
+      rows.push(["Right margin",  pct(c.margins_pct.right)]);
+      rows.push(["Top margin",    pct(c.margins_pct.top)]);
+      rows.push(["Bottom margin", pct(c.margins_pct.bottom)]);
     }
+    if (c?.interpretation) rows.push(["Interpretation", c.interpretation]);
+    if (c?.confidence)     rows.push(["Confidence",    c.confidence]);
+  }
 
-    case 'ANALYSIS_PROGRESS': {
-      const step = msg.payload?.step ?? ''
-      document.getElementById('loading-step').textContent = step
-      break
-    }
+  if (pillar === "corners") {
+    const sevs = (r.corner_boxes ?? []).reduce((acc, c) => ((acc[c.corner] = c.severity), acc), {});
+    rows.push(["Top-left",     sevs.TL ?? "—"]);
+    rows.push(["Top-right",    sevs.TR ?? "—"]);
+    rows.push(["Bottom-left",  sevs.BL ?? "—"]);
+    rows.push(["Bottom-right", sevs.BR ?? "—"]);
+  }
 
-    case 'ANALYSIS_RESULT': {
-      renderResult(msg.payload ?? {})
-      break
-    }
-
-    case 'ANALYSIS_ERROR': {
-      document.getElementById('error-message').textContent =
-        msg.payload?.message ?? 'An unknown error occurred.'
-      document.getElementById('error-hint').textContent =
-        msg.payload?.hint ?? ''
-      showState('error')
-      break
+  if (pillar === "edges") {
+    const bi = r.border_irregularity ?? {};
+    rows.push(["Severity",            bi.severity ?? "—"]);
+    rows.push(["Irregularity score",  bi.score?.toFixed?.(3) ?? "—"]);
+    if (bi.per_side) {
+      const ps = bi.per_side;
+      rows.push(["Top edge grad",    pct(ps.top?.grad_fraction)]);
+      rows.push(["Right edge grad",  pct(ps.right?.grad_fraction)]);
+      rows.push(["Bottom edge grad", pct(ps.bottom?.grad_fraction)]);
+      rows.push(["Left edge grad",   pct(ps.left?.grad_fraction)]);
     }
   }
-})
 
-// ── Reset / back buttons ───────────────────────────────────────────
-document.getElementById('reset-btn').addEventListener('click', () => {
-  // Return to picker if we still have images loaded, else idle
-  showState(_pendingListing ? 'select' : 'idle')
-})
+  if (pillar === "surface") {
+    const sl = r.surface_lines ?? {};
+    rows.push(["Severity",           sl.severity ?? "—"]);
+    rows.push(["Scratch score",      sl.score?.toFixed?.(3) ?? "—"]);
+    rows.push(["Glare coverage",     pct(sl.glare_fraction)]);
+    rows.push(["Diagonal energy",    pct(sl.diagonal_energy_fraction)]);
+    rows.push(["Horizontal energy",  pct(sl.h_energy_fraction)]);
+    rows.push(["Vertical energy",    pct(sl.v_energy_fraction)]);
+    const gridCells = r.surface_grid ?? [];
+    const heavy = gridCells.filter(c => c.severity === "heavy").length;
+    const total = gridCells.length;
+    if (total) rows.push(["Heavy grid cells", `${heavy} / ${total}`]);
+  }
 
-document.getElementById('error-retry-btn').addEventListener('click', () => {
-  showState(_pendingListing ? 'select' : 'idle')
-})
+  if (rows.length === 0) {
+    block.style.display = "none";
+    return;
+  }
+  block.style.display = "";
 
-// ── Init ───────────────────────────────────────────────────────────
-showState('idle')
+  for (const [label, value] of rows) {
+    const row  = document.createElement("div");
+    row.className = "measurement-row";
+    row.innerHTML = `<span class="measurement-label">${label}</span><span class="measurement-value">${value}</span>`;
+    target.appendChild(row);
+  }
+}
+
+function pct(v) {
+  if (v == null || isNaN(v)) return "—";
+  return `${(v * 100).toFixed(1)}%`;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+
+// Ask the active tab's content script for its listing. If the content script
+// isn't present (the tab was already open when the extension last reloaded —
+// content scripts only inject on page load), inject it on the fly and retry,
+// so the user never has to manually refresh the eBay tab.
+async function requestListingFromTab(tabId) {
+  let resp = await chrome.tabs.sendMessage(tabId, { type: "REQUEST_LISTING" }).catch(() => null);
+  if (resp?.listing) return resp.listing;
+  await sendBg({ type: "INJECT_CONTENT", tabId });   // best-effort programmatic inject
+  await new Promise((r) => setTimeout(r, 500));        // let document_idle extraction settle
+  resp = await chrome.tabs.sendMessage(tabId, { type: "REQUEST_LISTING" }).catch(() => null);
+  return resp?.listing ?? null;
+}
+
+// sendBg — always resolves (never hangs). 8 s timeout as safety net.
+function sendBg(msg, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve({}), timeoutMs);
+    try {
+      chrome.runtime.sendMessage(msg, (resp) => {
+        clearTimeout(timer);
+        if (chrome.runtime.lastError) resolve({});
+        else resolve(resp ?? {});
+      });
+    } catch {
+      clearTimeout(timer);
+      resolve({});
+    }
+  });
+}

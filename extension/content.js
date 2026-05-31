@@ -1,219 +1,241 @@
 /**
- * content.js — eBay item page content script
+ * content.js — Card Seller OS content script (eBay listing pages only)
  *
- * Responsibilities:
- *  - Extract listing data (title, price, shipping, image URLs)
- *  - Inject "Analyze Card" button near the price block
- *  - Send ANALYZE_CARD message to background on button click
+ * Extracts: title, price, shipping, image URLs from the current eBay listing
+ * and sends to background.js for the side panel to display.
+ *
+ * Runs at document_idle on https://www.ebay.com/itm/* pages.
  */
 
-'use strict'
+(function () {
+  "use strict";
 
-;(function () {
-  // Only run once per page
-  if (document.getElementById('cga-analyze-btn')) return
+  let navObserver = null;   // declared first — assigned by observeNavigation()
 
-  // ── Data extraction ─────────────────────────────────────────────
-
-  function getTitle() {
-    const el =
-      document.querySelector('h1.x-item-title__mainTitle span') ||
-      document.querySelector('h1[itemprop="name"]') ||
-      document.querySelector('.x-item-title__mainTitle') ||
-      document.querySelector('h1')
-    return el ? el.textContent.trim() : document.title
+  // Guard against double-injection. content.js auto-injects at document_idle, but
+  // the side panel can also inject it on demand (chrome.scripting) when a tab
+  // predated an extension reload. Without this guard we'd attach duplicate
+  // message listeners and navigation observers.
+  if (window.__cardSellerOsInjected) {
+    extractAndSend();   // refresh the stored listing, but don't re-wire listeners
+    return;
   }
+  window.__cardSellerOsInjected = true;
 
-  function parsePrice(str) {
-    if (!str) return 0
-    const m = str.replace(/,/g, '').match(/[\d.]+/)
-    return m ? parseFloat(m[0]) : 0
+  // Run once the page is loaded; retry on SPA nav
+  extractAndSend();
+  injectFab();
+  observeNavigation();
+
+  // eBay can finish rendering price/images shortly after document_idle — retry a
+  // few times so the listing is detected and the floating button appears.
+  [600, 1500, 3000].forEach((d) => setTimeout(() => { extractAndSend(); injectFab(); }, d));
+
+  // chrome.runtime.id becomes undefined once the extension is reloaded/updated;
+  // any sendMessage from this stale content script then throws "Extension context
+  // invalidated". Guard against it and stop reacting so we don't spam the console.
+  function contextValid() {
+    return !!(chrome.runtime && chrome.runtime.id);
   }
-
-  function getPrice() {
-    const el =
-      document.querySelector('.x-price-primary .ux-textspans') ||
-      document.querySelector('[itemprop="price"]') ||
-      document.querySelector('.notranslate[id*="prcIsum"]')
-    if (!el) return 0
-    return parsePrice(el.getAttribute('content') || el.textContent)
+  function teardown() {
+    try { navObserver && navObserver.disconnect(); } catch { /* noop */ }
+    navObserver = null;
   }
-
-  function getShipping() {
-    const el =
-      document.querySelector('.ux-labels-values--shipping .ux-textspans--BOLD') ||
-      document.querySelector('#fshippingCost .notranslate') ||
-      document.querySelector('[data-testid="ux-labels-values__values-content"] .ux-textspans--BOLD')
-    if (!el) return 0
-    const txt = el.textContent.toLowerCase()
-    if (txt.includes('free')) return 0
-    return parsePrice(txt)
-  }
-
-  function getImageUrls() {
-    const imgs = new Set()
-
-    // ── 1. Thumbnail filmstrip (always loaded eagerly by eBay) ─────
-    // Modern eBay (2023+) renders thumbnails with several possible selectors.
-    // We collect every thumbnail src and upscale to s-l1600 by replacing the
-    // size token (s-l64, s-l140, s-l500, etc.) — this gives us ALL images
-    // regardless of which one is currently visible in the hero carousel.
-    const thumbSelectors = [
-      '.ux-image-filmstrip-item img',   // current eBay redesign
-      '.ux-image-carousel-item img',    // some listing layouts
-      '[data-idx] img',                 // older eBay layout
-      '.filmstrip img',                 // legacy
-      '.tdThumb img',                   // very old layout
-    ]
-    thumbSelectors.forEach(sel => {
-      document.querySelectorAll(sel).forEach(img => {
-        // Prefer data-src / data-zoom-src if set; fall back to visible src
-        const raw = img.getAttribute('data-zoom-src')
-                 || img.getAttribute('data-src')
-                 || img.src
-        if (raw && raw.startsWith('http')) {
-          // Upscale: replace any s-l<number> size token with s-l1600
-          imgs.add(raw.replace(/s-l\d+/g, 's-l1600'))
-        }
-      })
-    })
-
-    // ── 2. Hero / main image (catches the currently zoomed image) ──
-    document.querySelectorAll('.vi-image-hero img, #icImg, .vi_main_img_fs img').forEach(img => {
-      const raw = img.getAttribute('data-zoom-src') || img.getAttribute('data-src') || img.src
-      if (raw && raw.startsWith('http')) {
-        imgs.add(raw.replace(/s-l\d+/g, 's-l1600'))
-      }
-    })
-
-    // ── 3. Filter out obvious non-card images ──────────────────────
-    // eBay sometimes injects icon/sprite URLs into carousel containers.
-    const filtered = [...imgs].filter(url =>
-      !url.includes('s.yimg.com') &&
-      !url.includes('ir.ebaystatic.com') &&
-      !url.includes('svgs.ebayimg.com')
-    )
-
-    return filtered.slice(0, 8) // cap at 8 — Claude accepts up to 20, but 8 is plenty
-  }
-
-  function buildPayload() {
-    return {
-      listing_url:   window.location.href,
-      title:         getTitle(),
-      price:         getPrice(),
-      shipping:      getShipping(),
-      image_urls:    getImageUrls(),
-      marketplace:   'ebay',
-    }
-  }
-
-  // ── Button injection ────────────────────────────────────────────
-
-  function injectButton() {
-    if (document.getElementById('cga-analyze-btn')) return
-
-    // Try multiple eBay price / action block selectors — eBay updates layouts regularly.
-    // Each selector targets a visible block near the BIN price or bid section.
-    const anchor =
-      document.querySelector('.x-price-primary')              ||  // 2024+ BIN price
-      document.querySelector('.x-bin-price')                  ||  // some layouts
-      document.querySelector('[data-testid="x-price-section"]')||  // testid variant
-      document.querySelector('.u-price-full-block')           ||  // older layout
-      document.querySelector('#prcIsum_bidPrice')             ||  // bid listing
-      document.querySelector('.vi-price')                     ||  // very old layout
-      document.querySelector('#mainContent')                  ||  // broad fallback
-      document.querySelector('main')                          ||  // HTML5 main
-      document.body                                               // last resort
-
-    if (!anchor) {
-      // Page hasn't rendered yet — retry
-      setTimeout(injectButton, 1000)
-      return
-    }
-
-    const wrapper = document.createElement('div')
-    wrapper.id = 'cga-wrapper'
-    wrapper.innerHTML = `
-      <button id="cga-analyze-btn" title="Select images and analyze grading potential + ROI">
-        <span class="cga-icon">🖼</span>
-        <span class="cga-label">Select &amp; Analyze</span>
-      </button>
-      <div id="cga-status"></div>
-    `
-
-    // Prefer inserting after the anchor; fall back to prepending inside it
-    if (anchor.parentElement && anchor !== document.body && anchor !== document.querySelector('main') && anchor !== document.querySelector('#mainContent')) {
-      anchor.parentElement.insertBefore(wrapper, anchor.nextSibling)
-    } else {
-      anchor.prepend(wrapper)
-    }
-
-    document.getElementById('cga-analyze-btn').addEventListener('click', onAnalyzeClick)
-  }
-
-  function setStatus(text, type = '') {
-    const el = document.getElementById('cga-status')
-    if (!el) return
-    el.textContent = text
-    el.className = type ? `cga-status--${type}` : ''
-  }
-
-  async function onAnalyzeClick() {
-    const btn = document.getElementById('cga-analyze-btn')
-    if (!btn) return
-
-    btn.disabled = true
-    setStatus('Opening image picker…', 'info')
-
-    const payload = buildPayload()
-
-    if (!payload.title) {
-      setStatus('Could not read listing title.', 'error')
-      btn.disabled = false
-      return
-    }
-    if (!payload.image_urls.length) {
-      setStatus('No card images found on page.', 'error')
-      btn.disabled = false
-      return
-    }
-
+  function safeSend(msg) {
+    if (!contextValid()) { teardown(); return; }
     try {
-      chrome.runtime.sendMessage({ type: 'CARD_IMAGES_READY', payload }, (resp) => {
-        if (chrome.runtime.lastError) {
-          setStatus('Ext error: ' + chrome.runtime.lastError.message, 'error')
-          btn.disabled = false
-          return
-        }
-        // Surface whatever the background tells us so we can see open() failures
-        if (resp && resp.ok === false) {
-          setStatus('Panel open failed: ' + (resp.error || 'unknown'), 'error')
-          btn.disabled = false
-          return
-        }
-        setStatus('Select images in the side panel ↗', 'ok')
-        setTimeout(() => { setStatus(''); btn.disabled = false }, 4000)
-      })
-    } catch (err) {
-      setStatus('Could not reach extension background: ' + err.message, 'error')
-      btn.disabled = false
+      chrome.runtime.sendMessage(msg);
+    } catch {
+      teardown();   // context invalidated mid-call (extension reloaded)
     }
   }
 
-  // ── Init ────────────────────────────────────────────────────────
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', injectButton)
-  } else {
-    injectButton()
+  function extractAndSend() {
+    const listing = extractListing();
+    if (!listing) return;
+    safeSend({ type: "LISTING_DETECTED", listing });
   }
 
-  // Re-inject if eBay does a soft navigation (SPA-style page swap).
-  // subtree:true catches deep DOM replacements — eBay swaps inner containers,
-  // not direct children of body, so subtree:false missed most navigations.
-  const _observer = new MutationObserver(() => {
-    if (!document.getElementById('cga-analyze-btn')) injectButton()
-  })
-  _observer.observe(document.body, { childList: true, subtree: true })
-})()
+  // ── Floating "Grade card" button ──────────────────────────────────────────
+  // Chrome (MV3) can't auto-open the side panel on navigation, so we inject an
+  // in-page button that appears on every card page. Clicking it is the user
+  // gesture that lets the background open the side panel.
+  function injectFab() {
+    if (document.getElementById("cardseller-fab")) return;
+    if (!extractListing()) return;   // only show on real item pages
+
+    const btn = document.createElement("button");
+    btn.id = "cardseller-fab";
+    btn.type = "button";
+    btn.textContent = "🃏 Grade card";
+    Object.assign(btn.style, {
+      position: "fixed", right: "18px", top: "42%", zIndex: "2147483647",
+      padding: "11px 16px", background: "#388bfd", color: "#fff",
+      border: "none", borderRadius: "10px", fontSize: "13px", fontWeight: "700",
+      fontFamily: "system-ui, -apple-system, sans-serif", cursor: "pointer",
+      boxShadow: "0 3px 12px rgba(0,0,0,0.35)",
+    });
+    btn.addEventListener("mouseenter", () => { btn.style.background = "#58a6ff"; });
+    btn.addEventListener("mouseleave", () => { btn.style.background = "#388bfd"; });
+    btn.addEventListener("click", () => {
+      // The click provides the user gesture; background opens the side panel.
+      safeSend({ type: "OPEN_PANEL" });
+    });
+    document.body.appendChild(btn);
+  }
+
+  // ── Extraction helpers ────────────────────────────────────────────────────
+
+  function extractListing() {
+    const title    = extractTitle();
+    const price    = extractPrice();
+    const shipping = extractShipping();
+    const images   = extractImages();
+    if (!title || !price || images.length === 0) return null;
+
+    return {
+      url:        window.location.href,
+      title,
+      price,
+      shipping,
+      image_urls: images,
+      extracted_at: Date.now(),
+    };
+  }
+
+  function extractTitle() {
+    // eBay's main title element (multiple possible selectors across page variants)
+    const selectors = [
+      "h1.x-item-title__mainTitle span",
+      "h1.x-item-title__mainTitle",
+      "#itemTitle",
+      "h1[data-testid='x-item-title']",
+      ".x-item-title__mainTitle",
+    ];
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el && el.textContent.trim()) return el.textContent.trim();
+    }
+    return null;
+  }
+
+  function extractPrice() {
+    // Primary price (not "buy it now shipping" or "was" price)
+    const selectors = [
+      ".x-price-primary .ux-textspans",
+      ".x-price-primary",
+      "#prcIsum",
+      "[data-testid='x-price-section'] .ux-textspans",
+      ".u-flL.vi-price",
+    ];
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (!el) continue;
+      const text = el.textContent.replace(/[^0-9.]/g, "");
+      const val  = parseFloat(text);
+      if (val > 0) return val;
+    }
+    return null;
+  }
+
+  function extractShipping() {
+    const selectors = [
+      "#fshippingCost",
+      ".ux-labels-values__values .ux-textspans",
+      "[data-testid='ux-labels-values'] .ux-textspans",
+    ];
+    for (const sel of selectors) {
+      const els = document.querySelectorAll(sel);
+      for (const el of els) {
+        const text = el.textContent.toLowerCase();
+        if (text.includes("free")) return 0;
+        if (text.includes("ship") || text.includes("+")) {
+          const val = parseFloat(el.textContent.replace(/[^0-9.]/g, ""));
+          if (val >= 0) return val;
+        }
+      }
+    }
+    return 0;
+  }
+
+  function extractImages() {
+    const seen = new Set();
+    const urls = [];
+
+    // eBay image carousel — largest variants
+    const imgEls = document.querySelectorAll(
+      ".ux-image-carousel-item img, " +
+      ".ux-image-magnify__image--original, " +
+      ".img[data-zoom-src], " +
+      "#icImg"
+    );
+
+    for (const img of imgEls) {
+      // Prefer zoom/large src over thumbnail
+      const src = img.getAttribute("data-zoom-src")
+        || img.getAttribute("data-src")
+        || img.src
+        || "";
+
+      if (!src || src.startsWith("data:")) continue;
+
+      // Upgrade to s-l1600 for max resolution
+      const large = src
+        .replace(/s-l\d+/, "s-l1600")
+        .replace(/s-l\d+\.jpg/, "s-l1600.jpg");
+
+      if (!seen.has(large) && large.includes("ebayimg.com")) {
+        seen.add(large);
+        urls.push(large);
+      }
+    }
+
+    // Fallback: meta og:image
+    if (urls.length === 0) {
+      const og = document.querySelector('meta[property="og:image"]');
+      if (og && og.content) urls.push(og.content);
+    }
+
+    return urls.slice(0, 24); // eBay allows up to 24 photos per listing
+  }
+
+  // ── SPA navigation observer ───────────────────────────────────────────────
+  // eBay uses pushState for navigation — observe URL changes
+
+  let lastUrl = location.href;
+
+  function observeNavigation() {
+    navObserver = new MutationObserver(() => {
+      if (!contextValid()) { teardown(); return; }
+      if (location.href !== lastUrl) {
+        lastUrl = location.href;
+        setTimeout(() => { extractAndSend(); injectFab(); }, 1200); // wait for React render
+      }
+    });
+    navObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // ── Message listener (from side panel) ───────────────────────────────────
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.type === "REQUEST_LISTING") {
+      sendResponse({ listing: extractListing() });
+    }
+    if (msg.type === "FETCH_IMAGE_DATA") {
+      fetchImageAsBase64(msg.url)
+        .then((data) => sendResponse({ data }))
+        .catch(() => sendResponse({ data: null }));
+      return true;
+    }
+  });
+
+  async function fetchImageAsBase64(url) {
+    const img    = new Image();
+    img.crossOrigin = "anonymous";
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+    const canvas = document.createElement("canvas");
+    canvas.width  = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    canvas.getContext("2d").drawImage(img, 0, 0);
+    return canvas.toDataURL("image/jpeg", 0.90).split(",")[1];
+  }
+})();

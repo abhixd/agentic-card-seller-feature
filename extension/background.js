@@ -1,253 +1,264 @@
 /**
- * background.js — Manifest V3 service worker
+ * background.js — Card Seller OS Chrome Extension service worker
  *
- * Side-panel-opening notes:
- *  • chrome.sidePanel.open() requires a user-gesture context.
- *  • Gesture context propagates from content-script messages into
- *    chrome.runtime.onMessage handlers IF open() is called inside the
- *    synchronous portion of the handler (no awaits before it).
- *  • chrome.sidePanel.setOptions({tabId, enabled}) is PERSISTED across
- *    extension reloads. A previous build that mistakenly set enabled:false
- *    for a tab will keep that state until we explicitly re-enable it.
- *  • onInstalled clears stale per-tab options to recover from past bugs.
+ * Responsibilities:
+ *  - Open side panel when toolbar icon is clicked
+ *  - Auto-open side panel when navigating to an eBay listing
+ *  - Relay listing data between content.js and sidepanel.js
+ *  - Forward grade requests to the Next.js API or Python backend
  */
 
-'use strict'
+const NEXTJS_BASE_DEFAULT = "http://localhost:3000";
+const PYTHON_BASE_DEFAULT = "http://127.0.0.1:8000";
 
-const DEFAULT_BACKEND = 'https://agentic-card-seller-os.vercel.app'
-
-// ── Side panel default behaviour ─────────────────────────────────
-// IMPORTANT: openPanelOnActionClick is false.
-// The toolbar icon must NOT open the panel directly — if it did, users
-// could open the panel on any tab and bypass our per-tab gating.
-// The panel only opens via chrome.sidePanel.open() from our message
-// handler when the "Select & Analyze" button is clicked on an eBay tab.
+// ── Side panel setup ───────────────────────────────────────────────────────
+// Clicking the toolbar icon opens the side panel. Asserted at the top level so
+// it re-applies on EVERY service-worker activation (not just install/update) —
+// this fixes the panel failing to open after an extension reload or SW restart.
 chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: false })
-  .catch(() => {})
+  .setPanelBehavior({ openPanelOnActionClick: true })
+  .catch((e) => console.warn("[sidePanel] setPanelBehavior failed:", e));
 
-// ── Per-tab panel restriction ────────────────────────────────────
-//
-// Side panels in Chrome are window-level by default — once opened in
-// any tab, they show across every tab in that window. To make the
-// panel tab-scoped, we use setOptions({ tabId, enabled }) so Chrome
-// shows it only for tabs we've enabled.
-//
-// Rules learned from earlier bugs:
-//  • `path: 'sidepanel.html'` MUST be included alongside enabled:true
-//    or Chrome throws "No active side panel for tabId".
-//  • Use changeInfo.url in onUpdated — it's always the real new URL
-//    when defined. tab.url can be transiently undefined for the eBay
-//    tab itself, which would false-disable it.
-//  • For non-eBay URLs, changeInfo.url is undefined (we lack host
-//    permission). onActivated picks up those tabs instead.
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+});
+chrome.runtime.onStartup.addListener(() => {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+});
 
-function isEbayListing(url) {
-  return typeof url === 'string' && url.includes('ebay.com/itm/')
-}
-
-function syncPanelForTab(tabId, url) {
-  if (isEbayListing(url)) {
-    chrome.sidePanel
-      .setOptions({ tabId, enabled: true, path: 'sidepanel.html' })
-      .catch(() => {})
-  } else {
-    // url is either undefined (non-eBay we can't read — host_permissions
-    // would surface it otherwise) or a known non-listing URL.
-    //
-    // Two-pronged disable: enabled:false stops the toolbar icon from
-    // opening the panel; path:'blank.html' ensures that if Chrome
-    // chooses to keep the panel slot visible across the tab switch
-    // (a quirk in some Chrome versions when a panel was already open
-    // in the window) the user sees an empty dark area instead of the
-    // sidepanel.html "Not on an eBay listing" message.
-    chrome.sidePanel
-      .setOptions({ tabId, enabled: false, path: 'blank.html' })
-      .catch(() => {})
-  }
-}
-
-// On install/update: sync every existing tab so stale state from
-// previous builds (any persisted enabled:false / path-less options)
-// is corrected based on the tab's current URL.
-chrome.runtime.onInstalled.addListener(async () => {
-  console.log('[CGA] onInstalled — syncing per-tab panel state')
+// When the toolbar icon is clicked, request listing data from the active tab
+// (sidePanel.setPanelBehavior already handles opening; this seeds the listing)
+chrome.action.onClicked.addListener(async (tab) => {
+  if (!tab?.id) return;
+  // Ask the content script (if present) for latest listing data
   try {
-    const tabs = await chrome.tabs.query({})
-    for (const tab of tabs) {
-      if (tab.id != null) syncPanelForTab(tab.id, tab.url ?? '')
+    const { listing } = await chrome.tabs.sendMessage(tab.id, { type: "REQUEST_LISTING" });
+    if (listing) {
+      await chrome.storage.local.set({ pendingListing: listing });
     }
-    console.log(`[CGA] synced ${tabs.length} tabs`)
-  } catch (e) {
-    console.warn('[CGA] tabs.query failed:', e)
+  } catch {
+    // Not an eBay page or content script not injected — that's fine
   }
-})
+});
 
-// User switches tabs — enable for eBay, disable otherwise
-chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-  try {
-    const tab = await chrome.tabs.get(tabId)
-    const url = tab.url ?? ''
-    syncPanelForTab(tabId, url)
-    broadcast({ type: 'TAB_CHANGED', payload: { url } })
-  } catch {}
-})
+// Track eBay navigation so pendingListing stays fresh even if panel is closed
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== "complete") return;
+  if (!tab.url) return;
+  const isListing = /^https?:\/\/(www\.)?ebay\.com\/itm\//.test(tab.url);
+  if (!isListing) return;
 
-// Tab navigates — only fires for URLs we have permission to read
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.url === undefined) return
-  syncPanelForTab(tabId, changeInfo.url)
-  broadcast({ type: 'TAB_CHANGED', payload: { url: changeInfo.url } })
-})
-
-// ── Message router ───────────────────────────────────────────────
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // CRITICAL: sidePanel.open() MUST be invoked synchronously in this
-  // handler — NOT inside a .then() callback. A .then() runs in a
-  // microtask after the handler returns, and Chrome strips the
-  // user-gesture token at that point ("may only be called in response
-  // to a user gesture" error).
-  //
-  // Pattern: fire setOptions and open both synchronously, side by side.
-  // Chrome processes extension IPCs in order, so setOptions(enabled:true)
-  // is applied before open() is evaluated on the browser side.
-  if (msg.type === 'CARD_IMAGES_READY' && sender.tab?.id != null) {
-    const tabId = sender.tab.id
-    console.log('[CGA] CARD_IMAGES_READY tab', tabId)
-
-    // Both calls fired synchronously, side by side — no chaining.
-    // `path` is required: Chrome throws "No active side panel for tabId"
-    // if the tab has setOptions state without an explicit path.
-    chrome.sidePanel
-      .setOptions({ tabId, enabled: true, path: 'sidepanel.html' })
-      .catch(() => {})
-    const openPromise = chrome.sidePanel.open({ tabId })
-
-    openPromise
-      .then(() => {
-        console.log('[CGA] side panel opened')
-        sendResponse({ ok: true })
-      })
-      .catch((e) => {
-        console.error('[CGA] open failed:', e)
-        sendResponse({ ok: false, error: String(e) })
-      })
-
-    // Push the listing payload to the panel after the DOM mounts
-    setTimeout(() => {
-      broadcast({ type: 'IMAGES_LOADED', payload: msg.payload })
-    }, 400)
-
-    return true // async sendResponse
-  }
-
-  if (msg.type === 'ANALYZE_SELECTED') {
-    handleAnalyze(msg.payload)
-    sendResponse({ ok: true })
-    return
-  }
-
-  if (msg.type === 'GET_SETTINGS') {
-    chrome.storage.local.get(['backendUrl'], (data) => {
-      sendResponse({ backendUrl: data.backendUrl ?? DEFAULT_BACKEND })
-    })
-    return true
-  }
-
-  if (msg.type === 'SAVE_SETTINGS') {
-    chrome.storage.local.set({ backendUrl: msg.payload.backendUrl })
-    sendResponse({ ok: true })
-    return
-  }
-})
-
-// ── Grading flow ─────────────────────────────────────────────────
-async function handleAnalyze(listing) {
-  broadcast({ type: 'ANALYSIS_START', payload: { title: listing.title } })
-
-  const { backendUrl = DEFAULT_BACKEND } = await chrome.storage.local.get('backendUrl')
-  const endpoint = `${backendUrl.replace(/\/$/, '')}/api/grade/analyze`
-
-  // AbortController for the backend fetch — cancelled if it takes > 80 s.
-  // (Vercel maxDuration is 60 s, so 80 s gives it time to return its own
-  // timeout error before we give up on our end.)
-  const controller = new AbortController()
-  const backendTimer = setTimeout(() => controller.abort(), 80_000)
-
-  try {
-    // Download images here in the browser — the browser has the correct
-    // session/cookies/referrer to access eBay CDN. Vercel's servers do not,
-    // which caused Claude to only see the first image and return FRONT ONLY.
-    broadcast({ type: 'ANALYSIS_PROGRESS', payload: { step: 'Downloading images…' } })
-    const imageData = await fetchImagesAsBase64(listing.image_urls ?? [])
-    broadcast({ type: 'ANALYSIS_PROGRESS', payload: { step: 'Running analysis…' } })
-
-    const resp = await fetch(endpoint, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ ...listing, image_data: imageData }),
-      signal:  controller.signal,
-    })
-
-    if (!resp.ok) {
-      const txt = await resp.text()
-      throw new Error(`Server error ${resp.status}: ${txt.slice(0, 200)}`)
-    }
-
-    const result = await resp.json()
-    broadcast({ type: 'ANALYSIS_PROGRESS', payload: { step: 'Computing ROI…' } })
-    await sleep(200)
-    broadcast({ type: 'ANALYSIS_RESULT', payload: result })
-
-  } catch (err) {
-    const isTimeout = err.name === 'AbortError'
-    broadcast({
-      type: 'ANALYSIS_ERROR',
-      payload: {
-        message: isTimeout
-          ? 'Analysis timed out — the server took too long to respond.'
-          : (err.message ?? 'Unknown error'),
-        hint: isTimeout
-          ? 'This can happen with large images. Try selecting fewer images or try again.'
-          : endpoint.includes('localhost')
-          ? 'Make sure the grading backend is running locally.'
-          : null,
-      },
-    })
-  } finally {
-    clearTimeout(backendTimer)
-  }
-}
-
-// ── Helpers ──────────────────────────────────────────────────────
-function broadcast(msg) {
-  chrome.runtime.sendMessage(msg).catch(() => {})
-}
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-/**
- * Fetch each URL as a base64 string using the browser's fetch
- * (which carries the correct session/cookies for eBay CDN).
- * Returns null for any image that fails — backend degrades gracefully.
- */
-async function fetchImagesAsBase64(urls) {
-  return Promise.all(urls.map(async (url) => {
+  // Small delay — give the content script time to extract the listing
+  setTimeout(async () => {
     try {
-      // 12 s per image — eBay CDN is fast; longer means something is wrong.
-      const resp = await fetch(url, { signal: AbortSignal.timeout(12_000) })
-      if (!resp.ok) return null
-      const blob = await resp.blob()
-      return await new Promise((resolve) => {
-        const reader = new FileReader()
-        reader.onload  = () => resolve(reader.result.split(',')[1]) // strip data: prefix
-        reader.onerror = () => resolve(null)
-        reader.readAsDataURL(blob)
-      })
+      const { listing } = await chrome.tabs.sendMessage(tabId, { type: "REQUEST_LISTING" });
+      if (listing) {
+        await chrome.storage.local.set({ pendingListing: listing });
+        // If panel is open, push the update
+        chrome.runtime.sendMessage({ type: "LISTING_READY", listing }).catch(() => {});
+      }
+    } catch { /* not injected yet */ }
+  }, 1500);
+});
+
+// ── Message bus ────────────────────────────────────────────────────────────
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  switch (msg.type) {
+
+    // Content script → background: new eBay listing detected
+    case "LISTING_DETECTED":
+      chrome.storage.local.set({ pendingListing: msg.listing });
+      // Notify any open side panel (best-effort — panel may not be open yet)
+      chrome.runtime.sendMessage({ type: "LISTING_READY", listing: msg.listing }).catch(() => {});
+      sendResponse({ ok: true });
+      break;
+
+    // Side panel → background: return cached listing from storage
+    case "GET_CURRENT_LISTING":
+      chrome.storage.local.get("pendingListing", (data) => {
+        sendResponse({ listing: data.pendingListing || null });
+      });
+      return true;
+
+    // Side panel → background: run full grade analysis
+    case "ANALYZE_LISTING":
+      analyzeListing(msg.listing, msg.options)
+        .then((result) => sendResponse({ ok: true, result }))
+        .catch((err)  => sendResponse({ ok: false, error: err.message }));
+      return true;
+
+    // Content script (in-page "Grade card" button) → open the side panel.
+    // Called within the button's click gesture so chrome.sidePanel.open is allowed.
+    case "OPEN_PANEL":
+      if (sender.tab?.id) {
+        chrome.sidePanel.open({ tabId: sender.tab.id })
+          .catch((e) => console.warn("[sidePanel] open failed:", e.message));
+      }
+      return false;
+
+    // Side panel → background: inject content.js into a tab on demand (used when
+    // the script wasn't auto-injected because the tab predated an extension reload)
+    case "INJECT_CONTENT":
+      injectContent(msg.tabId)
+        .then(()    => sendResponse({ ok: true }))
+        .catch((err) => sendResponse({ ok: false, error: err.message }));
+      return true;
+
+    // Side panel → background: persist a boundary correction for YOLO retraining
+    case "SAVE_ADJUSTMENT":
+      saveAdjustment(msg.record)
+        .then((res)  => sendResponse({ ok: true, ...res }))
+        .catch((err) => sendResponse({ ok: false, error: err.message }));
+      return true;
+
+    // Side panel → background: run YOLO+Claude detailed grading (Python backend)
+    case "GRADE_IMAGE":
+      gradeImage({ url: msg.imageUrl, b64: msg.imageData }, null, null)
+        .then((result) => sendResponse({ ok: true, result }))
+        .catch((err)   => sendResponse({ ok: false, error: err.message }));
+      return true;
+
+    // Health checks
+    case "HEALTH_CHECK_NEXTJS":
+      checkHealth(NEXTJS_BASE_DEFAULT + "/api/health")
+        .then((ok) => sendResponse({ ok }));
+      return true;
+
+    case "HEALTH_CHECK_PYTHON":
+      checkHealth(PYTHON_BASE_DEFAULT + "/health")
+        .then((ok) => sendResponse({ ok }));
+      return true;
+
+    case "GET_CONFIG":
+      chrome.storage.local.get(["apiBase", "pythonBase"], (cfg) => {
+        sendResponse({
+          apiBase:    cfg.apiBase    || NEXTJS_BASE_DEFAULT,
+          pythonBase: cfg.pythonBase || PYTHON_BASE_DEFAULT,
+        });
+      });
+      return true;
+  }
+});
+
+// ── API calls ──────────────────────────────────────────────────────────────
+async function getConfig() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["apiBase", "pythonBase"], (cfg) => {
+      resolve({
+        apiBase:    cfg.apiBase    || NEXTJS_BASE_DEFAULT,
+        pythonBase: cfg.pythonBase || PYTHON_BASE_DEFAULT,
+      });
+    });
+  });
+}
+
+// Fetch an image as base64 from the page context (eBay CDN is reliably reachable
+// there; the service worker sometimes isn't). Returns null on failure.
+async function fetchImageB64ViaTab(url) {
+  if (!url) return null;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return null;
+    const resp = await chrome.tabs
+      .sendMessage(tab.id, { type: "FETCH_IMAGE_DATA", url })
+      .catch(() => null);
+    return resp?.data ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function analyzeListing(listing, _options = {}) {
+  // Primary grading path = the notebook pipeline (YOLO OBB detect -> perspective
+  // warp -> palette centering -> Claude Sonnet multicrop) on the Python server.
+  // The user-chosen Front (and optional Back) are graded.
+  const frontUrl = listing.front_url || listing.image_urls?.[0];
+  if (!frontUrl) throw new Error("Listing has no images to grade");
+  const backUrl = listing.back_url || null;
+
+  const frontB64 = await fetchImageB64ViaTab(frontUrl);
+  const backB64  = backUrl ? await fetchImageB64ViaTab(backUrl) : null;
+
+  return gradeImage(
+    { url: frontB64 ? null : frontUrl, b64: frontB64 },
+    backUrl ? { url: backB64 ? null : backUrl, b64: backB64 } : null,
+    { title: listing.title ?? "", price: listing.price ?? 0, shipping: listing.shipping ?? 0 },
+  );
+}
+
+async function imgToBlob(img) {
+  if (img?.b64) return base64ToBlob(img.b64);
+  const r = await fetch(img.url);
+  return r.blob();
+}
+
+// front/back: { url?, b64? } (back may be null). meta drives eBay comps + ROI.
+async function gradeImage(front, back, meta = null) {
+  const { pythonBase } = await getConfig();
+
+  const form = new FormData();
+  form.append("image", await imgToBlob(front), "front.jpg");
+  if (back && (back.url || back.b64)) {
+    form.append("image_back", await imgToBlob(back), "back.jpg");
+  }
+  if (meta) {
+    form.append("title",    String(meta.title ?? ""));
+    form.append("price",    String(meta.price ?? 0));
+    form.append("shipping", String(meta.shipping ?? 0));
+  }
+
+  const res  = await fetch(`${pythonBase}/grade`, { method: "POST", body: form });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || `Server error ${res.status}`);
+  return data;
+}
+
+async function fetchImagesAsBase64(urls) {
+  const results = [];
+  for (const url of urls) {
+    try {
+      const r   = await fetch(url, { mode: "cors" });
+      const buf = await r.arrayBuffer();
+      const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+      results.push(b64);
     } catch {
-      return null
+      results.push(null);
     }
-  }))
+  }
+  return results;
+}
+
+function base64ToBlob(b64) {
+  const bytes = atob(b64);
+  const arr   = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+  return new Blob([arr], { type: "image/jpeg" });
+}
+
+async function injectContent(tabId) {
+  if (!tabId) throw new Error("No tabId");
+  // content.js guards against double-init, so re-injection is safe.
+  await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+  return true;
+}
+
+async function saveAdjustment(record) {
+  const { pythonBase } = await getConfig();
+  const res = await fetch(`${pythonBase}/feedback`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify(record),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `Feedback API ${res.status}`);
+  return data;
+}
+
+async function checkHealth(url) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(2500) });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }

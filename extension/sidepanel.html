@@ -3,270 +3,210 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Card Grade Analyzer</title>
+  <title>Card Seller OS</title>
   <link rel="stylesheet" href="sidepanel.css" />
 </head>
 <body>
-  <!-- ── Header ── -->
-  <header>
-    <div class="header-inner">
-      <img src="icons/icon48.png" alt="" class="logo" />
-      <div class="header-text">
-        <h1>Card Grader</h1>
-        <p class="subtitle">PSA grade viability + ROI</p>
-      </div>
-      <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
+
+<!-- ── Header ─────────────────────────────────────────────────── -->
+<header class="header">
+  <div class="header-brand">
+    <span class="header-icon">🃏</span>
+    <span class="header-title">Card Seller OS</span>
+  </div>
+  <div class="header-status">
+    <span id="status-dot" class="dot dot-unknown" title="API server status"></span>
+  </div>
+</header>
+
+<!-- ── Idle / no listing ──────────────────────────────────────── -->
+<section id="view-idle" class="view">
+  <div class="idle-box">
+    <div class="idle-icon">🔍</div>
+    <div class="idle-title">Navigate to an eBay listing</div>
+    <div class="idle-sub">The panel auto-analyzes Pokémon card listings.</div>
+  </div>
+  <div class="idle-actions">
+    <button id="btn-reload-listing" class="btn btn-primary w-full">
+      🔄 Load current eBay listing
+    </button>
+    <label class="btn btn-secondary w-full" style="margin-top:8px" for="upload-input">
+      📂 Grade from image file
+      <input type="file" id="upload-input" accept="image/*" hidden />
+    </label>
+  </div>
+</section>
+
+<!-- ── Listing detected ──────────────────────────────────────── -->
+<section id="view-listing" class="view hidden">
+  <div class="listing-card">
+    <div class="listing-thumb-wrap">
+      <img id="listing-thumb" class="listing-thumb" src="" alt="card" />
     </div>
-  </header>
-
-  <!-- ── Settings panel (hidden by default) ── -->
-  <section id="settings-panel" class="panel hidden">
-    <label for="backend-url-input">Backend URL</label>
-    <input id="backend-url-input" type="url" placeholder="http://localhost:3000" />
-    <div class="settings-actions">
-      <button id="save-settings-btn" class="btn-primary">Save</button>
-      <button id="cancel-settings-btn" class="btn-ghost">Cancel</button>
+    <div class="listing-meta">
+      <div id="listing-title" class="listing-title"></div>
+      <div class="listing-price-row">
+        <span id="listing-price" class="listing-price"></span>
+        <span id="listing-shipping" class="listing-shipping"></span>
+      </div>
+      <div id="listing-imgs" class="listing-imgs-count"></div>
     </div>
-    <p id="settings-msg" class="settings-msg"></p>
-  </section>
-
-  <!-- ── Main content ── -->
-  <main id="main-content">
-
-    <!-- Idle / welcome state -->
-    <div id="state-idle" class="state">
-      <div class="idle-icon">🃏</div>
-      <p class="idle-heading" id="idle-heading">Ready to analyze</p>
-      <p class="idle-sub" id="idle-sub">
-        Navigate to an eBay Pokémon listing and click <strong>Select &amp; Analyze</strong> to get started.
-      </p>
+  </div>
+  <div class="gallery-wrap">
+    <div class="gallery-label">
+      Tap a photo for <b class="role-front">Front</b>, then another for <b class="role-back">Back</b>
     </div>
+    <div id="listing-gallery" class="listing-gallery"></div>
+  </div>
 
-    <!-- Select state -->
-    <div id="state-select" class="state hidden">
-      <div class="select-header">
-        <p id="select-title" class="select-title"></p>
-        <p class="select-hint">Tap images to select for analysis</p>
-      </div>
-      <div class="select-actions-top">
-        <button id="select-all-btn"  class="btn-link">Select all</button>
-        <span class="select-sep">·</span>
-        <button id="clear-sel-btn"   class="btn-link">Clear</button>
-      </div>
-      <div id="thumb-grid" class="thumb-grid"></div>
-      <div class="select-footer">
-        <button id="analyze-selected-btn" class="btn-primary btn-full" disabled>
-          Analyze <span id="sel-count">0</span> selected
-        </button>
-      </div>
+  <button id="btn-analyze" class="btn btn-primary w-full">
+    ⚡ Analyze listing
+  </button>
+  <div class="mode-toggle">
+    <label class="mode-label">
+      <input type="checkbox" id="chk-multicrop" checked />
+      <span>Include corner zooms (YOLO+Claude, slower)</span>
+    </label>
+  </div>
+</section>
+
+<!-- ── Loading ──────────────────────────────────────────────── -->
+<section id="view-loading" class="view hidden">
+  <div class="loading-wrap">
+    <div class="spinner-ring"></div>
+    <div class="loading-title">Analyzing card…</div>
+    <div id="loading-step" class="loading-step">Claude Vision grading</div>
+    <div class="loading-steps">
+      <div class="step" id="step-1">1 · Detect &amp; crop card (YOLO)</div>
+      <div class="step" id="step-2">2 · Warp + analyse centering</div>
+      <div class="step" id="step-3">3 · Grade pillars with Claude</div>
     </div>
+  </div>
+</section>
 
-    <!-- Loading state -->
-    <div id="state-loading" class="state hidden">
-      <div class="spinner-wrap">
-        <div class="spinner"></div>
+<!-- ── Error ─────────────────────────────────────────────────── -->
+<section id="view-error" class="view hidden">
+  <div class="error-card">
+    <div class="error-icon">⚠️</div>
+    <div id="error-msg" class="error-msg"></div>
+  </div>
+  <button id="btn-retry" class="btn btn-ghost w-full">Try again</button>
+</section>
+
+<!-- ── Results ───────────────────────────────────────────────── -->
+<section id="view-results" class="view hidden">
+
+  <!-- Decision banner -->
+  <div id="decision-banner" class="decision-banner">
+    <div id="decision-label" class="decision-label"></div>
+    <div id="decision-reason" class="decision-reason"></div>
+  </div>
+
+  <!-- Card identity + images -->
+  <div class="result-images" id="result-images"></div>
+
+  <!-- Grade estimate -->
+  <div class="result-block">
+    <div class="block-header">Grade Estimate</div>
+    <div class="grade-row">
+      <div class="grade-band-wrap">
+        <span id="grade-band" class="grade-band"></span>
+        <span id="grade-conf" class="grade-conf"></span>
       </div>
-      <p id="loading-title" class="loading-title"></p>
-      <p id="loading-step"  class="loading-step">Initializing…</p>
+      <div id="card-name" class="card-name"></div>
     </div>
+    <div id="grade-dist" class="grade-dist"></div>
+    <div id="grade-limiting" class="grade-limiting hidden"></div>
+  </div>
 
-    <!-- Error state -->
-    <div id="state-error" class="state hidden">
-      <div class="error-icon">⚠️</div>
-      <p id="error-message" class="error-message"></p>
-      <p id="error-hint"    class="error-hint"></p>
-      <button id="error-retry-btn" class="btn-primary">Try Again</button>
-    </div>
-
-    <!-- Results state -->
-    <div id="state-result" class="state hidden">
-
-      <!-- Analyzed images strip -->
-      <section class="analyzed-images-section result-section">
-        <h2 class="section-title">Analyzed Images</h2>
-        <div id="analyzed-images-strip" class="analyzed-images-strip"></div>
-      </section>
-
-      <!-- Card identity + analysis mode -->
-      <section class="card-id-section">
-        <div class="card-title-row">
-          <p id="res-title" class="res-title"></p>
-          <span id="res-mode" class="mode-badge"></span>
-        </div>
-        <div class="card-meta">
-          <span id="res-set"  class="tag tag--set"></span>
-          <span id="res-year" class="tag tag--year"></span>
-          <span id="res-num"  class="tag tag--num"></span>
-          <span id="res-id-conf" class="tag tag--id-conf"></span>
-        </div>
-      </section>
-
-      <!-- Image quality -->
-      <section class="result-section iq-section">
-        <h2 class="section-title">Image Quality</h2>
-        <div id="iq-chips" class="iq-chips"></div>
-        <ul id="iq-warnings" class="iq-warnings"></ul>
-      </section>
-
-      <!-- CV Detectors (machine vision) -->
-      <section class="result-section cv-detectors-section">
-        <h2 class="section-title">CV Detectors</h2>
-        <div class="cv-detector-row">
-          <span class="cv-det-label">Border</span>
-          <span id="cv-border-sev" class="cv-sev-badge"></span>
-          <span id="cv-border-detail" class="cv-det-detail"></span>
-        </div>
-        <div class="cv-detector-row">
-          <span class="cv-det-label">Surface</span>
-          <span id="cv-surface-sev" class="cv-sev-badge"></span>
-          <span id="cv-surface-detail" class="cv-det-detail"></span>
-        </div>
-      </section>
-
-      <!-- Economic decision banner -->
-      <section id="decision-banner" class="decision-banner">
-        <div class="decision-label">
-          <span id="dec-emoji"></span>
-          <span id="dec-label"></span>
-        </div>
-        <p id="dec-reason" class="dec-reason"></p>
-      </section>
-
-      <!-- Grading candidate (Claude visual viability) -->
-      <section id="grading-decision-banner" class="grading-decision-banner">
-        <div class="gd-label">
-          <span id="gd-emoji"></span>
-          <span id="gd-label"></span>
-        </div>
-        <p id="gd-reason" class="gd-reason"></p>
-        <ul id="gd-caveats" class="gd-caveats hidden"></ul>
-      </section>
-
-      <!-- Front + Back analysis -->
-      <section class="result-section side-analysis-section">
-        <h2 class="section-title">Front Analysis</h2>
-        <div id="front-analysis-body">
-          <p class="side-not-available hidden" id="front-not-available">Front image not assessable</p>
-          <p id="front-centering" class="side-centering"></p>
-          <ul id="front-issues-list" class="issues-list"></ul>
-        </div>
-      </section>
-
-      <section class="result-section side-analysis-section">
-        <h2 class="section-title">Back Analysis</h2>
-        <div id="back-analysis-body">
-          <p class="side-not-available" id="back-not-available">Back image not assessable</p>
-          <p id="back-centering" class="side-centering hidden"></p>
-          <ul id="back-issues-list" class="issues-list hidden"></ul>
-        </div>
-      </section>
-
-      <!-- Grade estimate -->
-      <section class="result-section">
-        <h2 class="section-title">Grade Estimate</h2>
-        <div class="grade-row">
-          <span class="grade-range" id="res-grade-range"></span>
-          <span class="grade-conf"  id="res-grade-conf"></span>
-        </div>
-        <!-- Probability bars -->
-        <div id="grade-bars" class="grade-bars"></div>
-      </section>
-
-      <!-- Issues -->
-      <section class="result-section" id="issues-section">
-        <h2 class="section-title">Issues Detected</h2>
-        <ul id="issues-list" class="issues-list"></ul>
-      </section>
-
-      <!-- Economics -->
-      <section class="result-section">
-        <h2 class="section-title">Market Prices</h2>
-        <div class="price-grid">
-          <div class="price-cell">
-            <span class="price-label">Raw</span>
-            <span class="price-val" id="price-raw">—</span>
-          </div>
-          <div class="price-cell">
-            <span class="price-label">PSA 8</span>
-            <span class="price-val" id="price-psa8">—</span>
-          </div>
-          <div class="price-cell">
-            <span class="price-label">PSA 9</span>
-            <span class="price-val" id="price-psa9">—</span>
-          </div>
-          <div class="price-cell highlight">
-            <span class="price-label">PSA 10</span>
-            <span class="price-val" id="price-psa10">—</span>
-          </div>
-        </div>
-
-        <h2 class="section-title" style="margin-top:14px">ROI</h2>
-        <table class="roi-table">
-          <tbody>
-            <tr>
-              <td>Listing price</td>
-              <td id="roi-listing">—</td>
-            </tr>
-            <tr>
-              <td>Grading fee</td>
-              <td id="roi-grade-fee">—</td>
-            </tr>
-            <tr>
-              <td>Expected value</td>
-              <td id="roi-ev">—</td>
-            </tr>
-            <tr class="roi-highlight">
-              <td>Max buy (PSA 9 target)</td>
-              <td id="roi-max9">—</td>
-            </tr>
-            <tr class="roi-highlight">
-              <td>Max buy (PSA 8 target)</td>
-              <td id="roi-max8">—</td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-
-      <!-- Comps source note -->
-      <p id="comps-note" class="comps-note"></p>
-
-      <!-- Back to picker -->
-      <button id="reset-btn" class="btn-ghost reset-btn">← Change image selection</button>
-
-    </div><!-- /state-result -->
-  </main>
-
-  <!-- ── Lightbox ── -->
-  <div id="thumb-lightbox" class="thumb-lightbox hidden" role="dialog" aria-modal="true" aria-label="Image detail">
-    <div id="lightbox-backdrop" class="lightbox-backdrop"></div>
-    <div class="lightbox-sheet">
-      <div class="lightbox-topbar">
-        <span id="lightbox-label" class="lightbox-label"></span>
-        <button id="lightbox-close" class="lightbox-close-btn" aria-label="Close">✕</button>
+  <!-- 4 Pillars -->
+  <div class="result-block">
+    <div class="block-header">Grading Pillars <span class="block-hint">▸ tap for visual breakdown</span></div>
+    <div class="pillars-grid">
+      <div class="pillar pillar-clickable" data-pillar="centering">
+        <div class="pillar-name">Centering <span class="pillar-arrow">›</span></div>
+        <div class="pillar-issues" id="issues-centering"></div>
       </div>
-      <!-- Image + zone SVG overlay (zoom-inner is the transform target) -->
-      <div class="lightbox-img-wrap" id="lightbox-img-wrap">
-        <div id="lightbox-zoom-inner" class="lightbox-zoom-inner">
-          <img id="lightbox-img" alt="" />
-          <div id="lightbox-svg-slot" class="lightbox-svg-slot"></div>
-        </div>
-        <!-- Live zoom level indicator -->
-        <div id="lightbox-zoom-badge" class="lightbox-zoom-badge hidden">100%</div>
-        <!-- Double-tap / double-click hint shown only while zoomed -->
-        <div id="lightbox-zoom-hint" class="lightbox-zoom-hint hidden">double-click to reset</div>
+      <div class="pillar pillar-clickable" data-pillar="corners">
+        <div class="pillar-name">Corners <span class="pillar-arrow">›</span></div>
+        <div class="pillar-issues" id="issues-corners"></div>
       </div>
-      <!-- Investigation mode: focused issue banner -->
-      <div id="lightbox-focused-banner" class="lightbox-focused-banner hidden"></div>
-      <!-- Normal mode: full zone annotation list -->
-      <ul id="lightbox-zones-list" class="lightbox-zones-list"></ul>
-      <!-- Prev / next navigation (hidden when only one image) -->
-      <div id="lightbox-nav" class="lightbox-nav hidden">
-        <button id="lightbox-prev" class="lightbox-nav-btn">‹ Prev</button>
-        <button id="lightbox-next" class="lightbox-nav-btn">Next ›</button>
+      <div class="pillar pillar-clickable" data-pillar="edges">
+        <div class="pillar-name">Edges <span class="pillar-arrow">›</span></div>
+        <div class="pillar-issues" id="issues-edges"></div>
+      </div>
+      <div class="pillar pillar-clickable" data-pillar="surface">
+        <div class="pillar-name">Surface <span class="pillar-arrow">›</span></div>
+        <div class="pillar-issues" id="issues-surface"></div>
       </div>
     </div>
   </div>
 
-  <script src="sidepanel.js"></script>
+  <!-- Economics -->
+  <div class="result-block" id="economics-block">
+    <div class="block-header">Economics</div>
+    <div id="economics-rows" class="economics-rows"></div>
+  </div>
+
+  <!-- AI Reasoning (collapsible) -->
+  <details class="reasoning-details">
+    <summary class="reasoning-summary">AI Reasoning ▸</summary>
+    <div id="reasoning-front" class="reasoning-text"></div>
+    <div id="reasoning-back"  class="reasoning-text reasoning-text-back"></div>
+  </details>
+
+  <!-- Caveats / warnings -->
+  <div id="caveats-list" class="caveats-list hidden"></div>
+
+  <!-- Actions -->
+  <div class="results-actions">
+    <button id="btn-new" class="btn btn-ghost">← New analysis</button>
+    <button id="btn-feedback-good" class="btn btn-icon" title="Grade was accurate">👍</button>
+    <button id="btn-feedback-bad"  class="btn btn-icon" title="Grade was off">👎</button>
+  </div>
+
+</section>
+
+<!-- ── Pillar Detail View ────────────────────────────────────── -->
+<section id="view-detail" class="view hidden">
+  <div class="detail-header">
+    <button id="btn-back-summary" class="btn-back">←  Summary</button>
+    <div class="detail-title" id="detail-title">Pillar</div>
+  </div>
+
+  <div class="detail-severity" id="detail-severity"></div>
+
+  <!-- Front + Back images with SVG overlays -->
+  <div class="detail-images" id="detail-images"></div>
+
+  <!-- Findings list -->
+  <div class="result-block">
+    <div class="block-header">Findings</div>
+    <div id="detail-findings" class="detail-findings"></div>
+  </div>
+
+  <!-- Numerical CV measurements -->
+  <div class="result-block" id="detail-measurements-block">
+    <div class="block-header">Measurements</div>
+    <div id="detail-measurements" class="detail-measurements"></div>
+  </div>
+</section>
+
+<!-- ── Server offline ────────────────────────────────────────── -->
+<section id="view-offline" class="view hidden">
+  <div class="offline-box">
+    <div class="offline-icon">🔌</div>
+    <div class="offline-title">API server not reachable</div>
+    <div class="offline-msg">
+      Make sure the Next.js dev server is running:<br />
+      <code>npm run dev</code><br /><br />
+      Default: <code>localhost:3000</code>
+    </div>
+  </div>
+  <button id="btn-recheck" class="btn btn-secondary w-full">Check again</button>
+</section>
+
+<script src="grade_model.js"></script>
+<script src="sidepanel.js"></script>
 </body>
 </html>
