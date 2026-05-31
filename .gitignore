@@ -74,3 +74,6 @@ grading_server/__pycache__/
 
 # backend runtime feedback
 backend/feedback/
+
+# Beta grading deploy: bundle ONLY the YOLO OBB weights (small) for Railway
+!backend/models/yolo_obb_best.pt

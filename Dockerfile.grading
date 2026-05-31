@@ -29,17 +29,15 @@ COPY backend/main.py backend/inference.py backend/schemas.py backend/comps.py \
      backend/grader.py backend/aggregator.py backend/grade_comps.py \
      backend/grade_model.json backend/feedback_to_yolo.py ./
 
-# Copy model artefacts (pre-staged in backend/models/ to avoid uploading 872 MB datasets dir)
-COPY backend/models/grade_mlp_best.pt   ./models/grade_mlp_best.pt
-COPY backend/models/features_cache.pkl  ./models/features_cache.pkl
-# TODO(beta-deploy): the /grade pipeline needs YOLO OBB weights at runtime.
-# Stage them into backend/models/ and COPY + set YOLO_WEIGHTS, or download at boot.
-# COPY backend/models/yolo_obb_best.pt ./models/yolo_obb_best.pt
+# Grading-only deploy: the extension's /grade uses YOLO + Claude. The MLP
+# /analyze-listing path is NOT part of the Beta surface, so its artefacts
+# (grade_mlp_best.pt, 38 MB features_cache.pkl) are intentionally not bundled —
+# main.py's lifespan tolerates a missing MLP model and keeps /grade working.
+COPY backend/models/yolo_obb_best.pt ./models/yolo_obb_best.pt
 
 # Default env — Railway overrides PORT at runtime
-ENV MODEL_PATH=/app/models/grade_mlp_best.pt
-ENV CACHE_PATH=/app/models/features_cache.pkl
-# ENV YOLO_WEIGHTS=/app/models/yolo_obb_best.pt   # set once weights are bundled
+ENV YOLO_WEIGHTS=/app/models/yolo_obb_best.pt
+ENV MODEL_PATH=/app/models/disabled-mlp.pt   # absent → /analyze-listing disabled; /grade unaffected
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
 
