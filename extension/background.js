@@ -9,7 +9,9 @@
  */
 
 const NEXTJS_BASE_DEFAULT = "http://localhost:3000";
-const PYTHON_BASE_DEFAULT = "http://127.0.0.1:8000";
+// Grading backend (Railway). Override per-install via chrome.storage `pythonBase`
+// (e.g. set to http://127.0.0.1:8000 for local development).
+const PYTHON_BASE_DEFAULT = "https://card-grader-api-production.up.railway.app";
 
 // ── Side panel setup ───────────────────────────────────────────────────────
 // Clicking the toolbar icon opens the side panel. Asserted at the top level so

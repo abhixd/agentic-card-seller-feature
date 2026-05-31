@@ -15,6 +15,8 @@
   "host_permissions": [
     "https://www.ebay.com/*",
     "https://ebay.com/*",
+    "https://card-grader-api-production.up.railway.app/*",
+    "https://*.up.railway.app/*",
     "http://localhost:3000/*",
     "http://127.0.0.1:3000/*",
     "http://127.0.0.1:8000/*"
