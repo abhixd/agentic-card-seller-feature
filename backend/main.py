@@ -26,9 +26,13 @@ load_dotenv()
 
 import asyncio
 import traceback
+import json
+import time
+import base64
+import uuid
 import numpy as np
 import cv2
-from fastapi import FastAPI, HTTPException, File, UploadFile
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -157,9 +161,10 @@ async def save_analysis(body: dict) -> dict:
     return {"saved": True, "id": "stub-id"}
 
 
-# ── /grade — YOLO + Claude PSA detailed grading ──────────────────────────
+# ── /grade — YOLO + Claude PSA detailed grading (front + optional back) ──────
 # Lazy import so the server starts even if ultralytics/anthropic are absent.
 _grader_module = None
+_grade_mods = None  # (aggregator, grade_comps)
 
 def _get_grader():
     global _grader_module
@@ -175,44 +180,130 @@ def _get_grader():
             )
     return _grader_module
 
+def _get_grade_mods():
+    global _grade_mods
+    if _grade_mods is None:
+        import aggregator
+        import grade_comps
+        _grade_mods = (aggregator, grade_comps)
+    return _grade_mods
+
+_STRIP = {"_raw", "_analytical_centering"}
+
+def _decode(raw: bytes):
+    img = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError("Unsupported image format")
+    return img
+
+FEEDBACK_DIR = _HERE / "feedback"
+
 
 @app.post("/grade")
 async def grade_card_endpoint(
-    image: UploadFile = File(..., description="Card image (JPEG, PNG, WebP)"),
+    image: UploadFile = File(..., description="Front card image (JPEG, PNG, WebP)"),
+    image_back: UploadFile = File(None, description="Optional back card image"),
+    title:    str   = Form(""),
+    price:    float = Form(0.0),
+    shipping: float = Form(0.0),
 ):
     """
-    Detailed PSA grading via YOLO OBB detection + Claude (Opus) vision.
+    Detailed PSA grading via YOLO OBB detection + Claude vision.
 
-    Returns JSON with keys:
-        centering, corners, edges, surface, overall_score, psa_equivalent, summary
+    Grades the front (and optional back) card image, combines worst-side-per-pillar
+    via the Stage-B aggregator, and (when `title` is given) attaches eBay comps + ROI.
+    Response keys: centering, corners, edges, surface, overall_score, psa_equivalent,
+    summary, _warped_jpeg_b64, _corner_crops_b64, _combined, _back, economics, decision.
     """
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
     if not api_key:
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
 
-    # Decode image
     try:
-        raw = await image.read()
-        arr = np.frombuffer(raw, dtype=np.uint8)
-        img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if img_bgr is None:
-            raise ValueError("Unsupported image format")
+        img_bgr = _decode(await image.read())
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Image decode error: {e}")
 
-    # Run pipeline in thread pool (CPU-bound YOLO + Claude I/O)
     grader = _get_grader()
-    loop   = asyncio.get_event_loop()
+    aggregator, grade_comps = _get_grade_mods()
+    loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(
-            None, grader.detect_and_grade, img_bgr, api_key
-        )
+        result = await loop.run_in_executor(None, grader.detect_and_grade, img_bgr, api_key)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Grading error: {type(e).__name__}: {e}")
 
-    # Strip large debug fields before sending to client
-    strip = {"_raw", "_analytical_centering"}
-    return JSONResponse({k: v for k, v in result.items() if k not in strip})
+    # ── Optional back side → combined (worst-side) grade ──
+    overall_for_econ = result.get("overall_score") or 0
+    if image_back is not None:
+        try:
+            back_img = _decode(await image_back.read())
+            back = await loop.run_in_executor(None, grader.detect_and_grade, back_img, api_key)
+            for k in _STRIP:
+                back.pop(k, None)
+            result["_back"] = back
+            combined = aggregator.merge_pillars(result, back)
+            co = aggregator.aggregate_overall(combined)
+            result["_combined"] = {
+                **{f"{k}_score": combined[k] for k in aggregator.PILLARS},
+                "overall_score":  co,
+                "psa_equivalent": aggregator.psa_label(co),
+            }
+            if co:
+                overall_for_econ = co
+        except ValueError:
+            result["_back_error"] = "no card detected on back image"
+        except Exception as e:
+            traceback.print_exc()
+            result["_back_error"] = f"{type(e).__name__}: {e}"
+
+    # ── eBay comps + ROI + decision (non-fatal) ──
+    if title:
+        try:
+            confidence = "low" if result.get("_truncated") else "high"
+            econ = grade_comps.compute_economics(
+                title=title, price=price, shipping=shipping,
+                overall_score=overall_for_econ, confidence=confidence,
+            )
+            result["economics"]     = econ["economics"]
+            result["decision"]      = econ["decision"]
+            result["_comps_source"] = econ["comps_source"]
+            result["_comps_basis"]  = econ["comps_basis"]
+        except Exception as e:
+            traceback.print_exc()
+            result["_comps_source"] = f"error: {type(e).__name__}"
+
+    return JSONResponse({k: v for k, v in result.items() if k not in _STRIP})
+
+
+@app.post("/feedback")
+async def feedback_endpoint(request: Request):
+    """Persist a user boundary correction for YOLO retraining (see feedback_to_yolo.py)."""
+    try:
+        record = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    img_dir = FEEDBACK_DIR / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    rec_id = uuid.uuid4().hex[:12]
+    record["id"] = rec_id
+    record["server_ts"] = time.time()
+
+    b64 = record.pop("warped_jpeg_b64", None)
+    if b64:
+        try:
+            (img_dir / f"{rec_id}.jpg").write_bytes(base64.b64decode(b64))
+            record["warped_image"] = f"images/{rec_id}.jpg"
+        except Exception as e:
+            record["warped_image_error"] = str(e)
+
+    try:
+        with open(FEEDBACK_DIR / "adjustments.jsonl", "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Could not write feedback: {e}")
+    return {"ok": True, "id": rec_id}

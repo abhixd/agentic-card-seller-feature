@@ -22,7 +22,7 @@ import anthropic
 from ultralytics import YOLO
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-MODEL       = os.environ.get("CLAUDE_MODEL", "claude-opus-4-5")
+MODEL       = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5")
 MAX_TOKENS  = 3000
 IMG_MAX_PX  = 2048
 JPEG_Q      = 92
@@ -475,16 +475,33 @@ STEP-BY-STEP for centering (do this internally before writing JSON):
   STEP 1: Identify the card type using border_type hint + the full card image.
   STEP 2: For each of the 4 sides, look at the corresponding corner zoom image
           and locate the EXACT pixel position where the printed border ends and
-          the artwork/text begins.
+          the artwork/text begins. The silver/colored band has a width — measure it.
   STEP 3: Convert those pixel positions to normalised coordinates and set content_region.
-  STEP 4: PER-CORNER VERIFICATION:
+  STEP 4: PER-CORNER VERIFICATION (critical):
           Examine EACH of the 4 corner zoom images and verify the corresponding
-          implicit rectangle corner sits cleanly inside the artwork.
-          If any corner falls on the printed border, move the relevant side INWARD.
-  STEP 5: For Full Art cards: if computed border widths are all < 3%, re-examine.
+          implicit rectangle corner:
+            - TL corner zoom → does (x1, y1) sit INSIDE the artwork?
+            - TR corner zoom → does (x2, y1) sit INSIDE the artwork?
+            - BR corner zoom → does (x2, y2) sit INSIDE the artwork?
+            - BL corner zoom → does (x1, y2) sit INSIDE the artwork?
+          If any corner falls on the printed border (silver/coloured area is
+          still visible AT that corner), move the relevant side INWARD until
+          the worst-case corner sits cleanly inside the artwork:
+            - TL or TR still on border → increase y1
+            - BR or BL still on border → decrease y2
+            - TL or BL still on border → increase x1
+            - TR or BR still on border → decrease x2
+          Corners often need MORE inset than edge midpoints because printed
+          borders may flare or curve at corners. When in doubt, choose the
+          inset value that satisfies the WORST corner — even if it overshoots
+          the midpoint estimate slightly.
+  STEP 5: For Full Art cards specifically: if your computed border widths are all
+          < 3% of the card dimension, you have probably mistaken the physical card
+          edge for the content edge — re-examine the silver strip width.
 
 The centering score will be computed FROM your content_region values, not from
-your stated ratios — so spend your attention on accurate content_region pixels.
+your stated ratios — so spend your attention on accurate content_region pixels,
+not on choosing a score.
 
 CORNERS — Inspect each of the 4 physical corners using the corresponding zoom image:
   - sharp / slight_wear / moderate_wear / heavy_wear / bent
@@ -496,11 +513,11 @@ SURFACE — Inspect the face of the card (use the full card image):
   - scratches, print_lines, stains, creases (each: none / minor / moderate / heavy)
 
 REFERENCE ANCHORS:
-  - PSA 10 (Gem Mint): All 4 corners pin-sharp. All 4 edges no visible damage. Centering ≤ 55/45. Surface free of visible defects.
-  - PSA 9 (Mint): ONE allowable minor flaw.
-  - PSA 8 (NM-MT): Up to 2-3 minor flaws, OR one moderate flaw. Centering up to 65/35.
-  - PSA 7 (NM): Noticeable but not heavy wear across multiple pillars.
-  - PSA 5-6: Multiple visible flaws.
+  - PSA 10 (Gem Mint): All 4 corners pin-sharp. All 4 edges no visible damage at normal viewing. Centering ≤ 55/45. Surface free of any visible defects at normal viewing.
+  - PSA 9 (Mint): ONE allowable minor flaw — e.g. one slightly soft corner OR one tiny edge nick OR centering up to 60/40. Otherwise pristine.
+  - PSA 8 (NM-MT): Up to 2-3 minor flaws, OR one moderate flaw. Centering up to 65/35. Light surface defects acceptable if minor.
+  - PSA 7 (NM): Noticeable but not heavy wear across multiple pillars. Light scratches visible.
+  - PSA 5-6: Multiple visible flaws. Wear easily seen.
   - PSA 3-4: Heavy wear, crease, multiple chips.
   - PSA 1-2: Severely damaged.
 
@@ -674,11 +691,26 @@ def grade_card(img_bgr: np.ndarray,
         elif worst <= 45: geo_score =  2.0
         else:             geo_score =  1.0
 
+        geo_lr = f"{lr_pct}/{100 - lr_pct}"
+        geo_tb = f"{tb_pct}/{100 - tb_pct}"
+
+        # Cross-check Claude's stated ratios against the geometric ones (±5pp)
+        def _parse_ratio(s):
+            try:
+                a, b = str(s).split("/"); return int(a), int(b)
+            except Exception:
+                return None
+        consistent = True
+        for claimed, geo in [(claude_lr, geo_lr), (claude_tb, geo_tb)]:
+            cp = _parse_ratio(claimed); gp = _parse_ratio(geo)
+            if cp is None or gp is None: consistent = False; break
+            if abs(cp[0] - gp[0]) > 5:  consistent = False
+
         result["centering"] = {
             **(cen if isinstance(cen, dict) else {}),
             "score":      geo_score,
-            "left_right": f"{lr_pct}/{100 - lr_pct}",
-            "top_bottom": f"{tb_pct}/{100 - tb_pct}",
+            "left_right": geo_lr,
+            "top_bottom": geo_tb,
             "_source":    "geometric_from_content_region",
             "_claude_reported": {
                 "score": claude_score,
@@ -686,12 +718,34 @@ def grade_card(img_bgr: np.ndarray,
                 "top_bottom": claude_tb,
             },
         }
+        result["_centering_self_consistent"] = consistent
+        result["_centering_borders_px"] = {
+            "left": bl, "right": br, "top": bt, "bottom": bb,
+            "units": "normalised (0-1) of warped image",
+        }
+    else:
+        result["_centering_self_consistent"] = None
 
     result["_analytical_centering"] = cen_analytic
     result["_model"]         = MODEL
     result["_card_boundary"] = list(card_bbox)
     result["_n_images"]      = len(images)
     result["_border_type"]   = border_type
+
+    # ── Visual payload for the client ─────────────────────────────────────────
+    # The warped card + corner crops are in the SAME coordinate space as
+    # card_boundary and content_region, so the extension can draw the centering
+    # overlay (green card edge + gold content rectangle + L/R/T/B border widths)
+    # exactly like the notebook's centering audit. images[0] = warped full card,
+    # images[1..4] = TL/TR/BR/BL corner zooms.
+    result["_warped_jpeg_b64"] = images[0]["data"]
+    if len(images) == 5:
+        result["_corner_crops_b64"] = {
+            "TL": images[1]["data"],
+            "TR": images[2]["data"],
+            "BR": images[3]["data"],
+            "BL": images[4]["data"],
+        }
     return result
 
 
@@ -727,6 +781,11 @@ def detect_and_grade(img_bgr: np.ndarray, api_key: str = None) -> dict:
 
     result = grade_card(img_bgr, quad_raw=quad_raw, quad_padded=quad_padded,
                         use_multicrop=True, api_key=api_key)
-    result["_yolo_conf"] = conf
-    result["_quad_raw"]  = quad_raw.tolist()
+    result["_yolo_conf"]    = conf
+    result["_quad_raw"]     = quad_raw.tolist()
+    result["_quad_padded"]  = quad_padded.tolist()
+    # Original image dimensions [width, height] — lets feedback corrections in
+    # warped space be mapped back to original-image YOLO OBB labels.
+    h, w = img_bgr.shape[:2]
+    result["_orig_dims"]    = [int(w), int(h)]
     return result

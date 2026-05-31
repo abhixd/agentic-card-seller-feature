@@ -23,15 +23,23 @@ RUN grep -vE "^torch|^torchvision" /tmp/requirements.txt \
     | pip install --no-cache-dir -r /dev/stdin
 
 # Copy backend source
-COPY backend/main.py backend/inference.py backend/schemas.py backend/comps.py ./
+# Backend source: product API (main/inference/schemas/comps) + the grading
+# pipeline (grader/aggregator/grade_comps/grade_model) used by /grade.
+COPY backend/main.py backend/inference.py backend/schemas.py backend/comps.py \
+     backend/grader.py backend/aggregator.py backend/grade_comps.py \
+     backend/grade_model.json backend/feedback_to_yolo.py ./
 
 # Copy model artefacts (pre-staged in backend/models/ to avoid uploading 872 MB datasets dir)
 COPY backend/models/grade_mlp_best.pt   ./models/grade_mlp_best.pt
 COPY backend/models/features_cache.pkl  ./models/features_cache.pkl
+# TODO(beta-deploy): the /grade pipeline needs YOLO OBB weights at runtime.
+# Stage them into backend/models/ and COPY + set YOLO_WEIGHTS, or download at boot.
+# COPY backend/models/yolo_obb_best.pt ./models/yolo_obb_best.pt
 
 # Default env — Railway overrides PORT at runtime
 ENV MODEL_PATH=/app/models/grade_mlp_best.pt
 ENV CACHE_PATH=/app/models/features_cache.pkl
+# ENV YOLO_WEIGHTS=/app/models/yolo_obb_best.pt   # set once weights are bundled
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
 
