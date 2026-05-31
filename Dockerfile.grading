@@ -10,10 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install CPU-only PyTorch first — avoids pulling the 2 GB CUDA wheel
+# Install CPU-only PyTorch first — avoids pulling the 2 GB CUDA wheel.
+# Unpinned so pip resolves a compatible torch/torchvision pair from the CPU index
+# (the old 2.3.0+cpu pin was removed from the index). Pin later for reproducibility.
 RUN pip install --no-cache-dir \
-    torch==2.3.0+cpu \
-    torchvision==0.18.0+cpu \
+    torch torchvision \
     --index-url https://download.pytorch.org/whl/cpu
 
 # Copy and install remaining deps (skip torch/torchvision — already installed)
@@ -37,7 +38,9 @@ COPY backend/models/yolo_obb_best.pt ./models/yolo_obb_best.pt
 
 # Default env — Railway overrides PORT at runtime
 ENV YOLO_WEIGHTS=/app/models/yolo_obb_best.pt
-ENV MODEL_PATH=/app/models/disabled-mlp.pt   # absent → /analyze-listing disabled; /grade unaffected
+# MODEL_PATH points at an absent file on purpose: the MLP /analyze-listing path
+# stays disabled (lifespan tolerates it); /grade is unaffected.
+ENV MODEL_PATH=/app/models/disabled-mlp.pt
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8000
 

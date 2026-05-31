@@ -1,0 +1,26 @@
+# Keep the Docker build context small (mirrors .railwayignore). Dockerfile.grading
+# only needs backend/ (.py + requirements.txt + models/yolo_obb_best.pt).
+.git
+node_modules
+.next
+out
+coverage
+src
+public
+extension
+notebooks
+data
+docs
+forecast-service
+optimize-service
+supabase
+scripts
+**/venv
+**/__pycache__
+*.pyc
+*.pyo
+*.tsbuildinfo
+.env*
+.DS_Store
+backend/models/features_cache.pkl
+backend/models/grade_mlp_best.pt
