@@ -66,12 +66,18 @@ engine: InferenceEngine | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global engine
-    print(f"[startup] Loading model from {MODEL_PATH} ...")
+    print(f"[startup] Loading MLP model from {MODEL_PATH} ...")
     if not MODEL_PATH.exists():
-        print(f"[startup] WARNING: model not found at {MODEL_PATH}")
-        print("          Run 05_feature_model.ipynb through Step 10 first.")
+        print(f"[startup] MLP model not found at {MODEL_PATH} — /analyze-listing disabled; /grade still works.")
     else:
-        engine = InferenceEngine(model_path=MODEL_PATH, cache_path=CACHE_PATH)
+        # Don't let an MLP/cache load failure block startup — /grade (YOLO+Claude)
+        # is independent of the InferenceEngine.
+        try:
+            engine = InferenceEngine(model_path=MODEL_PATH, cache_path=CACHE_PATH)
+        except Exception as e:
+            print(f"[startup] WARNING: MLP engine init failed ({type(e).__name__}: {e}); "
+                  "/analyze-listing disabled, /grade still works.")
+            engine = None
     yield
     engine = None
 
