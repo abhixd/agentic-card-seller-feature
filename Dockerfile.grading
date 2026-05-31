@@ -28,6 +28,7 @@ RUN grep -vE "^torch|^torchvision" /tmp/requirements.txt \
 # pipeline (grader/aggregator/grade_comps/grade_model) used by /grade.
 COPY backend/main.py backend/inference.py backend/schemas.py backend/comps.py \
      backend/grader.py backend/aggregator.py backend/grade_comps.py \
+     backend/card_segmenter.py \
      backend/grade_model.json backend/feedback_to_yolo.py ./
 
 # Grading-only deploy: the extension's /grade uses YOLO + Claude. The MLP

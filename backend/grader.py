@@ -36,6 +36,12 @@ YOLO_IMGSZ  = int(os.environ.get("YOLO_IMGSZ", "640"))
 PADDING_FRAC = 0.03
 REFINE_EDGES = True
 
+# Card detector selection:
+#   "yolo"         — YOLO OBB (default; the live Beta path)
+#   "seg"          — Roboflow segmentation workflow (Model C; accurate rounded corners)
+#   "seg_then_yolo"— try segmentation first, fall back to YOLO on failure
+CARD_DETECTOR = os.environ.get("CARD_DETECTOR", "yolo").lower()
+
 # Lazy-loaded YOLO model (singleton)
 _yolo_model = None
 
@@ -194,12 +200,34 @@ def quad_aspect_and_area(quad):
 
 
 # ── Warping ────────────────────────────────────────────────────────────────────
-def _warp_card(img_bgr, quad_pts, out_w=630, out_h=880):
-    """Perspective-warp a 4-corner quad to an upright out_w x out_h rectangle."""
+def _warp_matrix(quad_pts, out_w=630, out_h=880):
+    """Perspective transform mapping the ordered quad → upright out_w x out_h rect."""
     src = _order_corners(quad_pts)
     dst = np.array([[0, 0], [out_w, 0], [out_w, out_h], [0, out_h]], dtype=np.float32)
-    M   = cv2.getPerspectiveTransform(src, dst)
+    return cv2.getPerspectiveTransform(src, dst)
+
+
+def _warp_card(img_bgr, quad_pts, out_w=630, out_h=880):
+    """Perspective-warp a 4-corner quad to an upright out_w x out_h rectangle."""
+    M = _warp_matrix(quad_pts, out_w, out_h)
     return cv2.warpPerspective(img_bgr, M, (out_w, out_h), flags=cv2.INTER_LANCZOS4)
+
+
+def _contour_to_warped_norm(contour, quad_padded, out_w=630, out_h=880):
+    """Map a source-pixel contour into the warped image's normalised (0-1) space.
+
+    Uses the SAME transform as _warp_card(quad_padded), so the returned polygon
+    lines up exactly with card_boundary and content_region — the client can draw
+    it as the (smoothed, rounded-corner) card outline instead of an axis box.
+    """
+    if contour is None or len(contour) < 3:
+        return None
+    M = _warp_matrix(quad_padded, out_w, out_h)
+    pts = np.asarray(contour, dtype=np.float32).reshape(-1, 1, 2)
+    w = cv2.perspectiveTransform(pts, M).reshape(-1, 2)
+    w[:, 0] = np.clip(w[:, 0] / out_w, 0.0, 1.0)
+    w[:, 1] = np.clip(w[:, 1] / out_h, 0.0, 1.0)
+    return w
 
 
 def card_boundary_analytical(quad_raw, quad_padded, out_w=630, out_h=880):
@@ -568,16 +596,21 @@ def grade_card(img_bgr: np.ndarray,
                quad_raw=None,
                quad_padded=None,
                use_multicrop: bool = True,
-               api_key: str = None) -> dict:
+               api_key: str = None,
+               contour=None) -> dict:
     """
     Grade a card with Claude.
 
     Args:
         img_bgr      : source photo as BGR numpy array
-        quad_raw     : (4,2) un-padded YOLO quad in source pixels
+        quad_raw     : (4,2) un-padded quad in source pixels
         quad_padded  : (4,2) padded quad used for warping
         use_multicrop: if True, send full card + 4 corner zooms (5 images total)
         api_key      : Anthropic API key (falls back to ANTHROPIC_API_KEY env var)
+        contour      : optional (N,2) smoothed card outline in source pixels
+                       (from the segmentation detector). Surfaced to the client
+                       as a rounded-corner boundary overlay; does not change the
+                       quad-based warp/centering geometry.
 
     Returns:
         dict with centering, corners, edges, surface, overall_score, psa_equivalent,
@@ -746,16 +779,21 @@ def grade_card(img_bgr: np.ndarray,
             "BR": images[3]["data"],
             "BL": images[4]["data"],
         }
+
+    # Smoothed, rounded-corner card outline in warped normalised space (0-1).
+    # Same coordinate frame as _card_boundary / content_region, so the client can
+    # draw the true card edge (with real rounded corners) instead of an axis box.
+    if contour is not None and quad_padded is not None:
+        warped_contour = _contour_to_warped_norm(contour, quad_padded)
+        if warped_contour is not None:
+            result["_card_contour_warped"] = warped_contour.round(5).tolist()
+            result["_card_contour_orig"]   = np.asarray(contour, float).round(2).tolist()
     return result
 
 
-# ── YOLO detection ─────────────────────────────────────────────────────────────
-def detect_and_grade(img_bgr: np.ndarray, api_key: str = None) -> dict:
-    """
-    Full pipeline: YOLO OBB detection -> refine -> warp -> Claude grading.
-
-    Returns grade dict. Raises ValueError if no card detected.
-    """
+# ── Detectors ───────────────────────────────────────────────────────────────────
+def _detect_yolo(img_bgr: np.ndarray):
+    """YOLO OBB detection + Canny edge refine. Returns (quad_raw, meta). Raises ValueError."""
     model_yolo = _get_yolo()
     res = model_yolo.predict(img_bgr, conf=YOLO_CONF, imgsz=YOLO_IMGSZ, verbose=False)
     obb = res[0].obb
@@ -764,14 +802,52 @@ def detect_and_grade(img_bgr: np.ndarray, api_key: str = None) -> dict:
 
     best     = int(obb.conf.argmax())
     conf     = float(obb.conf[best])
-    quad_raw_yolo = obb.xyxyxyxy.cpu().numpy()[best].astype(np.float32)
-    quad_raw = _order_corners(quad_raw_yolo)
+    quad_raw = _order_corners(obb.xyxyxyxy.cpu().numpy()[best].astype(np.float32))
 
     if REFINE_EDGES:
         quad_refined = refine_quad_to_edges(img_bgr, quad_raw, search_frac=0.02)
         asp, area    = quad_aspect_and_area(quad_refined)
         if 0.55 <= asp <= 0.85 and area > 0.4 * quad_aspect_and_area(quad_raw)[1]:
             quad_raw = quad_refined
+
+    return quad_raw, None, {"_detector": "yolo", "_yolo_conf": conf}
+
+
+def _detect_seg(img_bgr: np.ndarray, api_key: str = None):
+    """
+    Roboflow segmentation-workflow detection (Model C).
+
+    Returns (quad_raw, contour, meta). The contour is the corner-preserving
+    SMOOTHED outline (kept for the overlay + corner accuracy); the quad is
+    derived from it for the quad-based warp/centering machinery.
+    """
+    import card_segmenter
+    seg = card_segmenter.segment_card(img_bgr, api_key=None)  # uses ROBOFLOW_API_KEY env
+    quad_raw = _order_corners(seg["quad"])
+    return quad_raw, seg["contour"], {
+        "_detector": "seg",
+        "_seg_conf": seg["conf"],
+        "_seg_n_segments": seg["n_segments"],
+    }
+
+
+def detect_and_grade(img_bgr: np.ndarray, api_key: str = None) -> dict:
+    """
+    Full pipeline: detect card -> warp -> Claude grading.
+
+    Detector chosen by CARD_DETECTOR env ("yolo" | "seg" | "seg_then_yolo").
+    Returns grade dict. Raises ValueError if no card detected.
+    """
+    if CARD_DETECTOR == "seg":
+        quad_raw, contour, meta = _detect_seg(img_bgr, api_key)
+    elif CARD_DETECTOR == "seg_then_yolo":
+        try:
+            quad_raw, contour, meta = _detect_seg(img_bgr, api_key)
+        except Exception as e:
+            quad_raw, contour, meta = _detect_yolo(img_bgr)
+            meta["_seg_fallback"] = f"{type(e).__name__}: {e}"
+    else:  # "yolo" (default)
+        quad_raw, contour, meta = _detect_yolo(img_bgr)
 
     pad_px      = adaptive_padding(quad_raw, padding_frac=PADDING_FRAC)
     centroid    = quad_raw.mean(axis=0)
@@ -780,12 +856,12 @@ def detect_and_grade(img_bgr: np.ndarray, api_key: str = None) -> dict:
     quad_padded = quad_raw + (dirs / norms) * pad_px
 
     result = grade_card(img_bgr, quad_raw=quad_raw, quad_padded=quad_padded,
-                        use_multicrop=True, api_key=api_key)
-    result["_yolo_conf"]    = conf
-    result["_quad_raw"]     = quad_raw.tolist()
-    result["_quad_padded"]  = quad_padded.tolist()
+                        use_multicrop=True, api_key=api_key, contour=contour)
+    result.update(meta)
+    result["_quad_raw"]    = quad_raw.tolist()
+    result["_quad_padded"] = quad_padded.tolist()
     # Original image dimensions [width, height] — lets feedback corrections in
-    # warped space be mapped back to original-image YOLO OBB labels.
+    # warped space be mapped back to original-image OBB labels.
     h, w = img_bgr.shape[:2]
-    result["_orig_dims"]    = [int(w), int(h)]
+    result["_orig_dims"]   = [int(w), int(h)]
     return result
