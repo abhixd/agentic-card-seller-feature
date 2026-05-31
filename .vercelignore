@@ -1,11 +1,14 @@
-# Large directories not needed for Next.js build
-notebooks/
-backend/
-extension/
-data/
-docs/
-forecast-service/
-optimize-service/
-supabase/
-scripts/
-coverage/
+# Exclude top-level dirs not needed for the Next.js build.
+# NOTE: patterns are ROOT-ANCHORED (leading slash). An unanchored "supabase/"
+# also matches src/lib/supabase/ and would break the build — keep the slash.
+/notebooks/
+/backend/
+/grading_server/
+/extension/
+/data/
+/docs/
+/forecast-service/
+/optimize-service/
+/supabase/
+/scripts/
+/coverage/
