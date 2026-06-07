@@ -77,6 +77,8 @@ backend/feedback/
 
 # Beta grading deploy: bundle ONLY the YOLO OBB weights (small) for Railway
 !backend/models/yolo_obb_best.pt
+# Classical-CV grading model (2.4 MB) — default /grade backend, bundle for Railway
+!backend/models/cv_xgb_raw.pkl
 
 # notebooks: session data + derived artifacts (grading analysis) — keep CODE, drop DATA/IMAGES
 notebooks/cropped_warped/

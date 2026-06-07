@@ -29,13 +29,15 @@ RUN grep -vE "^torch|^torchvision" /tmp/requirements.txt \
 COPY backend/main.py backend/inference.py backend/schemas.py backend/comps.py \
      backend/grader.py backend/aggregator.py backend/grade_comps.py \
      backend/card_segmenter.py \
+     backend/cv_grader.py backend/nonvlm_cv.py backend/inner_frame.py \
      backend/grade_model.json backend/feedback_to_yolo.py ./
 
-# Grading-only deploy: the extension's /grade uses YOLO + Claude. The MLP
-# /analyze-listing path is NOT part of the Beta surface, so its artefacts
-# (grade_mlp_best.pt, 38 MB features_cache.pkl) are intentionally not bundled —
-# main.py's lifespan tolerates a missing MLP model and keeps /grade working.
+# Grading-only deploy. /grade defaults to the classical-CV backend (cv_grader +
+# cv_xgb_raw.pkl); the YOLO weights stay for detection fallback and the Claude VLM
+# path stays available behind GRADER_BACKEND=vlm. The MLP /analyze-listing path is
+# NOT part of the Beta surface, so its artefacts are intentionally not bundled.
 COPY backend/models/yolo_obb_best.pt ./models/yolo_obb_best.pt
+COPY backend/models/cv_xgb_raw.pkl  ./models/cv_xgb_raw.pkl
 
 # Default env — Railway overrides PORT at runtime
 ENV YOLO_WEIGHTS=/app/models/yolo_obb_best.pt

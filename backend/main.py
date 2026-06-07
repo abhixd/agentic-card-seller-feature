@@ -222,8 +222,8 @@ async def grade_card_endpoint(
     summary, _warped_jpeg_b64, _corner_crops_b64, _combined, _back, economics, decision.
     """
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
+    if not api_key and os.getenv("GRADER_BACKEND", "cv").lower() == "vlm":
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured (GRADER_BACKEND=vlm)")
 
     try:
         img_bgr = _decode(await image.read())
