@@ -88,5 +88,6 @@ notebooks/.streamlit/
 notebooks/**/*.png
 notebooks/**/*.jpg
 notebooks/**/*.jpeg
+notebooks/**/*.webp
 notebooks/**/*.csv
 notebooks/**/*.jsonl
