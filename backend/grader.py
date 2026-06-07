@@ -19,7 +19,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 import anthropic
-from ultralytics import YOLO
+# NOTE: ultralytics (YOLO) is imported LAZILY inside _get_yolo(). Importing it at
+# module load pulls in SAM → torchvision → torch._dynamo (very heavy/slow) even when
+# the seg detector is used and YOLO is never needed — which froze notebook imports.
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 MODEL       = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5")
@@ -46,9 +48,10 @@ CARD_DETECTOR = os.environ.get("CARD_DETECTOR", "yolo").lower()
 _yolo_model = None
 
 
-def _get_yolo() -> YOLO:
+def _get_yolo():
     global _yolo_model
     if _yolo_model is None:
+        from ultralytics import YOLO   # lazy — only when the YOLO detector is used
         _yolo_model = YOLO(YOLO_WEIGHTS)
     return _yolo_model
 
@@ -321,9 +324,31 @@ def analytical_centering(warped_bgr, card_boundary,
         mask = _build_palette_mask(inside_hsv, best_name)
 
         def _scan(strip):
+            """Find first row where palette coverage drops below threshold.
+
+            Low-contrast fix: when holo artwork matches the border palette
+            (e.g. Fossil sparkle holos matching 'lightning'), coverage stays
+            high deep into the artwork and the naive fallback (len//4) produces
+            an oversized inset.  Instead:
+              1. First below-threshold row (normal path).
+              2. If coverage never drops: find the first significant downward
+                 gradient — the sharpest border→content transition.
+              3. Hard fallback: 8% of the strip length (≈ typical border width).
+            """
             cov = strip.mean(axis=1) / 255.0
             below = np.where(cov < coverage_threshold)[0]
-            return max(2, int(below[0])) if len(below) else max(2, len(cov) // 4)
+            if len(below):
+                return max(2, int(below[0]))
+            # Coverage never dropped — the artwork matches the palette.
+            # Use the first sharp negative gradient (coverage falling fastest).
+            grad = -np.diff(cov)                                   # +ve = coverage drops
+            k    = max(3, len(grad) // 20)
+            grad_s = np.convolve(grad, np.ones(k, dtype=np.float32) / k, mode="same")
+            peaks  = np.where(grad_s > 0.04)[0]                   # ≥4% per-row drop
+            if len(peaks):
+                return max(2, int(peaks[0]) + 2)
+            # Ultimate fallback: 8% of band (conservative — real borders are 5-10%)
+            return max(2, int(len(cov) * 0.08))
 
         border_top    = _scan(mask[:band_h, :])
         border_bottom = _scan(mask[ih-band_h:, :][::-1])
@@ -336,22 +361,47 @@ def analytical_centering(warped_bgr, card_boundary,
         side_dep  = max(4, int(min(iw, ih) * 0.04))
         cex_h = max(8, int(iw * 0.15))
         cex_v = max(8, int(ih * 0.15))
-        side_pixels = np.concatenate([
-            inside_bgr[side_skip:side_skip+side_dep, cex_h:iw-cex_h].reshape(-1, 3),
-            inside_bgr[ih-side_skip-side_dep:ih-side_skip, cex_h:iw-cex_h].reshape(-1, 3),
-            inside_bgr[cex_v:ih-cex_v, side_skip:side_skip+side_dep].reshape(-1, 3),
-            inside_bgr[cex_v:ih-cex_v, iw-side_skip-side_dep:iw-side_skip].reshape(-1, 3),
+        # Sample border colour from the very edge of the card (most reliable
+        # reference even for low-contrast borders like tan Fossil/Base Set).
+        edge_dep = max(3, int(min(iw, ih) * 0.025))
+        edge_pixels = np.concatenate([
+            inside_bgr[side_skip:side_skip+edge_dep, cex_h:iw-cex_h].reshape(-1, 3),
+            inside_bgr[ih-side_skip-edge_dep:ih-side_skip, cex_h:iw-cex_h].reshape(-1, 3),
+            inside_bgr[cex_v:ih-cex_v, side_skip:side_skip+edge_dep].reshape(-1, 3),
+            inside_bgr[cex_v:ih-cex_v, iw-side_skip-edge_dep:iw-side_skip].reshape(-1, 3),
         ], axis=0)
-        border_color = np.median(side_pixels, axis=0)
+        border_color = np.median(edge_pixels, axis=0)
 
         def _scan_uni(strip, axis):
-            diff = np.abs(strip.astype(np.float32) - border_color)
-            dist = diff.mean(axis=(1, 2)) if axis == 0 else diff.mean(axis=(0, 2))
-            k = max(3, len(dist) // 30)
+            """Colour-distance scan with adaptive threshold for low-contrast borders.
+
+            Low-contrast fix (e.g. tan Fossil border vs yellowish text area):
+              - Distance measured from edge-sampled reference (not global median)
+                so the baseline reflects the actual border colour, not a mix.
+              - Threshold is adaptive: 35% of the local distance range, clamped
+                to [6, 25].  A small range → small threshold → catches subtle
+                transitions that the hardcoded +18 would miss.
+              - Fallback reduced to 8% of the strip (was 25%).
+            """
+            diff   = np.abs(strip.astype(np.float32) - border_color)
+            dist   = diff.mean(axis=(1, 2)) if axis == 0 else diff.mean(axis=(0, 2))
+            k      = max(3, len(dist) // 30)
             smooth = np.convolve(dist, np.ones(k, dtype=np.float32) / k, mode="same")
-            baseline = float(smooth[2:7].mean())
-            above = np.where(smooth[2:] > baseline + 18)[0]
-            return max(2, int(above[0]) + 2) if len(above) else max(2, len(smooth) // 4)
+            baseline    = float(smooth[2:7].mean())
+            val_range   = float(smooth.max() - smooth.min())
+            # Adaptive threshold: proportional to available contrast, min 6 px-diff
+            threshold   = baseline + max(6.0, min(25.0, val_range * 0.35))
+            above = np.where(smooth[2:] > threshold)[0]
+            if len(above):
+                return max(2, int(above[0]) + 2)
+            # No threshold crossing — look for gradient peak (subtle transition)
+            grad   = np.diff(smooth)
+            k2     = max(3, len(grad) // 20)
+            grad_s = np.convolve(grad, np.ones(k2, dtype=np.float32) / k2, mode="same")
+            peaks  = np.where(grad_s > max(0.5, val_range * 0.05))[0]
+            if len(peaks):
+                return max(2, int(peaks[0]) + 2)
+            return max(2, int(len(smooth) * 0.08))
 
         border_top    = _scan_uni(inside_bgr[:band_h, :], axis=0)
         border_bottom = _scan_uni(inside_bgr[ih-band_h:, :][::-1], axis=0)
@@ -360,6 +410,16 @@ def analytical_centering(warped_bgr, card_boundary,
         source = "uniform"
         best_name = "uniform_fallback"
         notes_extra = (f"no palette match; colour-uniformity used.")
+
+    # ── Hard cap: no single side can exceed 14% of the card dimension.
+    # Catches residual over-detection on any card type without affecting
+    # well-detected borders (real PSA borders are 5–12%).
+    max_px_h = int(iw * 0.14)
+    max_px_v = int(ih * 0.14)
+    border_left   = min(border_left,   max_px_h)
+    border_right  = min(border_right,  max_px_h)
+    border_top    = min(border_top,    max_px_v)
+    border_bottom = min(border_bottom, max_px_v)
 
     h_total = border_left + border_right
     v_total = border_top  + border_bottom
@@ -398,6 +458,67 @@ def analytical_centering(warped_bgr, card_boundary,
 
 
 # ── Corner crops ───────────────────────────────────────────────────────────────
+def _build_corner_crops_from_contour(warped, contour_warped, card_boundary,
+                                      out_size=600, crop_frac=0.22):
+    """Extract corner crops from the WARPED card using the Model C rounded corners.
+
+    Unlike the original _build_corner_crops (which crops from the distorted source
+    image using the quad intersection), this function:
+      - Uses the already perspective-corrected warped image
+      - Centers each crop on the TRUE rounded corner from the seg contour
+      - Shows the physical card edge (cyan boundary) clearly in every crop
+      - Positions the corner in the appropriate quadrant (TL corner appears
+        in the upper-left of the TL crop, etc.)
+
+    Args:
+        warped           : 630×880 perspective-corrected card image
+        contour_warped   : Model C contour in warped-normalised coords (Nx2)
+        card_boundary    : [x1,y1,x2,y2] normalised outer card edge
+        out_size         : output crop size in pixels (square)
+        crop_frac        : fraction of shorter card dimension for the crop window
+
+    Returns dict TL/TR/BR/BL, each an (out_size × out_size) BGR image.
+    """
+    h, w = warped.shape[:2]
+    cw_px = (np.asarray(contour_warped, dtype=np.float32) * [w, h])
+
+    # Find the 4 true corners of the contour:
+    # TL = minimum (x+y), TR = maximum (x-y), BR = maximum (x+y), BL = minimum (x-y)
+    sums  = cw_px[:, 0] + cw_px[:, 1]
+    diffs = cw_px[:, 0] - cw_px[:, 1]
+    corner_pts = {"TL": cw_px[int(np.argmin(sums))],
+                  "TR": cw_px[int(np.argmax(diffs))],
+                  "BR": cw_px[int(np.argmax(sums))],
+                  "BL": cw_px[int(np.argmin(diffs))]}
+
+    x1, y1, x2, y2 = [int(round(v * d)) for v, d in zip(card_boundary, [w, h, w, h])]
+    crop_px = int(min(x2 - x1, y2 - y1) * crop_frac)
+
+    # Mask pixels outside the Model C contour to black so the crop never shows
+    # background/non-card content to Claude (clean signal: black = not card).
+    masked = warped.copy()
+    if contour_warped is not None and len(contour_warped) > 2:
+        cw_int = (np.asarray(contour_warped, dtype=np.float32) * [w, h]).astype(np.int32)
+        card_mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(card_mask, [cw_int], 255)
+        masked[card_mask == 0] = 0   # outside contour → black
+
+    crops = {}
+    for name, (cx, cy) in corner_pts.items():
+        cx, cy = int(round(cx)), int(round(cy))
+        # Position the corner in the appropriate quadrant of the crop so the
+        # physical edge is visible on both sides meeting at that corner.
+        # TL → corner at (25%, 25%) of crop; TR → (75%, 25%); BR → (75%, 75%); BL → (25%, 75%)
+        qx = crop_px // 4 if "L" in name else 3 * crop_px // 4
+        qy = crop_px // 4 if "T" in name else 3 * crop_px // 4
+        left  = max(0, min(w - crop_px, cx - qx))
+        top   = max(0, min(h - crop_px, cy - qy))
+        patch = masked[top:top + crop_px, left:left + crop_px]
+        crops[name] = cv2.resize(patch, (out_size, out_size), interpolation=cv2.INTER_LANCZOS4)
+
+    return crops
+
+
 def _build_corner_crops(img_bgr, quad_raw, out_size=800, region_frac=0.30):
     """Warp each of the 4 card-corner regions to an upright square."""
     q = _order_corners(quad_raw)
@@ -483,11 +604,16 @@ that forces one side to be more conservative than its midpoint suggests.
 CARD-TYPE-SPECIFIC GUIDANCE for content_region inset (fraction of card dimension):
   - Standard cards (Fire/Water/Grass/etc. — solid colored border):
       typical inset 6-10% on each side  (≈ 40-65px L/R, 55-90px T/B on 630x880 canvas)
-  - Full Art / SIR / Special Illustration Rare (silver / holographic border):
-      typical inset 3-6% on each side   (≈ 20-40px L/R, 25-55px T/B on 630x880 canvas)
-      The silver border IS the printed border — find where the silver/holo strip
-      ends and the actual artwork begins. DO NOT confuse the physical card edge
-      with the inner content edge — they are different.
+  - Full Art / SIR / Special Illustration / Rainbow / Hyper Rare (silver/holo/textured border):
+      The centering reference is the THIN reflective FOIL FRAME running around the
+      whole card just inside the cut edge — typically only 2-5% wide.
+      content_region = the INNER edge of that foil frame (i.e. CLOSE to the card edge).
+      The illustration extends right up to the foil frame. Interior design elements —
+      the name banner, HP/type icons, attack/ability text boxes, and the decorative
+      rounded art-frame line — are PART OF THE ARTWORK, NOT the border. Anchoring
+      content_region around those interior elements is the SINGLE MOST COMMON ERROR and
+      produces an inset that is far too large (8-12%). Measure ONLY the reflective foil
+      strip's width on each side; if it is ~2-3%, the inset is ~2-3%.
   - Vintage WOTC (thick white border):
       typical inset 10-15% on each side
   - Trainer / energy cards (cyan/blue header design):
@@ -519,13 +645,16 @@ STEP-BY-STEP for centering (do this internally before writing JSON):
             - BR or BL still on border → decrease y2
             - TL or BL still on border → increase x1
             - TR or BR still on border → decrease x2
-          Corners often need MORE inset than edge midpoints because printed
-          borders may flare or curve at corners. When in doubt, choose the
-          inset value that satisfies the WORST corner — even if it overshoots
-          the midpoint estimate slightly.
-  STEP 5: For Full Art cards specifically: if your computed border widths are all
-          < 3% of the card dimension, you have probably mistaken the physical card
-          edge for the content edge — re-examine the silver strip width.
+          Align each corner with the INNER EDGE OF THE PRINTED/FOIL BORDER — not
+          deep inside the artwork. For solid-border cards a corner may need slightly
+          more inset where the border flares. For Full Art / foil-frame cards do NOT
+          overshoot into the picture — the foil frame is thin, so the corner sits
+          just inside it (a few %), never around the interior art elements.
+  STEP 5: For Full Art / foil-frame cards: THIN insets are CORRECT. An inset of
+          2-4% is normal and expected for a thin foil frame — do NOT inflate it.
+          Re-examine ONLY if your inset exceeds ~6% (you have likely pushed past the
+          foil frame into the illustration) or is essentially 0% (you mistook the
+          physical cut edge for the frame's inner edge).
 
 The centering score will be computed FROM your content_region values, not from
 your stated ratios — so spend your attention on accurate content_region pixels,
@@ -855,8 +984,14 @@ def detect_and_grade(img_bgr: np.ndarray, api_key: str = None) -> dict:
     norms       = np.linalg.norm(dirs, axis=1, keepdims=True).clip(min=1)
     quad_padded = quad_raw + (dirs / norms) * pad_px
 
-    result = grade_card(img_bgr, quad_raw=quad_raw, quad_padded=quad_padded,
-                        use_multicrop=True, api_key=api_key, contour=contour)
+    # Grading backend: "cv" (classical-CV XGBoost, default) | "vlm" (Claude Sonnet, legacy backup).
+    if os.environ.get("GRADER_BACKEND", "cv").lower() == "vlm":
+        result = grade_card(img_bgr, quad_raw=quad_raw, quad_padded=quad_padded,
+                            use_multicrop=True, api_key=api_key, contour=contour)
+    else:
+        import cv_grader   # lazy (cv_grader imports grader); CV is the default backend
+        result = cv_grader.grade_card_cv(img_bgr, quad_raw=quad_raw,
+                                         quad_padded=quad_padded, contour=contour)
     result.update(meta)
     result["_quad_raw"]    = quad_raw.tolist()
     result["_quad_padded"] = quad_padded.tolist()
