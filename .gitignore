@@ -77,3 +77,17 @@ backend/feedback/
 
 # Beta grading deploy: bundle ONLY the YOLO OBB weights (small) for Railway
 !backend/models/yolo_obb_best.pt
+
+# notebooks: session data + derived artifacts (grading analysis) — keep CODE, drop DATA/IMAGES
+notebooks/cropped_warped/
+notebooks/feature_extraction_dataset/
+notebooks/embed_eval/
+notebooks/staging/
+notebooks/models/
+notebooks/.streamlit/
+notebooks/**/*.png
+notebooks/**/*.jpg
+notebooks/**/*.jpeg
+notebooks/**/*.webp
+notebooks/**/*.csv
+notebooks/**/*.jsonl
