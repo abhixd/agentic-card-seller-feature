@@ -329,13 +329,13 @@ async function onUpload(e) {
     const b64     = dataUrl.split(",")[1];
 
     show("loading");
-    $("loading-step").textContent = "YOLO detection + Claude grading…";
+    $("loading-step").textContent = "Card detection + CV grading…";
 
     try {
       const { ok, result, error } = await sendBg({
         type:        "GRADE_IMAGE",
         imageData:   b64,
-      }, 150_000); // YOLO + Claude takes 20-60 s
+      }, 150_000); // seg detection + CV feature extraction
       if (!ok) throw new Error(error || "Grade failed");
       renderPSAResult(result);
       show("results");
@@ -350,9 +350,9 @@ async function onUpload(e) {
 // ── Loading animation ─────────────────────────────────────────────────────
 const STEPS = ["step-1", "step-2", "step-3"];
 const STEP_LABELS = [
-  "Detecting & cropping card (YOLO)…",
-  "Perspective warp + palette centering…",
-  "Grading 4 pillars with Claude…",
+  "Detecting & cropping card (seg)…",
+  "Perspective warp + centering…",
+  "Grading pillars (CV model)…",
 ];
 
 function startLoadingAnimation() {
@@ -852,8 +852,14 @@ function buildCenteringAuditCard(src, label = null) {
 
   const lbl = document.createElement("div");
   lbl.className = "detail-img-label";
+  const detName = src._detector === "seg" ? "seg ✓"
+                : src._detector === "yolo" ? "yolo"
+                : src._detector || null;
+  const detTag = detName
+    ? ` <span style="color:var(--sub);font-weight:600;text-transform:none;letter-spacing:0">· ${detName}</span>`
+    : "";
   const prefix = label ? `${label} centering` : "Centering audit";
-  lbl.innerHTML = `${prefix} — <span style="color:var(--sub);font-weight:500;text-transform:none;letter-spacing:0">drag handles to refine</span>`;
+  lbl.innerHTML = `${prefix}${detTag}`;
   card.appendChild(lbl);
 
   const wrap = document.createElement("div");
@@ -880,19 +886,38 @@ function buildCenteringAuditCard(src, label = null) {
 
   const actions = document.createElement("div");
   actions.className = "cen-actions";
+  // Manual adjustment is opt-in. Two scopes:
+  //  • "Adjust border"    → edit BLUE content_region (Claude's interpretation) — common
+  //  • "Adjust card edge" → edit the CYAN boundary (trusted seg detection) — rare override
+  const adjustInnerBtn = document.createElement("button");
+  adjustInnerBtn.className = "cen-reset-btn";
+  adjustInnerBtn.textContent = "✎ Adjust border";
+  const adjustOuterBtn = document.createElement("button");
+  adjustOuterBtn.className = "cen-reset-btn";
+  adjustOuterBtn.textContent = "✎ Adjust card edge";
   const applyBtn = document.createElement("button");
   applyBtn.className = "cen-apply-btn";
   applyBtn.textContent = "✓ Apply adjustment";
   const resetBtn = document.createElement("button");
   resetBtn.className = "cen-reset-btn";
   resetBtn.textContent = "↺ Reset";
+  applyBtn.style.display = "none";   // hidden until a scope is active
+  resetBtn.style.display = "none";
+  actions.appendChild(adjustInnerBtn);
+  actions.appendChild(adjustOuterBtn);
   actions.appendChild(applyBtn);
   actions.appendChild(resetBtn);
   card.appendChild(actions);
 
+  let editMode = null;   // null = view-only | "inner" = blue | "outer" = cyan/edge
+
   // ── Seed boundaries (viewBox units 0..100) ──
   const cb = src._card_boundary;            // [x1,y1,x2,y2] (0..1)
   const cr = src.centering?.content_region; // {x1,y1,x2,y2} (0..1)
+  // True card outline from the segmentation detector (rounded corners), in the
+  // same warped-normalised space as cb/cr. Drawn as a non-interactive reference
+  // overlay; the editable green rectangle below still drives centering/feedback.
+  let contourPts = Array.isArray(src._card_contour_warped) ? src._card_contour_warped : null;
   let seedOuter = (cb && cb.length === 4)
     ? { x1: cb[0]*100, y1: cb[1]*100, x2: cb[2]*100, y2: cb[3]*100 }
     : { x1: 4, y1: 4, x2: 96, y2: 96 };
@@ -903,6 +928,13 @@ function buildCenteringAuditCard(src, label = null) {
         x2: seedOuter.x2 - (seedOuter.x2-seedOuter.x1)*0.10,
         y2: seedOuter.y2 - (seedOuter.y2-seedOuter.y1)*0.10 };
 
+  // Cyan is the real boundary — seed the editable outer edge from its exact box
+  // so the green rectangle (only shown when overriding the edge) overlays the cyan.
+  if (contourPts && contourPts.length > 2) {
+    const xs = contourPts.map((p) => p[0]*100), ys = contourPts.map((p) => p[1]*100);
+    seedOuter = { x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) };
+  }
+
   let outer = { ...seedOuter };
   let inner = { ...seedInner };
   let active = null;
@@ -910,30 +942,60 @@ function buildCenteringAuditCard(src, label = null) {
   function redraw() {
     while (svg.firstChild) svg.removeChild(svg.firstChild);
 
-    addRect(svg, outer.x1, outer.y1, outer.x2-outer.x1, outer.y2-outer.y1,
-            "sv-bounds", { "stroke-width": "0.5", stroke: "var(--green)" });
-    addRect(svg, inner.x1, inner.y1, inner.x2-inner.x1, inner.y2-inner.y1,
-            "sv-content", { "stroke-width": "0.6" });
-
-    // Border widths (units → px on the 630×880 warped canvas)
+    // Border geometry (drives the readout in every mode)
     const L = inner.x1 - outer.x1, R = outer.x2 - inner.x2;
     const T = inner.y1 - outer.y1, B = outer.y2 - inner.y2;
     const midX = (inner.x1+inner.x2)/2, midY = (inner.y1+inner.y2)/2;
-    addLabel(svg, NS_SVG, (outer.x1+inner.x1)/2, midY, `L ${(L*6.3)|0}`);
-    addLabel(svg, NS_SVG, (inner.x2+outer.x2)/2, midY, `R ${(R*6.3)|0}`);
-    addLabel(svg, NS_SVG, midX, (outer.y1+inner.y1)/2, `T ${(T*8.8)|0}`);
-    addLabel(svg, NS_SVG, midX, (inner.y2+outer.y2)/2, `B ${(B*8.8)|0}`);
 
-    // Edge handles (midpoint of each side, for both rects)
-    const oMidX=(outer.x1+outer.x2)/2, oMidY=(outer.y1+outer.y2)/2;
-    [
-      [outer.x1,oMidY,"outer","left"],[outer.x2,oMidY,"outer","right"],
-      [oMidX,outer.y1,"outer","top"], [oMidX,outer.y2,"outer","bottom"],
-      [inner.x1,midY,"inner","left"], [inner.x2,midY,"inner","right"],
-      [midX,inner.y1,"inner","top"],  [midX,inner.y2,"inner","bottom"],
-    ].forEach(([hx,hy,rect,side]) => addHandle(hx,hy,rect,side));
+    // Cyan = the real card boundary (seg). Shown except while overriding the edge,
+    // where the editable green rectangle stands in for it.
+    if (contourPts && contourPts.length > 2 && editMode !== "outer") {
+      const poly = document.createElementNS(NS_SVG, "polygon");
+      poly.setAttribute("points", contourPts.map((p) => `${p[0]*100},${p[1]*100}`).join(" "));
+      poly.setAttribute("fill", "none");
+      poly.setAttribute("stroke", "#22d3ee");          // cyan = card boundary
+      poly.setAttribute("stroke-width", "0.7");
+      poly.setAttribute("stroke-linejoin", "round");
+      poly.setAttribute("pointer-events", "none");
+      poly.setAttribute("class", "sv-contour");
+      svg.appendChild(poly);
+    }
 
-    // Live readout
+    // Outer card edge — editable green rectangle ONLY while adjusting the edge.
+    if (editMode === "outer") {
+      addRect(svg, outer.x1, outer.y1, outer.x2-outer.x1, outer.y2-outer.y1,
+              "sv-bounds", { "stroke-width": "0.5", stroke: "var(--green)" });
+      const oMidX=(outer.x1+outer.x2)/2, oMidY=(outer.y1+outer.y2)/2;
+      [
+        [outer.x1,oMidY,"outer","left"],[outer.x2,oMidY,"outer","right"],
+        [oMidX,outer.y1,"outer","top"], [oMidX,outer.y2,"outer","bottom"],
+      ].forEach(([hx,hy,rect,side]) => addHandle(hx,hy,rect,side));
+    }
+
+    // Inner printed border (blue, content_region = Claude's read):
+    //  • editable + handles while adjusting the border
+    //  • shown as static context while adjusting the edge
+    if (editMode === "inner") {
+      addRect(svg, inner.x1, inner.y1, inner.x2-inner.x1, inner.y2-inner.y1,
+              "sv-content", { "stroke-width": "0.6" });
+      [
+        [inner.x1,midY,"inner","left"], [inner.x2,midY,"inner","right"],
+        [midX,inner.y1,"inner","top"],  [midX,inner.y2,"inner","bottom"],
+      ].forEach(([hx,hy,rect,side]) => addHandle(hx,hy,rect,side));
+    } else if (editMode === "outer") {
+      addRect(svg, inner.x1, inner.y1, inner.x2-inner.x1, inner.y2-inner.y1,
+              "sv-content", { "stroke-width": "0.5" });
+    }
+
+    // Border-width labels while editing either box
+    if (editMode) {
+      addLabel(svg, NS_SVG, (outer.x1+inner.x1)/2, midY, `L ${(L*6.3)|0}`);
+      addLabel(svg, NS_SVG, (inner.x2+outer.x2)/2, midY, `R ${(R*6.3)|0}`);
+      addLabel(svg, NS_SVG, midX, (outer.y1+inner.y1)/2, `T ${(T*8.8)|0}`);
+      addLabel(svg, NS_SVG, midX, (inner.y2+outer.y2)/2, `B ${(B*8.8)|0}`);
+    }
+
+    // Live readout (always shown)
     const lr = (L+R)>1e-6 ? Math.round(L/(L+R)*100) : 50;
     const tb = (T+B)>1e-6 ? Math.round(T/(T+B)*100) : 50;
     const score = centeringScore(lr, tb);
@@ -986,6 +1048,18 @@ function buildCenteringAuditCard(src, label = null) {
     window.removeEventListener("pointermove", onHandleMove);
   }
 
+  function setMode(mode) {
+    editMode = (editMode === mode) ? null : mode;   // clicking the active one exits
+    const on = editMode !== null;
+    applyBtn.style.display = on ? "" : "none";
+    resetBtn.style.display = on ? "" : "none";
+    adjustInnerBtn.textContent = editMode === "inner" ? "✓ Done" : "✎ Adjust border";
+    adjustOuterBtn.textContent = editMode === "outer" ? "✓ Done" : "✎ Adjust card edge";
+    redraw();
+  }
+  adjustInnerBtn.addEventListener("click", () => setMode("inner"));
+  adjustOuterBtn.addEventListener("click", () => setMode("outer"));
+
   resetBtn.addEventListener("click", () => {
     outer = { ...seedOuter }; inner = { ...seedInner }; redraw();
   });
@@ -1012,6 +1086,8 @@ function buildCenteringAuditCard(src, label = null) {
     const newOuter = { x1: outer.x1/100, y1: outer.y1/100, x2: outer.x2/100, y2: outer.y2/100 };
     const newInner = { x1: inner.x1/100, y1: inner.y1/100, x2: inner.x2/100, y2: inner.y2/100 };
     src._card_boundary = [newOuter.x1, newOuter.y1, newOuter.x2, newOuter.y2];
+    // If the user overrode the card edge, their rectangle replaces the seg contour.
+    if (editMode === "outer") { src._card_contour_warped = null; contourPts = null; }
     src.centering = {
       ...(src.centering ?? {}),
       score: cenScore,
@@ -1051,7 +1127,7 @@ function buildCenteringAuditCard(src, label = null) {
   const cen = src.centering ?? {};
   cap.textContent = cen.notes
     ? cen.notes
-    : "Green = card edge · gold = printed border. Drag to re-measure.";
+    : "Cyan = card edge (detected). “Adjust border” edits the printed-border box Claude reads (blue); “Adjust card edge” overrides the detected boundary (rare).";
   card.appendChild(cap);
   return card;
 }
@@ -1223,6 +1299,7 @@ function renderPsaMeasurements(pillar, r) {
     }
     const claude = cen._claude_reported;
     if (claude) rows.push(["Claude (pre-geom)", `${claude.left_right ?? "?"} · ${claude.top_bottom ?? "?"}`]);
+    else if (cen._source) rows.push(["Detector", cen.reliable === false ? `${cen._source} (low-confidence)` : cen._source]);
     if (r._centering_self_consistent != null)
       rows.push(["Self-consistent", r._centering_self_consistent ? "yes" : "no (±>5pp)"]);
   } else {

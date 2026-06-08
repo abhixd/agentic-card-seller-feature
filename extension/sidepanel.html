@@ -65,7 +65,7 @@
   <div class="mode-toggle">
     <label class="mode-label">
       <input type="checkbox" id="chk-multicrop" checked />
-      <span>Include corner zooms (YOLO+Claude, slower)</span>
+      <span>Include corner zooms (higher detail)</span>
     </label>
   </div>
 </section>
@@ -75,11 +75,11 @@
   <div class="loading-wrap">
     <div class="spinner-ring"></div>
     <div class="loading-title">Analyzing card…</div>
-    <div id="loading-step" class="loading-step">Claude Vision grading</div>
+    <div id="loading-step" class="loading-step">Computer-vision grading</div>
     <div class="loading-steps">
-      <div class="step" id="step-1">1 · Detect &amp; crop card (YOLO)</div>
+      <div class="step" id="step-1">1 · Detect &amp; crop card (seg)</div>
       <div class="step" id="step-2">2 · Warp + analyse centering</div>
-      <div class="step" id="step-3">3 · Grade pillars with Claude</div>
+      <div class="step" id="step-3">3 · Grade pillars (CV model)</div>
     </div>
   </div>
 </section>
@@ -150,7 +150,7 @@
 
   <!-- AI Reasoning (collapsible) -->
   <details class="reasoning-details">
-    <summary class="reasoning-summary">AI Reasoning ▸</summary>
+    <summary class="reasoning-summary">Grading details ▸</summary>
     <div id="reasoning-front" class="reasoning-text"></div>
     <div id="reasoning-back"  class="reasoning-text reasoning-text-back"></div>
   </details>

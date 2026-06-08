@@ -65,6 +65,34 @@ def _pillar_score(node, defects):
     return _SEV_TO_SCORE[worst], worst
 
 
+# severity word (matches the extension's severityFromText keyword coloring) + readable defect names
+_SEV_WORD = {1: "slight", 2: "minor", 3: "moderate", 4: "heavy"}
+_DEFECT_LABEL = {"whitening": "whitening", "nick": "nicks", "chip": "chip", "fraying": "fraying",
+                 "bending": "bending", "deformation": "deformation", "scratches": "scratches",
+                 "print_lines": "print lines", "dents": "dents", "creases": "creases",
+                 "stains": "stains", "holo_disruption": "holo disruption"}
+
+
+def _pillar_issues(node, defects, min_sev=2):
+    """Build human-readable finding strings (severity ≥ min_sev) from the CV detector output,
+    so the extension's per-pillar findings panel populates the same way it did for the VLM."""
+    out = []
+    def emit(loc, defect, sev):
+        if sev >= min_sev:
+            where = f" ({loc.replace('_', ' ')})" if loc else ""
+            out.append(f"{_SEV_WORD[sev]} {_DEFECT_LABEL.get(defect, defect)}{where}")
+    nested = any(isinstance(v, dict) for v in node.values()) if node else False
+    if nested:                                  # corners/edges: {loc: {defect: sev}}
+        for loc, dd in node.items():
+            if isinstance(dd, dict):
+                for d in defects:
+                    if d in dd: emit(loc, d, _sev_of(dd[d]))
+    else:                                       # surface: flat {defect: sev}
+        for d in defects:
+            if d in node: emit(None, d, _sev_of(node[d]))
+    return out
+
+
 def _centering_score(lr, tb):
     """grader-style worst-axis deviation -> 1-10 (matches grade_card's geo_score ladder)."""
     lr_dev = abs(int(lr.split("/")[0]) - 50)
@@ -133,13 +161,24 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, **_ign
                f"({conf*100:.0f}% confidence). Centering {lr} L/R · {tb} T/B. "
                f"Strongest concern: {worst_pillar[0]} (score {worst_pillar[1]:.1f}/10).")
 
+    # CV-derived findings (per-pillar) → populates the extension's findings panel
+    lr_dev = abs(int(lr.split("/")[0]) - 50); tb_dev = abs(int(tb.split("/")[0]) - 50)
+    issues = {"corners":   _pillar_issues(cond.get("corners", {}), _CORNER_DEFECTS),
+              "edges":     _pillar_issues(cond.get("edges", {}),   _EDGE_DEFECTS),
+              "surface":   _pillar_issues(cond.get("surface", {}), _SURFACE_DEFECTS),
+              "centering": []}
+    if lr_dev > 10: issues["centering"].append(f"off-center {lr} L/R")
+    if tb_dev > 10: issues["centering"].append(f"off-center {tb} T/B")
+    cen_note = f"L/R {lr} · T/B {tb}" + ("" if inn["reliable"] else "  (low-confidence read)")
+
     result = {
         "centering": {"score": cen_score, "left_right": lr, "top_bottom": tb,
                       "content_region": content_region, "reliable": bool(inn["reliable"]),
-                      "_source": "coherentframe"},
+                      "notes": cen_note, "_source": "coherentframe"},
         "corners": {"score": corners_s, "worst_severity": corners_w},
         "edges":   {"score": edges_s,   "worst_severity": edges_w},
         "surface": {"score": surface_s, "worst_severity": surface_w},
+        "issues": issues,
         "overall_score": overall,
         "psa_equivalent": psa_equiv,
         "summary": summary,
