@@ -1,6 +1,7 @@
-# Dockerfile — Python grading API for Railway
-# Build context: this service dir (services/grading-api) — set the Railway service
-# Root Directory to services/grading-api so these relative COPY paths resolve.
+# Dockerfile.grading — Python grading API for Railway
+# Build context: REPO ROOT (Railway service Root Directory must be EMPTY/blank).
+# COPY paths are repo-relative (services/grading-api/...). This mirrors the proven
+# pre-monorepo setup (root context + Dockerfile.grading), just from the new location.
 
 FROM python:3.11-slim
 
@@ -19,7 +20,7 @@ RUN pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cpu
 
 # Copy and install remaining deps (skip torch/torchvision — already installed)
-COPY requirements.txt /tmp/requirements.txt
+COPY services/grading-api/requirements.txt /tmp/requirements.txt
 RUN grep -vE "^torch|^torchvision" /tmp/requirements.txt \
     | sed 's/opencv-python/opencv-python-headless/' \
     | pip install --no-cache-dir -r /dev/stdin
@@ -27,18 +28,18 @@ RUN grep -vE "^torch|^torchvision" /tmp/requirements.txt \
 # Copy backend source
 # Backend source: product API (main/inference/schemas/comps) + the grading
 # pipeline (grader/aggregator/grade_comps/grade_model) used by /grade.
-COPY main.py inference.py schemas.py comps.py \
-     grader.py aggregator.py grade_comps.py \
-     card_segmenter.py \
-     cv_grader.py nonvlm_cv.py inner_frame.py \
-     grade_model.json feedback_to_yolo.py ./
+COPY services/grading-api/main.py services/grading-api/inference.py services/grading-api/schemas.py services/grading-api/comps.py \
+     services/grading-api/grader.py services/grading-api/aggregator.py services/grading-api/grade_comps.py \
+     services/grading-api/card_segmenter.py \
+     services/grading-api/cv_grader.py services/grading-api/nonvlm_cv.py services/grading-api/inner_frame.py \
+     services/grading-api/grade_model.json services/grading-api/feedback_to_yolo.py ./
 
 # Grading-only deploy. /grade defaults to the classical-CV backend (cv_grader +
 # cv_xgb_raw.pkl); the YOLO weights stay for detection fallback and the Claude VLM
 # path stays available behind GRADER_BACKEND=vlm. The MLP /analyze-listing path is
 # NOT part of the Beta surface, so its artefacts are intentionally not bundled.
-COPY models/yolo_obb_best.pt ./models/yolo_obb_best.pt
-COPY models/cv_xgb_raw.pkl  ./models/cv_xgb_raw.pkl
+COPY services/grading-api/models/yolo_obb_best.pt ./models/yolo_obb_best.pt
+COPY services/grading-api/models/cv_xgb_raw.pkl  ./models/cv_xgb_raw.pkl
 
 # Default env — Railway overrides PORT at runtime
 ENV YOLO_WEIGHTS=/app/models/yolo_obb_best.pt

@@ -1,0 +1,9 @@
+# Grading service builds from the REPO ROOT (Railway Root Directory must be EMPTY).
+# Dockerfile.grading COPYs from services/grading-api/ — mirrors the proven pre-monorepo setup.
+[build]
+dockerfilePath = "Dockerfile.grading"
+
+[deploy]
+healthcheckPath    = "/health"
+healthcheckTimeout = 120
+restartPolicyType  = "on_failure"
