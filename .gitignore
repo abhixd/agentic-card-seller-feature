@@ -93,3 +93,6 @@ notebooks/**/*.jpeg
 notebooks/**/*.webp
 notebooks/**/*.csv
 notebooks/**/*.jsonl
+
+# Research / POCs — backed up at git tag pre-monorepo; kept on disk, out of the tracked codebase
+research/
