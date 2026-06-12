@@ -1,7 +1,7 @@
 # Railway service Root Directory must be set to services/grading-api so this
 # Dockerfile + its relative COPY paths resolve against the service folder.
 [build]
-dockerfilePath = "Dockerfile"
+dockerfilePath = "Dockerfile.grading"
 
 [deploy]
 healthcheckPath    = "/health"
