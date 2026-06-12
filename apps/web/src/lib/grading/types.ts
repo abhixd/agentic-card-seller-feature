@@ -1,0 +1,33 @@
+/**
+ * Shape of the /grade response from the grading microservice (services/grading-api).
+ * Mirrors backend cv_grader.grade_card_cv() — the same payload the Chrome extension
+ * consumes, so the web grading UI and the extension stay in lockstep.
+ */
+export interface PillarScore {
+  score: number
+  worst_severity?: number
+}
+
+export interface CenteringResult {
+  score: number
+  left_right: string      // e.g. "55/45"
+  top_bottom: string
+  reliable?: boolean
+}
+
+export interface GradeResult {
+  overall_score: number          // 1–10
+  psa_equivalent: string         // e.g. "PSA 9 MINT"
+  summary: string
+  centering: CenteringResult
+  corners: PillarScore
+  edges: PillarScore
+  surface: PillarScore
+  issues?: string[]
+  // debug / extras (underscore-prefixed) — optional, safe to ignore in the UI
+  _tier_distribution?: Record<string, number>
+  _confidence?: string           // "high" | "medium" | "low"
+  _grader_backend?: string       // "cv"
+  _warped_jpeg_b64?: string
+  [key: string]: unknown
+}

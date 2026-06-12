@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, ScanLine, Archive, LogOut, Layers,
   BookOpen, Newspaper, Users, ArrowLeftRight, TrendingUp, Heart, ShoppingBag, CalendarDays,
-  ShoppingCart, Settings, Wrench,
+  ShoppingCart, Settings, Wrench, Award,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -30,6 +30,14 @@ const navItems = [
     grad:  ['#8b5cf6', '#6d28d9'],   // violet
     glow:  'rgba(139,92,246,0.7)',
     text:  'text-violet-300',
+  },
+  {
+    href:  '/grade',
+    label: 'Grade Card',
+    icon:  Award,
+    grad:  ['#f43f5e', '#be123c'],   // rose
+    glow:  'rgba(244,63,94,0.7)',
+    text:  'text-rose-300',
   },
   {
     href:  '/inventory',

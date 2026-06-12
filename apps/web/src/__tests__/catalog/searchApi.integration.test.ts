@@ -49,6 +49,7 @@ const MOCK_RESULTS: CardSearchResult[] = [
     card_number: '4/102',
     variant: null,
     canonical_image_url: null,
+    metadata_json: null,
   },
 ]
 

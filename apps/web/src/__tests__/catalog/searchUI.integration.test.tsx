@@ -10,6 +10,7 @@ import type { CardSearchResult } from '@/types/catalog'
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
   usePathname: () => '/analyze',
+  useSearchParams: () => new URLSearchParams(),
 }))
 
 // Mock next/link to render a plain <a> so hrefs are testable
@@ -41,6 +42,7 @@ const SEARCH_RESULTS: CardSearchResult[] = [
     card_number: '4/102',
     variant: null,
     canonical_image_url: null,
+    metadata_json: null,
   },
   {
     catalog_id: 'uuid-blastoise',
@@ -52,6 +54,7 @@ const SEARCH_RESULTS: CardSearchResult[] = [
     card_number: '2/102',
     variant: null,
     canonical_image_url: null,
+    metadata_json: null,
   },
 ]
 

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
-  LayoutDashboard, ScanLine, Archive, TrendingUp, Wrench,
+  LayoutDashboard, ScanLine, Archive, TrendingUp, Wrench, Award,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 const navItems = [
   { href: '/dashboard',       label: 'Home',    icon: LayoutDashboard, grad: ['#6366f1','#4338ca'], glow: 'rgba(99,102,241,0.75)',  text: 'text-indigo-300'  },
   { href: '/analyze',         label: 'Analyze', icon: ScanLine,        grad: ['#8b5cf6','#6d28d9'], glow: 'rgba(139,92,246,0.75)', text: 'text-violet-300'  },
+  { href: '/grade',           label: 'Grade',   icon: Award,           grad: ['#f43f5e','#be123c'], glow: 'rgba(244,63,94,0.75)',  text: 'text-rose-300'    },
   { href: '/inventory',       label: 'Cards',   icon: Archive,         grad: ['#10b981','#047857'], glow: 'rgba(16,185,129,0.75)', text: 'text-emerald-300' },
   { href: '/tools',           label: 'Optimize', icon: Wrench,          grad: ['#06b6d4','#6366f1'], glow: 'rgba(99,102,241,0.75)', text: 'text-indigo-300'  },
   { href: '/market',          label: 'Market',  icon: TrendingUp,      grad: ['#f59e0b','#b45309'], glow: 'rgba(245,158,11,0.75)', text: 'text-amber-300'   },

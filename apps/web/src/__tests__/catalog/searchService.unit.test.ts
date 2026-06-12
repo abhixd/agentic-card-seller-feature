@@ -17,6 +17,7 @@ const CHARIZARD: CardSearchResult = {
   card_number: '4/102',
   variant: null,
   canonical_image_url: null,
+  metadata_json: null,
 }
 
 const JORDAN: CardSearchResult = {
@@ -29,10 +30,12 @@ const JORDAN: CardSearchResult = {
   card_number: '57',
   variant: 'Rookie',
   canonical_image_url: null,
+  metadata_json: null,
 }
 
 const CHARIZARD_FULL: CardCatalogItem = {
   ...CHARIZARD,
+  category: 'tcg' as const,   // CardSearchResult.category is widened to string; narrow to the literal union
   metadata_json: { seed: 'true', rarity: 'Holo Rare' },
   created_at: '2024-01-01T00:00:00Z',
 }
