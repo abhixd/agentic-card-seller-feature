@@ -2,6 +2,8 @@
 
 import { useState } from 'react'
 import type { GradeResult } from '@/lib/grading/types'
+import { CenteringPanel } from '@/components/grading/CenteringPanel'
+import { GradeFeedback } from '@/components/grading/GradeFeedback'
 
 const SCORE_COLOR = (s: number) =>
   s >= 9 ? 'text-emerald-600' : s >= 7.5 ? 'text-lime-600' : s >= 6 ? 'text-amber-600' : 'text-red-600'
@@ -100,11 +102,29 @@ export default function GradePage() {
             <Pillar label="corners" score={result.corners.score} />
             <Pillar label="edges" score={result.edges.score} />
             <Pillar label="surface" score={result.surface.score} />
-            <p className="pt-1 text-xs text-muted-foreground">
-              centering {result.centering.left_right} L/R · {result.centering.top_bottom} T/B
-              {result.centering.reliable === false && ' (low-confidence)'}
-            </p>
           </div>
+
+          <CenteringPanel
+            centering={result.centering}
+            warpedJpegB64={result._warped_jpeg_b64}
+            cardBoundary={result._card_boundary}
+            borderType={result._border_type}
+          />
+
+          <GradeFeedback
+            aspect="centering"
+            question="Does this centering read look right?"
+            context={{
+              overall_score: result.overall_score,
+              psa_equivalent: result.psa_equivalent,
+              centering: result.centering,
+              content_region: result.centering.content_region,
+              card_boundary: result._card_boundary,
+              border_type: result._border_type,
+              grader_backend: result._grader_backend,
+            }}
+            warpedJpegB64={result._warped_jpeg_b64}
+          />
 
           {result.summary && <p className="text-sm">{result.summary}</p>}
 
@@ -114,15 +134,6 @@ export default function GradePage() {
                 <li key={i}>{it}</li>
               ))}
             </ul>
-          )}
-
-          {result._warped_jpeg_b64 && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={`data:image/jpeg;base64,${result._warped_jpeg_b64}`}
-              alt="detected card"
-              className="max-h-72 rounded-md object-contain"
-            />
           )}
         </div>
       )}
