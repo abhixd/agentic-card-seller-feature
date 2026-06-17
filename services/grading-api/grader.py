@@ -23,6 +23,14 @@ import anthropic
 # module load pulls in SAM → torchvision → torch._dynamo (very heavy/slow) even when
 # the seg detector is used and YOLO is never needed — which froze notebook imports.
 
+# Tunable centering / cb-geometry parameters live in centering_config.yaml; cfg() falls back to the
+# default passed here if the file/key is missing, so this import can never break the API.
+try:
+    from config import cfg
+except Exception:                       # config.py unreachable → every cfg() returns its default
+    def cfg(section, key, default):     # noqa: D401
+        return default
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 MODEL       = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-5")
 MAX_TOKENS  = 3000
@@ -35,7 +43,9 @@ YOLO_WEIGHTS  = os.environ.get(
 )
 YOLO_CONF   = float(os.environ.get("YOLO_CONF", "0.25"))
 YOLO_IMGSZ  = int(os.environ.get("YOLO_IMGSZ", "640"))
-PADDING_FRAC = 0.03
+PADDING_FRAC   = cfg("segmentation", "padding_frac", 0.03)
+CB_SEARCH_FRAC = cfg("cb_refine", "search_frac", 0.10)      # refine_cb_in_warped inward search
+CB_BALANCE_MARGIN = cfg("cb_refine", "balance_margin", 0.006)  # _balance_cb_padding tolerance
 REFINE_EDGES = True
 
 # Card detector selection:
@@ -245,6 +255,180 @@ def card_boundary_analytical(quad_raw, quad_padded, out_w=630, out_h=880):
     x2 = float(np.clip(corners_warp[:, 0].max() / out_w, 0.0, 1.0))
     y2 = float(np.clip(corners_warp[:, 1].max() / out_h, 0.0, 1.0))
     return corners_warp, (x1, y1, x2, y2)
+
+
+def refine_cb_in_warped(warped: np.ndarray, cb, search_frac: float = CB_SEARCH_FRAC, balance: bool = True):
+    """Snap cb to the actual physical card edge in the already-warped image.
+
+    `balance=True` (default) also runs the symmetric-padding correction (_balance_cb_padding).
+    Pass `balance=False` to get the colour/Canny-snapped cb WITHOUT the padding balance — used for
+    the grading-FEATURE path (the cv_xgb model was trained on un-balanced cb; the balance is applied
+    only to the CENTERING cb so the grade is unchanged while centering improves).
+
+    After perspective warp the card edges are horizontal/vertical. Scans each cb
+    side outward→inward using two complementary signals:
+      • BGR colour RMS gradient (primary) — works even when card and background
+        have similar brightness but differ in colour (e.g. dark foil frame on dark
+        wood table: achromatic foil vs chromatic wood → RMS colour difference ~20).
+      • Canny edge-density gradient (secondary) — catches cases where the physical
+        cut edge produces a dense horizontal Canny line regardless of colour.
+    Safe no-op when neither signal finds a clear boundary.
+    search_frac: fraction of each card dimension (height for top/bottom, width for
+    left/right) to scan inward from cb. 0.10 covers overshoot up to ~10% of card
+    size, which is larger than any realistic Roboflow overshoot.
+    """
+    h, w = warped.shape[:2]
+    blur  = cv2.GaussianBlur(warped, (5, 5), 1.5)          # blur in BGR space
+    gray  = cv2.cvtColor(blur, cv2.COLOR_BGR2GRAY)
+    med   = float(np.median(gray))
+    canny = cv2.Canny(gray, max(0, 0.5 * med), min(255, 1.5 * med))
+
+    x1 = max(0,     int(round(cb[0] * w)))
+    y1 = max(0,     int(round(cb[1] * h)))
+    x2 = min(w - 1, int(round(cb[2] * w)))
+    y2 = min(h - 1, int(round(cb[3] * h)))
+    # Per-side search proportional to card dimension so the window scales with image
+    # resolution (CV_WARP_SIZE=1260×1760 vs LEGACY=630×880).
+    card_h = max(1, y2 - y1); card_w = max(1, x2 - x1)
+    v_search = max(4, int(card_h * search_frac))   # vertical sides (top/bottom)
+    h_search = max(4, int(card_w * search_frac))   # horizontal sides (left/right)
+
+    def _snap(bgr_s, edge_s):
+        """First strong boundary going from outer to inner.
+        bgr_s : (n_steps, span, 3)  — colour strip, index 0 = outermost
+        edge_s: (n_steps, span)     — Canny strip, same orientation
+        Returns pixel offset of the boundary, 0 if none found."""
+        n = len(bgr_s)
+        if n < 4:
+            return 0
+
+        # --- Signal A: BGR colour RMS gradient --------------------------------
+        # Per-step mean colour → RMS distance between adjacent steps.
+        # Detects card/table boundary even when brightness is similar (dark foil
+        # on dark wood): achromatic foil vs chromatic wood → large colour step.
+        mean_bgr = bgr_s.mean(axis=1).astype(np.float32)          # (n, 3)
+        c_rms = np.sqrt(np.sum(np.diff(mean_bgr, axis=0) ** 2, axis=1))  # (n-1,)
+        col_hit = None
+        if c_rms.max() >= 15.0:
+            idx = np.where(c_rms > c_rms.max() * 0.5)[0]
+            if idx.size:
+                col_hit = int(idx[0])
+
+        # --- Signal B: Canny edge-density gradient ----------------------------
+        # The physical card cut produces a dense horizontal Canny line; the smooth
+        # background has low density.  Jump ≥12% coverage per step = real edge.
+        density = edge_s.mean(axis=1).astype(np.float32) / 255.0  # (n,)
+        d_grad  = np.abs(np.diff(density))
+        cny_hit = None
+        if d_grad.max() >= 0.12:
+            idx = np.where(d_grad > d_grad.max() * 0.5)[0]
+            if idx.size:
+                cny_hit = int(idx[0])
+
+        # Return the outermost (most conservative = smallest offset) hit.
+        hits = [v for v in (col_hit, cny_hit) if v is not None]
+        return max(0, min(hits)) if hits else 0
+
+    # Strips oriented so index 0 = outermost (the cb side), going inward.
+    # BGR colour strips come from the RAW (unblurred) warped image — blur attenuates
+    # the per-row colour step from ~18 to ~7, dropping it below the 15-unit threshold.
+    # Canny strips come from the pre-blurred gray (noise-suppressed).
+    # Horizontal edges (top / bottom): v_search rows from cb side.
+    bot_b  = warped[max(0, y2 - v_search):y2 + 1, x1:x2 + 1][::-1]    # (n,W,3) raw colour
+    bot_e  = canny [max(0, y2 - v_search):y2 + 1, x1:x2 + 1][::-1]    # (n,W)
+    top_b  = warped[y1:min(h, y1 + v_search + 1), x1:x2 + 1]
+    top_e  = canny [y1:min(h, y1 + v_search + 1), x1:x2 + 1]
+
+    # Vertical edges (left / right): h_search cols from cb side, transposed.
+    left_b  = warped[y1:y2 + 1, x1:min(w, x1 + h_search + 1)].transpose(1, 0, 2)
+    left_e  = canny [y1:y2 + 1, x1:min(w, x1 + h_search + 1)].T
+    right_b = warped[y1:y2 + 1, max(0, x2 - h_search):x2 + 1][:, ::-1, :].transpose(1, 0, 2)
+    right_e = canny [y1:y2 + 1, max(0, x2 - h_search):x2 + 1][:, ::-1].T
+
+    trim_b = _snap(bot_b,   bot_e)   if bot_b.size   else 0
+    trim_t = _snap(top_b,   top_e)   if top_b.size   else 0
+    trim_l = _snap(left_b,  left_e)  if left_b.size  else 0
+    trim_r = _snap(right_b, right_e) if right_b.size else 0
+
+    nx1, ny1 = x1 + trim_l, y1 + trim_t
+    nx2, ny2 = x2 - trim_r, y2 - trim_b
+
+    # Only shrink, never enlarge; keep a valid (positive area) box.
+    nx1 = max(x1, min(nx1, x2 - 1));  ny1 = max(y1, min(ny1, y2 - 1))
+    nx2 = min(x2, max(nx2, x1 + 1));  ny2 = min(y2, max(ny2, y1 + 1))
+    if nx1 >= nx2 or ny1 >= ny2:
+        refined = tuple(cb)
+    else:
+        refined = (float(nx1 / w), float(ny1 / h), float(nx2 / w), float(ny2 / h))
+    return _balance_cb_padding(warped, refined) if balance else refined
+
+
+def _balance_cb_padding(warped: np.ndarray, cb, margin: float = CB_BALANCE_MARGIN):
+    """Make the cb padding SYMMETRIC across the four sides. Each side's 'padding' is the gap between cb
+    and the warp edge; for an accurate quad this is a constant ~PADDING_FRAC on all four sides. A
+    quad-undershoot (approxPolyDP inscribing the rounded/angled corners) inflates the padding on the
+    affected side(s) — the card actually extends past cb there — which throws off both centering and
+    labeling on that side. We pull every side whose padding exceeds the SMALLEST side's (the most
+    accurate one) by more than `margin` out to that minimum, restoring symmetry.
+
+    VALIDATED 2026-06-17 on 39 GT cards (margin sweep): mean centering error 12.71 → 5.84 at margin
+    0.006 (10 improved, 2 minor regressions ≤2.1pt) — the cb undershoot, not the detector, was hurting
+    centering broadly. margin 0.006 is the swept optimum (0.015→8.93, 0.010→7.34, 0.006→5.84, 0.003→
+    5.93). It fixes the full-art undershoots on EVERY side: e.g. Team Rocket's Mewtwo ex
+    cb [.,.949,.] → symmetric [.023,.023,.976,.977], moving the variance box off the ex-rule box and
+    title bar onto the true silver frame on all four edges.
+
+    Earlier gated versions (require the strip just outside cb to colour-match the strip inside) BLOCKED
+    the correction — card content varies across cb, so the gate falsely read 'not card' and left the
+    undershoot in place. Pure geometry (no gate) is what works.
+    """
+    pad = {"L": cb[0], "R": 1.0 - cb[2], "T": cb[1], "B": 1.0 - cb[3]}
+    tgt = min(pad.values())
+    new = list(cb)
+    if pad["L"] > tgt + margin: new[0] = tgt
+    if pad["R"] > tgt + margin: new[2] = 1.0 - tgt
+    if pad["T"] > tgt + margin: new[1] = tgt
+    if pad["B"] > tgt + margin: new[3] = 1.0 - tgt
+    return tuple(float(v) for v in new)
+
+
+# NOTE: do NOT crop the warped image to cb for the centering path. The inner-frame
+# detectors (inner_frame_var/dp/coherence) search INWARD from cb and already ignore
+# pixels outside it; cropping + resetting cb to (0,0,1,1) collapses the outer
+# reference onto the image edge, so border width measures as ~0 (esp. full-art cards).
+# Refine cb with refine_cb_in_warped instead and leave the image untouched.
+
+
+def mask_background_to_contour(warped: np.ndarray, cw, fill=(0, 0, 0)):
+    """Black out everything OUTSIDE the card so no table background remains in the warped
+    image (rounded-corner wedges, edge slivers, overshoot strips).
+
+    Masks to the CONVEX HULL of the segmentation contour, not the raw contour. A card is a
+    convex rounded rectangle, so any concavity in the contour is an occlusion artifact —
+    a card-stand leg, finger, or segmentation error — that notches into the card edge.
+    Hulling bridges those notches (keeping the card content) while still following the
+    convex rounded corners and straight edges to exclude the table.
+
+    METRIC-SAFE for centering: the inner-frame detectors search a band inset from cb with
+    the corners skipped, which never reaches the masked region — validated identical
+    centering (mean/median unchanged on 39 GT cards, both the coherence and variance
+    detectors, 0 cards changed). The hull masks a superset of the raw contour, so it is
+    strictly more conservative (keeps more card) than contour masking.
+
+    Use this ONLY for the centering path and for display. Do NOT feed a masked warp to the
+    grading-feature extractor (cv_extract_conditions): that model was trained on un-masked
+    warps and masking shifts its edge/corner features by tens of units.
+    """
+    if cw is None or len(cw) == 0:
+        return warped
+    h, w = warped.shape[:2]
+    poly = (np.asarray(cw, np.float32) * [w, h]).astype(np.int32)
+    hull = cv2.convexHull(poly)                 # bridge stand/finger occlusion notches
+    mask = np.zeros((h, w), np.uint8)
+    cv2.fillPoly(mask, [hull], 255)
+    out = warped.copy()
+    out[mask == 0] = fill
+    return out
 
 
 # ── Palette-based centering ────────────────────────────────────────────────────
@@ -757,6 +941,7 @@ def grade_card(img_bgr: np.ndarray,
         warped = _warp_card(img_bgr, quad_padded)
         _, card_bbox = card_boundary_analytical(
             quad_raw if quad_raw is not None else quad_padded, quad_padded)
+        card_bbox = refine_cb_in_warped(warped, card_bbox)
     else:
         warped, card_bbox = img_bgr.copy(), (0.0, 0.0, 1.0, 1.0)
 
@@ -953,6 +1138,11 @@ def _detect_seg(img_bgr: np.ndarray, api_key: str = None):
     import card_segmenter
     seg = card_segmenter.segment_card(img_bgr, api_key=None)  # uses ROBOFLOW_API_KEY env
     quad_raw = _order_corners(seg["quad"])
+    # NOTE: Canny edge-refine is intentionally NOT applied to the seg quad. Verified on real
+    # full-art images that (a) refine_quad_to_edges snaps to the nearest strong edge, which on a
+    # full-bleed card is the INTERIOR art edge, pulling the quad inward (worse), and (b) the
+    # shared aspect guard (quad_aspect_and_area) returns ~0.99 for any rectangular card quad, so
+    # the 0.55..0.85 acceptance test rejects it anyway. Seg already captures the card edge well.
     return quad_raw, seg["contour"], {
         "_detector": "seg",
         "_seg_conf": seg["conf"],

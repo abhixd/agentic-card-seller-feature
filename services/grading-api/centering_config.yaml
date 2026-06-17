@@ -1,0 +1,41 @@
+# centering_config.yaml — tunable parameters for the card-centering / cb-geometry pipeline.
+#
+# Loaded by config.py and consumed by grader.py, card_segmenter.py, inner_frame.py (production), and
+# research/notebooks/inner_frame_var.py (lab). A MISSING file, missing key, malformed YAML, or absent
+# PyYAML all fall back to the in-code defaults — nothing here is load-bearing for the API to start.
+#
+# Override the path with the CENTERING_CONFIG env var. Rationale for every value: CENTERING_CB_NOTES.md.
+
+segmentation:
+  padding_frac: 0.03       # warp padding added around the detected card quad (grader.adaptive_padding)
+  min_area_frac: 0.05      # reject a seg region smaller than this fraction of the image (speck guard;
+                           #   fixes the card_06/08 black-warp: pick largest region, not most-confident)
+  sigma: 2.5               # contour smoothing strength (card_segmenter)
+  resample_n: 400          # contour resample resolution
+
+cb_refine:
+  search_frac: 0.10        # refine_cb_in_warped: per-side inward search as a fraction of the card dim
+  balance_margin: 0.006    # _balance_cb_padding: pull every side whose padding exceeds the SMALLEST
+                           #   side's by more than this, out to that minimum (symmetric-padding fix).
+                           #   SWEPT OPTIMUM on 39 GT cards (GT centering 12.71 → 5.84). Do NOT lower
+                           #   "to be safe" — smaller margin over-corrects and REGRESSES more cards.
+
+coherence_detector:        # inner_frame.py — the PRODUCTION centering detector (cv_grader)
+  max_inset: 0.10          # max inner-frame inset (fraction of width) for L/R
+  max_inset_tb: 0.08       # tighter cap for T/B (keeps the picker off the title rule on full-art)
+  seed_w: 0.0              # outer-inset prior share. VALIDATED DEAD-END — overfits, was masking the
+                           #   cb undershoot (now fixed at source). Keep 0.
+  seed_frac: 0.03          # expected border inset the (disabled) prior would pull toward
+
+variance_detector:         # research/notebooks/inner_frame_var.py — LAB ONLY (not in the deploy)
+  lam: 0.583               # region↔edge balance λ
+  gain: 4.0                # gradient-reward sharpness in exp(-gain·g)
+  chroma: 1.5              # Lab a/b colour-gradient weight added to the luminance gradient
+  band: 5                  # along-edge denoise window
+  lo: 0.006                # min inset (clears the cut-edge bevel)
+  dmax: 0.106              # max inset searched
+  margin: 0.14             # corner-zone trim at each edge end
+  gamma: 0.022             # along-edge smoothing
+  seed_w: 0.0              # VALIDATED DEAD-END (outer prior). Keep 0.
+  content_w: 0             # VALIDATED DEAD-END (content-gate). Keep 0.
+  seed_frac: 0.03

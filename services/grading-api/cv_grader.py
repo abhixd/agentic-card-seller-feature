@@ -113,23 +113,30 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, **_ign
         quad_padded = quad_raw
 
     # ── build the warp + det exactly like grader/detect_and_warp (seg → 630x880) ──
+    # TWO cb's: `cb_feat` (refine WITHOUT the symmetric-padding balance) feeds the grading-feature
+    # extractor, because the cv_xgb model was trained on un-balanced cb — using the balanced cb there
+    # would shift features and change grades (an unvalidated skew). `cb_center` (WITH balance) is the
+    # corrected outer boundary used only for CENTERING + the displayed boundary.
     if quad_padded is not None:
         warped = grader._warp_card(img_bgr, quad_padded, out_w=N.LEGACY_WARP_SIZE[0],
                                    out_h=N.LEGACY_WARP_SIZE[1])
-        _, cb = grader.card_boundary_analytical(
+        _, cb0 = grader.card_boundary_analytical(
             quad_raw if quad_raw is not None else quad_padded, quad_padded)
+        cb_feat   = grader.refine_cb_in_warped(warped, cb0, balance=False)   # grading features (model-matched)
+        cb_center = grader.refine_cb_in_warped(warped, cb0, balance=True)    # centering (symmetric-padding fix)
     else:
         warped = grader._warp_card(img_bgr, None) if False else img_bgr.copy()
-        cb = [0.0, 0.0, 1.0, 1.0]
+        cb_feat = cb_center = [0.0, 0.0, 1.0, 1.0]
     cw = (grader._contour_to_warped_norm(contour, quad_padded)
           if (contour is not None and quad_padded is not None) else N._FULL_FRAME_CW)
     det = {"orig": img_bgr,
            "contour_orig": np.asarray(contour if contour is not None else quad_raw, float)
                            if (contour is not None or quad_raw is not None) else None,
-           "warped": warped, "cb": cb, "cw": cw,
+           "warped": warped, "cb": cb_feat, "cw": cw,
            "quad_raw": quad_raw, "quad_padded": quad_padded, "detector": "seg"}
 
     # ── CV condition features → 4-tier XGBoost overall grade ──
+    # NB: features run on the UN-masked warp + UN-balanced cb (the model was trained that way).
     cond, raw = N.cv_extract_conditions(det)
     b = _model()
     feat = N.raw_to_vector(cond, raw)
@@ -142,7 +149,11 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, **_ign
     distribution = {b["tier_short"][i]: round(float(p), 4) for i, p in enumerate(proba)}
 
     # ── centering via CoherentFrame (inner_frame), display-scored ──
-    inn = IF.find_inner_frame(warped, cb)
+    # Mask table background to the card contour so no remnant (corner wedges, edge
+    # slivers) contaminates the centering read. Metric-safe (validated identical on GT);
+    # masked copy is centering-only — grading features above used the un-masked warp.
+    warped_cen = grader.mask_background_to_contour(warped, cw)
+    inn = IF.find_inner_frame(warped_cen, cb_center)
     lr, tb = inn["left_right"], inn["top_bottom"]
     H, W = warped.shape[:2]
     L, T, R, Bx = inn["frame_px"]
@@ -189,13 +200,14 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, **_ign
         "_tier_distribution": distribution,
         "_confidence": "high" if conf >= 0.6 else ("low" if conf < 0.45 else "medium"),
         "_centering_reliable": bool(inn["reliable"]),
-        "_border_type": N.compute_centering_hybrid(warped, cb).get("border_type", "?"),
+        "_border_type": N.compute_centering_hybrid(warped, cb_center).get("border_type", "?"),
     }
 
     # ── visual payload (same keys the extension already consumes) ──
-    result["_card_boundary"] = list(cb)
+    # Show the background-masked warp so the extension UI has no table remnants either.
+    result["_card_boundary"] = list(cb_center)
     try:
-        result["_warped_jpeg_b64"] = grader.encode_image(warped)["data"]
+        result["_warped_jpeg_b64"] = grader.encode_image(warped_cen)["data"]
         if quad_raw is not None:
             crops = grader._build_corner_crops(img_bgr, quad_raw, out_size=800)
             result["_corner_crops_b64"] = {k: grader.encode_image(crops[k])["data"]

@@ -35,15 +35,36 @@ import cv2
 import numpy as np
 import requests
 
+# centering_config.yaml tunables (env var still wins where one is set); cfg() falls back to the
+# default if the file/key is missing. See CENTERING_CB_NOTES.md.
+try:
+    from config import cfg
+except Exception:
+    def cfg(section, key, default):
+        return default
+
 # ── Config ──────────────────────────────────────────────────────────────────
 SEG_WORKSPACE  = os.environ.get("SEG_WORKSPACE", "srinivas-doddi")
 SEG_WORKFLOW   = os.environ.get("SEG_WORKFLOW",  "general-segmentation-api-6")
 SEG_CLASSES    = os.environ.get("SEG_CLASSES",   "card")
-SEG_SIGMA      = float(os.environ.get("SEG_SIGMA", "2.5"))
-SEG_RESAMPLE_N = int(os.environ.get("SEG_RESAMPLE_N", "400"))
+SEG_SIGMA      = float(os.environ.get("SEG_SIGMA", str(cfg("segmentation", "sigma", 2.5))))
+SEG_RESAMPLE_N = int(os.environ.get("SEG_RESAMPLE_N", str(cfg("segmentation", "resample_n", 400))))
 SEG_BASE_URL   = os.environ.get("SEG_BASE_URL", "https://serverless.roboflow.com")
 SEG_TIMEOUT    = float(os.environ.get("SEG_TIMEOUT", "60"))
 SEG_RETRIES    = int(os.environ.get("SEG_RETRIES", "3"))
+# Minimum fraction of the image the chosen card region must cover. Roboflow occasionally returns a
+# tiny high-confidence speck alongside (or instead of) the card; selecting by confidence then warped
+# that speck to a black image (card_06/08). We select by AREA and reject anything below this floor.
+SEG_MIN_AREA_FRAC = float(os.environ.get("SEG_MIN_AREA_FRAC", str(cfg("segmentation", "min_area_frac", 0.05))))
+
+
+def _poly_area(pts, sx=1.0, sy=1.0) -> float:
+    """Shoelace area of a Roboflow points polygon (in original-image px after sx/sy scaling)."""
+    if not pts or len(pts) < 3:
+        return 0.0
+    x = np.array([p["x"] * sx for p in pts], dtype=np.float64)
+    y = np.array([p["y"] * sy for p in pts], dtype=np.float64)
+    return float(abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) / 2.0)
 
 
 # ── Contour smoothing (numpy-only — no scipy dependency) ──────────────────────
@@ -180,17 +201,25 @@ def segment_card(img_bgr: np.ndarray,
         raise ValueError("segmentation workflow returned no outputs")
 
     pred_block = out.get("predictions", {}) or {}
-    iw = pred_block.get("image", {}).get("width",  ow)
-    ih = pred_block.get("image", {}).get("height", oh)
+    img_block = pred_block.get("image") or {}
+    iw = img_block.get("width")  or ow          # Roboflow occasionally returns width/height = None;
+    ih = img_block.get("height") or oh          # fall back to the original dims instead of dividing by None
     sx, sy = ow / iw, oh / ih
     preds = pred_block.get("predictions", []) or []
     if not preds:
         raise ValueError("no card segmented in image")
 
-    best = max(preds, key=lambda p: p.get("confidence", 0.0))
+    # Select the LARGEST region (the card), NOT the highest-confidence one — Roboflow can emit a tiny
+    # high-confidence speck that, picked by confidence, warps to black (card_06/08). The card is by far
+    # the biggest object, so area is the reliable selector.
+    best = max(preds, key=lambda p: _poly_area(p.get("points", []), sx, sy))
     pts  = best.get("points", [])
     if len(pts) < 3:
         raise ValueError("segmentation polygon has too few points")
+    area_frac = _poly_area(pts, sx, sy) / max(ow * oh, 1)
+    if area_frac < SEG_MIN_AREA_FRAC:                       # even the largest region is a speck → genuine miss
+        raise ValueError(f"segmentation found no card: largest region is {area_frac*100:.2f}% of the image "
+                         f"(< {SEG_MIN_AREA_FRAC*100:.0f}% floor)")
 
     contour_raw = np.array([[p["x"] * sx, p["y"] * sy] for p in pts], dtype=np.float32)
     contour     = smooth_contour(contour_raw, n=SEG_RESAMPLE_N, sigma=sigma).astype(np.float32)
