@@ -166,3 +166,134 @@ For each GT card: `WC.load_warp` → `mask_background_to_contour` → `refine_cb
 detector → compare `insets_px` L/R and T/B **ratios** to the labelled `insets_pct` (mean absolute
 ratio error in points, averaged over L/R and T/B). Exclude `testing_new_cards` entries (full-art,
 noisy). Baseline variance = 12.71; with the balance fix = **5.84**.
+
+---
+
+# Part 2 — The OUTER box (`cb` cut-edge tightness): a SEGMENTATION problem, not a geometry one
+
+_Added 2026-06-17. Read this before attempting any `cb`/outer-box "tightening" — six post-processing
+methods were tried and all failed; the lever is upstream segmentation._
+
+> **TL;DR:** With the inner boundary solid, the open problem is a TIGHT outer box hugging the card
+> cut edge (release bar: ≥95% "tight"). `cb` undershoots the true edge by a ~uniform **~2.3%** (the
+> `approxPolyDP` corner inscription), amplified to nonsense on thin-border foil/full-art. **Six
+> post-processing methods were tried; all failed** — because the outer edge is *inherited from
+> segmentation geometry*, not *detected*, and the physical cut-edge signal is too weak (esp. foil)
+> to recover after the fact. **The only remaining lever is improving the card-edge segmentation.**
+> Phase 0 tooling (outer-edge GT labeler + edge-error metric) is built to measure it.
+
+## Why it's hard even though we "already crop the background"
+
+The masked/cropped warp removes everything outside the *segmentation's guess* of the edge — so the
+crop edge **IS** the (imperfect) outer-edge estimate, not free ground truth. "Tight outer box" thus
+reduces to "accurate edge segmentation," which is the weak part. Key asymmetry with the inner
+boundary: the **inner** line is actively DETECTED (a strong coherent printed line); the **outer**
+edge is only INHERITED from the seg quad, and the physical cut edge is low-contrast (silver foil on a
+table), so it can't be re-detected after the fact.
+
+## VALIDATED DEAD-ENDS for the outer box (do NOT re-chase)
+
+Measured on the 39 GT + 9 full-art cached warps (coherence detector; GT baseline mean **7.90** /
+median 5.91; full-art mean **26**):
+
+| # | Method | Result | Why it fails |
+|---|---|---|---|
+| 1 | seg quad → `card_boundary_analytical` (current) | uniform ~2.3% undershoot every card | `approxPolyDP` inscribes the rounded corners |
+| 2 | `_balance_cb_padding` (Part 1) | fixes ASYMMETRIC undershoot only | uniform undershoot is symmetric → no "good side" to balance to |
+| 3 | expand `cb` → contour bbox (capped) | wash: GT 7.90→6.66 but **16/39 regress**; full-art erratic | contour clips to the warp frame (`contour_pad≈0`) on 8/9 foil cards |
+| 4 | robust mask-boundary `cb` (per-side median of card↔bg) | wash: GT 7.90→7.67, 17 regress; full-art 26→24.6 | the mask = the seg; median can't rescue a wholesale-wrong foil mask |
+| 5 | coherence OUTER-detector (reuse `coherence_edges`+`_pick_pair` aimed at the frame) | regresses GT (7.90→8.94); lands DEEPER than `cb` | the weak cut edge is out-competed by stronger interior lines (inner border, art-window). Visual: card_22 box went 2.3%→4.0% onto the inner white border |
+| 6 | runtime reliability guardrail (flag bad reads) | **impossible — no signal separates good/bad** | `reliable` near-random (card_20 err=44 is `True`); `min_border`≈0.011 for everything; no continuous confidence field exists; best rule false-flags 20/22 good |
+
+## Two structural facts that bound the problem
+
+- **Full-bleed cards have no border.** Error tracks "has a printed border?", NOT "is full-art." card_20
+  (Charizard VSTAR, art to the edge) = 44pt error with ANY `cb` — no border strip exists; card_25
+  (Shroodle, normal silver border, mis-bucketed) reads fine. Full-bleed centering is *undefined* →
+  needs an explicit "N/A" treatment, not a detector.
+- **The GT is partly noisy.** card_24 (a normal yellow-bordered card) reads 50/50 yet scores 38pt
+  "error" — the *label* implies an implausible heavy miscut. So current centering-quality numbers are
+  upper bounds; a GT audit is a prerequisite to measuring real progress.
+
+## Conclusion / the one lever
+
+The geometry/post-processing layer is **exhausted**. The outer box IS the segmentation; on bordered
+cards (~85%) the seg is already good (~2.3% inset), and the entire gap to 95% is the foil/full-art
+minority where the seg itself is imprecise. **The only thing that moves it is improving the card-edge
+segmentation on foil cards** (more foil training data / a dedicated edge-refiner), measured against a
+clean outer-edge GT. A bounded model/data project, not a tweak.
+
+## Phase 0 tooling (the measurement foundation) — BUILT 2026-06-17
+
+The metric (what "tight" means, made measurable):
+> per side `s∈{L,R,T,B}`: `edge_error_s = |detected_edge_s − true_edge_s| / true_card_dim_on_axis`.
+> A card is **tight** iff `max_s edge_error_s ≤ τ` (default **τ=0.01** = 1% of card size). Release
+> metric = % tight, reported **per card-class** (the gap lives in foil/full-art).
+
+| File (`research/notebooks/`) | Role |
+|---|---|
+| `outer_edge_metric.py` | the metric; pluggable detector; per-class breakdown; baseline = current production `cb` (`load_warp`→`refine_cb_in_warped(balance=True)`) |
+| `label_outer.py` + `run_label_outer.sh` | Streamlit outer-edge labeler (`:8621`) — mark the cut edge on the RAW (un-masked) warp, seed from `cb`, tag a card-class → `outer_gt.jsonl` |
+| `outer_gt.jsonl` | the outer-edge ground truth (WARP-fraction quads) |
+
+**Coord-space caveat:** labels are WARP-fraction coords vs the current `v1` seg→warp (carried as
+`warp_version`). Correct for the Phase-0 baseline; when the seg changes (Phase 2) the warp moves →
+refresh/remap labels and bump `WARP_VERSION`.
+
+Run: `./run_label_outer.sh` → label a stratified set (the 840 cached warps + `grade_feedback` real
+submissions are the corpus) → `python outer_edge_metric.py` for the per-class baseline (= Phase 1).
+
+## Forward plan
+
+- **Phase 0 (done):** metric + labeler.
+- **Phase 1:** label ~250 stratified cards → baseline tightness per class (confirms the gap = foil/
+  full-art) + clean the noisy GT.
+- **Phase 2:** cheapest lever first — fine-tune the Roboflow seg with foil edge labels, else a small
+  per-side edge-refiner; escalate to a card-matting model only if needed. Target ≥95% tight @τ.
+- **Full-bleed cards:** separate "centering N/A" treatment (no border to measure).
+
+---
+
+# Part 3 — RESOLVED: the outer box is a CORRECTABLE OFFSET, not a seg retrain
+
+_Added 2026-06-17, after building the outer-edge metric + labeling 54 GT cards. **Supersedes Part 2's
+"needs a segmentation retrain" conclusion** — that was an artifact of measuring on the wrong metric._
+
+> **The fix:** cb undershoots the true cut edge by a **uniform, stable ~2%** (the approxPolyDP corner
+> inscription), the SAME on full-art and normal cards (out-of-sample Batch1→Batch2 held). Expanding the
+> balanced cb to the seg CONTOUR's true edge takes outer-edge tightness **0% → 96% @ TAU=1%**. Shipped as
+> `grader._expand_cb_to_contour`, cb-only (grades unchanged).
+
+## Why Part 2 was wrong
+
+- Part 2's "dead-ends" (contour-bbox, robust-mask) were scored on the **centering RATIO**, which is
+  hyper-sensitive on thin borders — a *correct* cb still read as a "wash." On the **outer-edge** metric
+  (the right yardstick for box tightness) the SAME contour-bbox is the BEST method (96%).
+- Signed per-side errors: every card undershoots every side ~1.6–2.1%, std ~0.3–0.5%, ALL same sign →
+  a systematic geometric offset, not random. The contour follows the true edge; only the 4-corner quad
+  reduction (`quad_from_contour`/approxPolyDP) inscribed it.
+- A fixed 2-param nudge (LR +2.0%, TB +1.6%) already gets 91% out-of-sample; the per-card contour-expand
+  gets 96% (catches the tail a fixed offset can't).
+
+## The fix (wired, lab-verified — NOT yet deployed)
+
+`grader._expand_cb_to_contour(cb, cw)` — expand the balanced cb OUTWARD to the contour bbox, GUARDED:
+≤ `contour_cap` (0.05) of card dim per side, never within `contour_minpad` (0.004) of the warp frame,
+never inward. Wired in `cv_grader` on the **balanced** cb only (`cb_center`), passing contour `cw`;
+`cb_feat` (grading) does NOT receive cw → **grades unchanged** (same isolation as `_balance_cb_padding`).
+Config: `cb_refine.contour_cap` / `contour_minpad`. Mirrored in `warp_cache.get_det` for lab/prod parity.
+
+## Measurement tooling (the standing yardstick)
+
+`research/notebooks/`: `outer_edge_metric.py` (before/after + per-class; `baseline_cb`=legacy,
+`shipped_cb`=with contour-expand), `label_outer.py` + `run_label_outer.sh` (`:8621` → `outer_gt.jsonl`,
+WARP-coord v1, class auto-tagged). Through the production `refine_cb_in_warped`: 0.0% → **96.3%** on 54
+cards (median max edge-error 2.11% → 0.34%).
+
+## Caveats / next
+
+- Validated on 54 cards (Batch1 testing_new_cards + Batch2 scraped). 96% ≥ the 95% bar, but n=54 → wide
+  CI; more labels (esp. foil/full-bleed via grade_feedback) firm it up.
+- ~4% (2 cards) still miss — genuine seg failures the contour can't fix. A future seg improvement (the
+  Part-2 idea) would catch those but is NO LONGER on the critical path.
+- **Not yet deployed.** Deploy = push services/grading-api to Railway (the live /grade backend).

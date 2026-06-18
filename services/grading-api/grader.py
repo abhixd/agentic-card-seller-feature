@@ -46,6 +46,10 @@ YOLO_IMGSZ  = int(os.environ.get("YOLO_IMGSZ", "640"))
 PADDING_FRAC   = cfg("segmentation", "padding_frac", 0.03)
 CB_SEARCH_FRAC = cfg("cb_refine", "search_frac", 0.10)      # refine_cb_in_warped inward search
 CB_BALANCE_MARGIN = cfg("cb_refine", "balance_margin", 0.006)  # _balance_cb_padding tolerance
+CB_CONTOUR_CAP    = cfg("cb_refine", "contour_cap", 0.05)      # _expand_cb_to_contour: max outward expand (frac of card)
+CB_CONTOUR_MINPAD = cfg("cb_refine", "contour_minpad", 0.004)  # _expand_cb_to_contour: keep >= this pad off the warp frame
+CB_NUDGE_LR       = cfg("cb_refine", "nudge_lr", 0.020)        # _nudge_cb: fixed L/R outward nudge (no-contour fallback)
+CB_NUDGE_TB       = cfg("cb_refine", "nudge_tb", 0.0158)       # _nudge_cb: fixed T/B outward nudge (no-contour fallback)
 REFINE_EDGES = True
 
 # Card detector selection:
@@ -257,7 +261,7 @@ def card_boundary_analytical(quad_raw, quad_padded, out_w=630, out_h=880):
     return corners_warp, (x1, y1, x2, y2)
 
 
-def refine_cb_in_warped(warped: np.ndarray, cb, search_frac: float = CB_SEARCH_FRAC, balance: bool = True):
+def refine_cb_in_warped(warped: np.ndarray, cb, search_frac: float = CB_SEARCH_FRAC, balance: bool = True, cw=None):
     """Snap cb to the actual physical card edge in the already-warped image.
 
     `balance=True` (default) also runs the symmetric-padding correction (_balance_cb_padding).
@@ -360,7 +364,11 @@ def refine_cb_in_warped(warped: np.ndarray, cb, search_frac: float = CB_SEARCH_F
         refined = tuple(cb)
     else:
         refined = (float(nx1 / w), float(ny1 / h), float(nx2 / w), float(ny2 / h))
-    return _balance_cb_padding(warped, refined) if balance else refined
+    if not balance:
+        return refined
+    out = _balance_cb_padding(warped, refined)
+    # contour-expand to the true cut edge (per-card, 96%); fixed nudge fallback when no contour (91%)
+    return _expand_cb_to_contour(out, cw) if cw is not None else _nudge_cb(out)
 
 
 def _balance_cb_padding(warped: np.ndarray, cb, margin: float = CB_BALANCE_MARGIN):
@@ -390,6 +398,43 @@ def _balance_cb_padding(warped: np.ndarray, cb, margin: float = CB_BALANCE_MARGI
     if pad["T"] > tgt + margin: new[1] = tgt
     if pad["B"] > tgt + margin: new[3] = 1.0 - tgt
     return tuple(float(v) for v in new)
+
+
+def _expand_cb_to_contour(cb, cw, cap: float = CB_CONTOUR_CAP, minpad: float = CB_CONTOUR_MINPAD):
+    """Expand the (undershot) cb OUTWARD to the segmentation contour's straight edges. The contour
+    (`cw`, warp-normalised) follows the true card outline — only `quad_from_contour`'s approxPolyDP
+    corner-inscription undershot cb (a ~uniform ~2%). This recovers the true edge PER CARD (so it also
+    catches the tail a single fixed nudge misses). GUARDED so a stray over-segmented point can't blow a
+    side out: expand at most `cap` of the card dim, never within `minpad` of the warp frame, never move
+    INWARD of cb.
+
+    VALIDATED 2026-06-17 on 54 outer-edge GT cards (label_outer.py / outer_edge_metric.py): outer-edge
+    tightness 0% -> 96% @ TAU=1% (median max edge-error 2.11% -> 0.34%, p90 0.62%); the offset is stable
+    across full-art and normal cards (out-of-sample Batch1->Batch2 held). cb-ONLY (centering / display),
+    applied only to the balanced cb, so the cv_xgb grade is unaffected (cb_feat does not pass cw)."""
+    a = np.asarray(cw, dtype=float).reshape(-1, 2)
+    if len(a) < 4:
+        return tuple(float(v) for v in cb)
+    bx1, by1, bx2, by2 = a[:, 0].min(), a[:, 1].min(), a[:, 0].max(), a[:, 1].max()
+    iw = cb[2] - cb[0]; ih = cb[3] - cb[1]
+    L = min(cb[0], max(bx1, cb[0] - cap * iw, minpad))
+    T = min(cb[1], max(by1, cb[1] - cap * ih, minpad))
+    R = max(cb[2], min(bx2, cb[2] + cap * iw, 1.0 - minpad))
+    B = max(cb[3], min(by2, cb[3] + cap * ih, 1.0 - minpad))
+    return (float(L), float(T), float(R), float(B))
+
+
+def _nudge_cb(cb, lr: float = CB_NUDGE_LR, tb: float = CB_NUDGE_TB, minpad: float = CB_CONTOUR_MINPAD):
+    """Fixed per-axis OUTWARD nudge for the undershot cb when NO contour is available (the YOLO detector
+    path, or a seg miss). Corrects the ~uniform approxPolyDP inscription by the validated mean (L/R +2.0%,
+    T/B +1.6% of card dim); guarded outward-only and >= `minpad` off the warp frame. Out-of-sample 91%
+    tight @1% (the contour-expand reaches 96% when cw is present)."""
+    iw = cb[2] - cb[0]; ih = cb[3] - cb[1]
+    L = min(cb[0], max(minpad, cb[0] - lr * iw))
+    T = min(cb[1], max(minpad, cb[1] - tb * ih))
+    R = max(cb[2], min(1.0 - minpad, cb[2] + lr * iw))
+    B = max(cb[3], min(1.0 - minpad, cb[3] + tb * ih))
+    return (float(L), float(T), float(R), float(B))
 
 
 # NOTE: do NOT crop the warped image to cb for the centering path. The inner-frame

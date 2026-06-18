@@ -122,13 +122,15 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, **_ign
                                    out_h=N.LEGACY_WARP_SIZE[1])
         _, cb0 = grader.card_boundary_analytical(
             quad_raw if quad_raw is not None else quad_padded, quad_padded)
-        cb_feat   = grader.refine_cb_in_warped(warped, cb0, balance=False)   # grading features (model-matched)
-        cb_center = grader.refine_cb_in_warped(warped, cb0, balance=True)    # centering (symmetric-padding fix)
+        cw = (grader._contour_to_warped_norm(contour, quad_padded)
+              if (contour is not None and quad_padded is not None) else N._FULL_FRAME_CW)
+        cb_feat   = grader.refine_cb_in_warped(warped, cb0, balance=False)            # grading features (model-matched; no expand)
+        cb_center = grader.refine_cb_in_warped(warped, cb0, balance=True,             # centering: balance + contour-expand to true edge
+                                               cw=(cw if contour is not None else None))
     else:
         warped = grader._warp_card(img_bgr, None) if False else img_bgr.copy()
         cb_feat = cb_center = [0.0, 0.0, 1.0, 1.0]
-    cw = (grader._contour_to_warped_norm(contour, quad_padded)
-          if (contour is not None and quad_padded is not None) else N._FULL_FRAME_CW)
+        cw = N._FULL_FRAME_CW
     det = {"orig": img_bgr,
            "contour_orig": np.asarray(contour if contour is not None else quad_raw, float)
                            if (contour is not None or quad_raw is not None) else None,

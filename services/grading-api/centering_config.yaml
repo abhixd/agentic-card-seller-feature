@@ -19,6 +19,13 @@ cb_refine:
                            #   side's by more than this, out to that minimum (symmetric-padding fix).
                            #   SWEPT OPTIMUM on 39 GT cards (GT centering 12.71 → 5.84). Do NOT lower
                            #   "to be safe" — smaller margin over-corrects and REGRESSES more cards.
+  contour_cap: 0.05        # _expand_cb_to_contour: expand the balanced cb OUTWARD to the seg contour's
+                           #   true edge, but at most this fraction of the card dim per side (guard vs a
+                           #   stray over-segmented point). Per-card fix for the ~2% approxPolyDP undershoot.
+  contour_minpad: 0.004    # _expand_cb_to_contour: never push a side within this pad of the warp frame.
+                           #   VALIDATED on 54 outer-edge GT cards: outer-edge tightness 0% → 96% @ 1%.
+  nudge_lr: 0.020          # _nudge_cb: fixed L/R outward nudge when NO contour is available (e.g. YOLO
+  nudge_tb: 0.0158         #   detector path). Validated mean offset; out-of-sample 91% tight @ 1%.
 
 coherence_detector:        # inner_frame.py — the PRODUCTION centering detector (cv_grader)
   max_inset: 0.10          # max inner-frame inset (fraction of width) for L/R
