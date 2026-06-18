@@ -296,4 +296,6 @@ cards (median max edge-error 2.11% → 0.34%).
   CI; more labels (esp. foil/full-bleed via grade_feedback) firm it up.
 - ~4% (2 cards) still miss — genuine seg failures the contour can't fix. A future seg improvement (the
   Part-2 idea) would catch those but is NO LONGER on the critical path.
-- **Not yet deployed.** Deploy = push services/grading-api to Railway (the live /grade backend).
+- **DEPLOYED 2026-06-17** (commit `1b78c13`, Railway `card-grader-api`): live `/grade` cb pad
+  ~2.3% → ~0.4% on test cards (card_00/20/22), grades unchanged (cb_feat isolation held). The
+  `_nudge_cb` fixed-offset fallback (LR +2.0% / TB +1.6%) covers the no-contour / YOLO path.
