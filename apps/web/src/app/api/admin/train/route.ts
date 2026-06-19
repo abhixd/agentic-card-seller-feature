@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { requireAdmin } from '@/lib/auth/admin'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -15,9 +15,8 @@ export async function POST(req: Request) {
   let deploy = false
   try { deploy = (await req.json())?.deploy === true } catch { /* no body → report-only */ }
 
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const { supabase, user } = await requireAdmin()
+  if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const base = process.env.GRADING_SERVICE_URL
   if (!base) return NextResponse.json({ error: 'Grading service not configured (GRADING_SERVICE_URL).' }, { status: 500 })

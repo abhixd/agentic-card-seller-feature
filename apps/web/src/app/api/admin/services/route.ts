@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { requireAdmin } from '@/lib/auth/admin'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -27,9 +27,8 @@ async function ping(url: string, path: string, headers?: Record<string, string>)
 
 /** GET /api/admin/services — health-probe every deployed backend (server-side: no CORS, URLs stay secret). */
 export async function GET() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const { user } = await requireAdmin()
+  if (!user) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const http = [
     { key: 'grading', name: 'Card grader API', url: process.env.GRADING_SERVICE_URL, path: '/health' },
