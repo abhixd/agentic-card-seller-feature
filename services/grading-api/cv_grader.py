@@ -56,6 +56,12 @@ def swap_perside_selector(sel):
     restart/redeploy reverts to the baked-in perside_lr.joblib (durable persistence is the next step)."""
     _perside_cache["sel"] = sel
 
+
+def baked_in_model_blob():
+    """The ORIGINAL baked-in model ({"model": pipeline}), bypassing the durable store — used by
+    'restore baseline' so you can always roll back to a known-good version after a bad deploy."""
+    return joblib.load(os.path.join(_HERE, "perside_lr.joblib"))
+
 def _perside_inner_frame(warped_cen, cb_center):
     """Return a coherence-shaped centering dict from the per-side selector, or None to fall back."""
     if not _PERSIDE_ENABLED:

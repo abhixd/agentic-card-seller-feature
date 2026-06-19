@@ -171,6 +171,24 @@ async def admin_reload_model(req: Request):
         raise HTTPException(status_code=500, detail=f"reload failed: {type(e).__name__}: {e}")
 
 
+@app.post("/admin/reset-baseline")
+async def admin_reset_baseline(req: Request):
+    """Swap the live model back to the ORIGINAL baked-in baseline + return it, so the web can record
+    it as the new latest checkpoint. Always-available rollback, even after a single bad deploy."""
+    token = os.environ.get("ADMIN_TRAIN_TOKEN")
+    if token and req.headers.get("x-admin-token") != token:
+        raise HTTPException(status_code=401, detail="bad admin token")
+    try:
+        import joblib, io, base64, cv_grader, per_side_selector as PS
+        blob = cv_grader.baked_in_model_blob()
+        sel = PS.PerSideSelector(); sel.model = blob["model"]
+        cv_grader.swap_perside_selector(sel)
+        buf = io.BytesIO(); joblib.dump(blob, buf)
+        return {"reset": True, "model_b64": base64.b64encode(buf.getvalue()).decode(), "config": PS.config_snapshot()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"reset failed: {type(e).__name__}: {e}")
+
+
 @app.get("/user/usage", response_model=UsageResponse)
 def usage() -> UsageResponse:
     # Stub — wire to Supabase/Postgres in v2

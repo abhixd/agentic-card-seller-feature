@@ -109,6 +109,21 @@ export default function AdminPage() {
     }
   }
 
+  async function restoreBaseline() {
+    if (!confirm('Roll the live model back to the original baked-in baseline?')) return
+    setReverting('baseline')
+    try {
+      const res = await fetch('/api/admin/restore-baseline', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error ?? 'Restore failed')
+      loadOverview()
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Restore failed')
+    } finally {
+      setReverting(null)
+    }
+  }
+
   useEffect(() => {
     loadServices()
     loadOverview()
@@ -240,7 +255,16 @@ export default function AdminPage() {
 
       {/* ── training history ── */}
       <div className="rounded-lg border p-4">
-        <div className="text-sm font-medium">Training history</div>
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-medium">Training history</div>
+          <button
+            onClick={restoreBaseline}
+            disabled={reverting !== null}
+            className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-50"
+          >
+            {reverting === 'baseline' ? 'Restoring…' : 'Restore baseline'}
+          </button>
+        </div>
         {overview && overview.history.length > 0 ? (
           <table className="mt-2 w-full text-xs">
             <thead>
