@@ -112,6 +112,28 @@ def health() -> HealthResponse:
     )
 
 
+@app.post("/admin/train")
+async def admin_train(req: Request):
+    """Retrain the per-side centering selector from the bundled base + posted corrections.
+    Report-only: returns the leave-one-card-out accuracy BEFORE vs AFTER (the model hot-swap is P2b).
+    Auth: if ADMIN_TRAIN_TOKEN is set, the caller must send a matching X-Admin-Token header."""
+    token = os.environ.get("ADMIN_TRAIN_TOKEN")
+    if token and req.headers.get("x-admin-token") != token:
+        raise HTTPException(status_code=401, detail="bad admin token")
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    corrections = body.get("corrections") or []
+    from trainer import retrain
+    try:
+        r = retrain(corrections)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"train failed: {type(e).__name__}: {e}")
+    r.pop("selector", None)  # the fitted model isn't JSON-serialisable (and hot-swap is P2b)
+    return r
+
+
 @app.get("/user/usage", response_model=UsageResponse)
 def usage() -> UsageResponse:
     # Stub — wire to Supabase/Postgres in v2
