@@ -32,8 +32,12 @@ COPY services/grading-api/main.py services/grading-api/inference.py services/gra
      services/grading-api/grader.py services/grading-api/aggregator.py services/grading-api/grade_comps.py \
      services/grading-api/card_segmenter.py \
      services/grading-api/cv_grader.py services/grading-api/nonvlm_cv.py services/grading-api/inner_frame.py \
+     services/grading-api/per_side_selector.py services/grading-api/inner_frame_var.py services/grading-api/inner_frame_dp.py \
      services/grading-api/config.py services/grading-api/centering_config.yaml \
      services/grading-api/grade_model.json services/grading-api/feedback_to_yolo.py ./
+
+# per-side selector model (loaded only when PERSIDE_CENTERING=1; harmless otherwise)
+COPY services/grading-api/perside_lr.joblib ./
 
 # Grading-only deploy. /grade defaults to the classical-CV backend (cv_grader +
 # cv_xgb_raw.pkl); the YOLO weights stay for detection fallback and the Claude VLM
