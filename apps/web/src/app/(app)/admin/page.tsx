@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
 type Probe = { key: string; name: string; host: string | null; ok: boolean; status: string; ms: number | null }
+type TrainResult = { n_corrections: number; loo_before: number | null; loo_after: number | null; delta: number | null }
 
 function badge(ok: boolean, status: string): string {
   if (ok) return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
@@ -16,6 +17,25 @@ export default function AdminPage() {
   const [checkedAt, setCheckedAt] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [training, setTraining] = useState(false)
+  const [trainResult, setTrainResult] = useState<TrainResult | null>(null)
+  const [trainErr, setTrainErr] = useState<string | null>(null)
+
+  async function runTraining() {
+    setTraining(true)
+    setTrainErr(null)
+    setTrainResult(null)
+    try {
+      const res = await fetch('/api/admin/train', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error ?? 'Training failed')
+      setTrainResult(data)
+    } catch (e) {
+      setTrainErr(e instanceof Error ? e.message : 'Training failed')
+    } finally {
+      setTraining(false)
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -74,10 +94,44 @@ export default function AdminPage() {
         ))}
       </div>
 
-      <div className="rounded-lg border border-dashed p-4">
-        <div className="text-sm font-medium">Training as a service</div>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Self-improving grader — bias report, retrain-readiness, and a launch button. Coming next (phase 2).
+      <div className="rounded-lg border p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-medium">Self-improving grader</div>
+            <p className="text-xs text-muted-foreground">Retrain the per-side centering selector from your corrections.</p>
+          </div>
+          <button
+            onClick={runTraining}
+            disabled={training}
+            className="shrink-0 rounded-md bg-foreground px-3 py-1.5 text-sm font-medium text-background disabled:opacity-50"
+          >
+            {training ? 'Training…' : 'Run training'}
+          </button>
+        </div>
+
+        {trainErr && <p className="mt-2 text-sm text-red-600">{trainErr}</p>}
+
+        {trainResult && (
+          <div className="mt-3 grid grid-cols-3 gap-3">
+            <div className="rounded-md bg-muted/50 p-2">
+              <div className="text-[11px] text-muted-foreground">corrections</div>
+              <div className="text-sm font-medium tabular-nums">{trainResult.n_corrections}</div>
+            </div>
+            <div className="rounded-md bg-muted/50 p-2">
+              <div className="text-[11px] text-muted-foreground">accuracy (LOO)</div>
+              <div className="text-sm font-medium tabular-nums">{trainResult.loo_before}% → {trainResult.loo_after}%</div>
+            </div>
+            <div className="rounded-md bg-muted/50 p-2">
+              <div className="text-[11px] text-muted-foreground">delta</div>
+              <div className={`text-sm font-medium tabular-nums ${(trainResult.delta ?? 0) > 0 ? 'text-emerald-600' : (trainResult.delta ?? 0) < 0 ? 'text-red-600' : ''}`}>
+                {(trainResult.delta ?? 0) > 0 ? '+' : ''}{trainResult.delta}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          Report-only — shows before/after accuracy. Deploying the retrained model live (hot-swap) is the next step.
         </p>
       </div>
     </div>
