@@ -22,7 +22,7 @@ type Correction = {
   original_top_bottom: string | null
   created_at: string
 }
-type Deploy = { loo: number | null; n_corrections: number | null; created_at: string }
+type Deploy = { id: string; loo: number | null; n_corrections: number | null; note: string | null; created_at: string }
 type Overview = { corrections: { total: number; recent: Correction[] }; history: Deploy[] }
 
 function badge(ok: boolean, status: string): string {
@@ -44,6 +44,7 @@ export default function AdminPage() {
   const [trainErr, setTrainErr] = useState<string | null>(null)
   const [deployLive, setDeployLive] = useState(false)
   const [overview, setOverview] = useState<Overview | null>(null)
+  const [reverting, setReverting] = useState<string | null>(null)
 
   const loadServices = useCallback(async () => {
     setLoading(true)
@@ -86,6 +87,25 @@ export default function AdminPage() {
       setTrainErr(e instanceof Error ? e.message : 'Training failed')
     } finally {
       setTraining(false)
+    }
+  }
+
+  async function revert(id: string) {
+    if (!confirm('Re-deploy this checkpoint as the live model?')) return
+    setReverting(id)
+    try {
+      const res = await fetch('/api/admin/revert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error ?? 'Revert failed')
+      loadOverview()
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Revert failed')
+    } finally {
+      setReverting(null)
     }
   }
 
@@ -226,16 +246,32 @@ export default function AdminPage() {
             <thead>
               <tr className="text-muted-foreground">
                 <th className="text-left font-normal">deployed</th>
-                <th className="text-right font-normal">accuracy</th>
-                <th className="text-right font-normal">corrections</th>
+                <th className="text-left font-normal">note</th>
+                <th className="text-right font-normal">acc.</th>
+                <th className="text-right font-normal">corr.</th>
+                <th className="text-right font-normal"></th>
               </tr>
             </thead>
             <tbody>
               {overview.history.map((h, i) => (
-                <tr key={i}>
+                <tr key={h.id}>
                   <td className="py-0.5">{when(h.created_at)}</td>
+                  <td className="py-0.5 text-muted-foreground">{h.note ?? '—'}</td>
                   <td className="py-0.5 text-right tabular-nums">{pct(h.loo)}</td>
                   <td className="py-0.5 text-right tabular-nums">{h.n_corrections ?? '—'}</td>
+                  <td className="py-0.5 text-right">
+                    {i === 0 ? (
+                      <span className="text-emerald-600">live</span>
+                    ) : (
+                      <button
+                        onClick={() => revert(h.id)}
+                        disabled={reverting !== null}
+                        className="underline underline-offset-2 hover:text-foreground disabled:opacity-50"
+                      >
+                        {reverting === h.id ? '…' : 'revert'}
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

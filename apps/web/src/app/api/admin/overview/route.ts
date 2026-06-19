@@ -20,7 +20,7 @@ export async function GET() {
 
   const { data: history } = await supabase
     .from('model_artifacts')
-    .select('loo, n_corrections, created_at')
+    .select('id, loo, n_corrections, note, created_at')
     .eq('kind', 'perside_centering')
     .order('created_at', { ascending: false })
     .limit(10)

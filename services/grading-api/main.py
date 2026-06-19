@@ -144,7 +144,31 @@ async def admin_train(req: Request):
         except Exception as e:
             r["deploy_error"] = f"{type(e).__name__}: {e}"
     r["deployed"] = deployed
+    import per_side_selector as _PS
+    r["config"] = _PS.config_snapshot()   # checkpoint the config alongside the model
     return r
+
+
+@app.post("/admin/reload-model")
+async def admin_reload_model(req: Request):
+    """Reload the live per-side model from the NEWEST model_artifacts row — used by revert
+    (the web re-deploys a prior checkpoint as the new latest, then calls this)."""
+    token = os.environ.get("ADMIN_TRAIN_TOKEN")
+    if token and req.headers.get("x-admin-token") != token:
+        raise HTTPException(status_code=401, detail="bad admin token")
+    try:
+        import model_store, joblib, io, per_side_selector as PS, cv_grader
+        raw = model_store.latest_model_bytes()
+        if not raw:
+            raise HTTPException(status_code=404, detail="no stored model to reload")
+        blob = joblib.load(io.BytesIO(raw))
+        sel = PS.PerSideSelector(); sel.model = blob["model"]
+        cv_grader.swap_perside_selector(sel)
+        return {"reloaded": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"reload failed: {type(e).__name__}: {e}")
 
 
 @app.get("/user/usage", response_model=UsageResponse)

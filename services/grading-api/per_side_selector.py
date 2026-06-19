@@ -289,6 +289,17 @@ SOURCES = list(DETECTORS.keys()) + list(GENERATORS.keys())            # coh, var
 FEATURE_NAMES = BASE_NAMES + [f"is_{s}" for s in SOURCES] + ["consensus_dist", "n_agree", "out_rank", "grad_rank"]
 
 
+def config_snapshot():
+    """Revertible snapshot of the params that define the selector's behaviour — stored alongside each
+    deployed model so a checkpoint records exactly how it was produced. `n_features` lets a revert
+    detect an incompatible model (feature set changed in code) before swapping it in."""
+    return {
+        "model": "logreg", "tau": TAU, "center": CENTER,
+        "sources": list(SOURCES), "n_features": len(FEATURE_NAMES), "features": list(FEATURE_NAMES),
+        "coh_kw": COH_KW, "var_kw": VAR_KW, "peak": {"k": 5, "lo": 0.006, "dmax": 0.12},
+    }
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # CANDIDATES + DATASET
 # ────────────────────────────────────────────────────────────────────────────

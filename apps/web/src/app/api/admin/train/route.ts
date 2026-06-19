@@ -46,6 +46,8 @@ export async function POST(req: Request) {
       const { error: insErr } = await supabase.from('model_artifacts').insert({
         kind: 'perside_centering',
         model_b64: data.model_b64,
+        config: data.config ?? null,   // checkpoint the config with the model
+        note: 'training run',
         loo: data.loo_after,
         n_corrections: data.n_corrections,
         created_by: user.id,
