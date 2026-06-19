@@ -136,8 +136,11 @@ async def admin_train(req: Request):
     if deploy and sel is not None:
         try:
             import cv_grader
-            cv_grader.swap_perside_selector(sel)   # P2b hot-swap — live for subsequent grades
+            cv_grader.swap_perside_selector(sel)   # hot-swap — live for subsequent grades (in-memory)
             deployed = True
+            import joblib, io, base64
+            buf = io.BytesIO(); joblib.dump({"model": sel.model}, buf)
+            r["model_b64"] = base64.b64encode(buf.getvalue()).decode()   # web persists this → durable across restarts
         except Exception as e:
             r["deploy_error"] = f"{type(e).__name__}: {e}"
     r["deployed"] = deployed

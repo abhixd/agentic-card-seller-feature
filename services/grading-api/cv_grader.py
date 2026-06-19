@@ -32,8 +32,17 @@ def _perside_selector():
     if "sel" not in _perside_cache:
         _perside_cache["sel"] = None
         try:
-            import per_side_selector as PS
-            blob = joblib.load(os.path.join(_HERE, "perside_lr.joblib"))
+            import per_side_selector as PS, io
+            blob = None
+            try:                                              # durable model from Supabase model_artifacts
+                import model_store
+                raw = model_store.latest_model_bytes()
+                if raw:
+                    blob = joblib.load(io.BytesIO(raw))
+            except Exception:
+                blob = None
+            if blob is None:                                  # fallback: baked-in model
+                blob = joblib.load(os.path.join(_HERE, "perside_lr.joblib"))
             sel = PS.PerSideSelector(); sel.model = blob["model"]
             _perside_cache["sel"] = sel
         except Exception:

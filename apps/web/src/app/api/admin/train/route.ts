@@ -41,6 +41,20 @@ export async function POST(req: Request) {
     })
     const data = await res.json()
     if (!res.ok) return NextResponse.json({ error: data?.detail ?? 'Training failed.' }, { status: 502 })
+
+    // durable: persist the deployed model so it survives grading-api restarts (it loads the latest at startup)
+    if (deploy && typeof data.model_b64 === 'string') {
+      const { error: insErr } = await supabase.from('model_artifacts').insert({
+        kind: 'perside_centering',
+        model_b64: data.model_b64,
+        loo: data.loo_after,
+        n_corrections: data.n_corrections,
+        created_by: user.id,
+      })
+      data.persisted = !insErr
+      if (insErr) console.error('[admin/train] persist model failed:', insErr.message)
+    }
+    delete data.model_b64 // never ship the model blob to the browser
     return NextResponse.json(data)
   } catch (e) {
     console.error('[admin/train] grading-api call failed:', e instanceof Error ? e.message : e)

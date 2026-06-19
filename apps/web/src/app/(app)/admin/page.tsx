@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
 type Probe = { key: string; name: string; host: string | null; ok: boolean; status: string; ms: number | null }
-type TrainResult = { n_corrections: number; loo_before: number | null; loo_after: number | null; delta: number | null; deployed?: boolean }
+type TrainResult = { n_corrections: number; loo_before: number | null; loo_after: number | null; delta: number | null; deployed?: boolean; persisted?: boolean }
 
 function badge(ok: boolean, status: string): string {
   if (ok) return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
@@ -143,7 +143,9 @@ export default function AdminPage() {
 
         <p className={`mt-2 text-[11px] ${trainResult?.deployed ? 'text-emerald-600' : 'text-muted-foreground'}`}>
           {trainResult?.deployed
-            ? '✓ Deployed live — the retrained model is serving grades now (reverts to baseline on restart; durable persistence is next).'
+            ? (trainResult.persisted
+                ? '✓ Deployed live + saved — serving grades now and will survive restarts.'
+                : '✓ Deployed live — serving grades now (not persisted; reverts on restart — check the model_artifacts table + grading-api Supabase env).')
             : 'Check “deploy live” to hot-swap the retrained model into the live grader; leave it off to just preview the delta.'}
         </p>
       </div>
