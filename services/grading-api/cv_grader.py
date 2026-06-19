@@ -23,6 +23,53 @@ import inner_frame as IF
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _MODEL_PATH = os.path.join(_HERE, "models", "cv_xgb_raw.pkl")
 
+# ── per-side inner-frame selector (flag-guarded; falls back to coherence on ANY failure) ────────────
+# Activate by setting env PERSIDE_CENTERING=1 (Railway). Default OFF = production behaviour unchanged.
+_PERSIDE_ENABLED = os.environ.get("PERSIDE_CENTERING", "").strip().lower() in ("1", "true", "yes", "on")
+_perside_cache = {}
+
+def _perside_selector():
+    if "sel" not in _perside_cache:
+        _perside_cache["sel"] = None
+        try:
+            import per_side_selector as PS
+            blob = joblib.load(os.path.join(_HERE, "perside_lr.joblib"))
+            sel = PS.PerSideSelector(); sel.model = blob["model"]
+            _perside_cache["sel"] = sel
+        except Exception:
+            _perside_cache["sel"] = None
+    return _perside_cache["sel"]
+
+def _perside_inner_frame(warped_cen, cb_center):
+    """Return a coherence-shaped centering dict from the per-side selector, or None to fall back."""
+    if not _PERSIDE_ENABLED:
+        return None
+    sel = _perside_selector()
+    if sel is None:
+        return None
+    try:
+        import per_side_selector as PS
+        ctx = PS.make_ctx(warped_cen, None, cb_center)        # already masked; cb_center is fractional
+        if ctx is None:
+            return None
+        chosen = sel.select(PS.candidates(ctx))
+        if not all(s in chosen for s in "LRTB"):
+            return None
+        L, T, R, B = (chosen["L"][1], chosen["T"][1], chosen["R"][1], chosen["B"][1])
+        x1, y1, x2, y2 = ctx["cb"]
+        iL, iR, iT, iB = L - x1, x2 - R, T - y1, y2 - B
+        if min(iL, iR, iT, iB) <= 0:                           # geometric sanity -> fall back
+            return None
+        lr = iL / (iL + iR) * 100.0; tb = iT / (iT + iB) * 100.0
+        conf = float(np.mean([chosen[s][2] for s in "LRTB"]))
+        return {"left_right": f"{int(round(lr))}/{100 - int(round(lr))}",
+                "top_bottom": f"{int(round(tb))}/{100 - int(round(tb))}",
+                "reliable": bool(conf >= 0.5),
+                "frame_px": (int(L), int(T), int(R), int(B)),
+                "cb_px": (x1, y1, x2, y2), "_source": "perside"}
+    except Exception:
+        return None
+
 # defect keys that count toward a pillar's display score (exclude confidence/geom/raw)
 _CORNER_DEFECTS = ("whitening", "nick", "chip", "fraying", "bending", "deformation")
 _EDGE_DEFECTS   = ("whitening", "nick", "chip", "fraying")
@@ -155,7 +202,7 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, **_ign
     # slivers) contaminates the centering read. Metric-safe (validated identical on GT);
     # masked copy is centering-only — grading features above used the un-masked warp.
     warped_cen = grader.mask_background_to_contour(warped, cw)
-    inn = IF.find_inner_frame(warped_cen, cb_center)
+    inn = _perside_inner_frame(warped_cen, cb_center) or IF.find_inner_frame(warped_cen, cb_center)
     lr, tb = inn["left_right"], inn["top_bottom"]
     H, W = warped.shape[:2]
     L, T, R, Bx = inn["frame_px"]
@@ -187,7 +234,7 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, **_ign
     result = {
         "centering": {"score": cen_score, "left_right": lr, "top_bottom": tb,
                       "content_region": content_region, "reliable": bool(inn["reliable"]),
-                      "notes": cen_note, "_source": "coherentframe"},
+                      "notes": cen_note, "_source": inn.get("_source", "coherentframe")},
         "corners": {"score": corners_s, "worst_severity": corners_w},
         "edges":   {"score": edges_s,   "worst_severity": edges_w},
         "surface": {"score": surface_s, "worst_severity": surface_w},

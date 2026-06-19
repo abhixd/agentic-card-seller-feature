@@ -68,7 +68,8 @@ def coherence_edges(warped):
     return mag * coh * np.cos(th) ** 2, mag * coh * np.sin(th) ** 2   # Vmap, Hmap
 
 
-def _pick_pair(sA, sB, dim, lo=0.012, hi=MAX_INSET, sigma=0.04, seed_w=0.0, seed_frac=0.03):
+def _pick_pair(sA, sB, dim, lo=0.012, hi=MAX_INSET, sigma=0.04, seed_w=0.0, seed_frac=0.03,
+               band_w=0.0, band_center=0.035, band_tol=0.012, band_fall=0.012):
     """Pick opposite-side frame lines jointly: geometric-mean of (normalized) coherent-line
     scores × Gaussian symmetry prior on |insetA-insetB| × an OUTER prior toward the expected
     border inset. sA/sB indexed by inset from their cut edge.
@@ -89,6 +90,13 @@ def _pick_pair(sA, sB, dim, lo=0.012, hi=MAX_INSET, sigma=0.04, seed_w=0.0, seed
         seed_px = max(seed_frac * dim, 1.0)
         outer = np.exp(-seed_w * (np.abs(a[:, None] - seed_px) + np.abs(b[None, :] - seed_px)) / (2 * seed_px))
         M = M * outer
+    if band_w > 0:                                          # WELL-band prior (the variance-detector idea ported here):
+        center = band_center * dim; tol = band_tol * dim   # reward is FLAT across [center±tol] (the legit border range)
+        fall = max(band_fall * dim, 1.0)                    # and FALLS OFF for too-close AND too-far — unlike the
+        da = np.maximum(np.abs(a - center) - tol, 0.0)      # V-shaped seed_w, it doesn't penalise legitimately-deep borders
+        db = np.maximum(np.abs(b - center) - tol, 0.0)
+        well = np.exp(-band_w * (da[:, None] ** 2 + db[None, :] ** 2) / (2.0 * fall ** 2))
+        M = M * well
     ia, ib = np.unravel_index(np.argmax(M), M.shape)
     return int(a[ia]), int(b[ib]), float(M.max())
 
@@ -122,7 +130,8 @@ def _silver_inset(prof_s, prof_v, edge, inward, maxlen):
 
 
 def find_inner_frame(warped, cb, viz_path=None, max_inset=MAX_INSET, max_inset_tb=MAX_INSET_TB,
-                     seed_w=SEED_W, seed_frac=SEED_FRAC):
+                     seed_w=SEED_W, seed_frac=SEED_FRAC,
+                     band_w=0.0, band_center=0.035, band_tol=0.012, band_fall=0.012):
     H, W = warped.shape[:2]
     V, Hm = coherence_edges(warped)
     x1, y1, x2, y2 = [int(round(v * d)) for v, d in zip(cb, [W, H, W, H])]
@@ -143,7 +152,7 @@ def find_inner_frame(warped, cb, viz_path=None, max_inset=MAX_INSET, max_inset_t
         return E * np.clip((sub > thr).mean(0), 0, 1) ** 2
     sL = col_score(x1, x1 + bV)
     sR = col_score(x2 - bV, x2)[::-1]
-    iL, iR, mLR = _pick_pair(sL, sR, iw, hi=cap_lr, seed_w=seed_w, seed_frac=seed_frac)
+    iL, iR, mLR = _pick_pair(sL, sR, iw, hi=cap_lr, seed_w=seed_w, seed_frac=seed_frac, band_w=band_w, band_center=band_center, band_tol=band_tol, band_fall=band_fall)
     L, R = x1 + iL, x2 - iR
     spanL = float((V[ry1:ry2, L] > np.percentile(V[ry1:ry2, x1:x1 + bV], 75)).mean())
     spanR = float((V[ry1:ry2, R] > np.percentile(V[ry1:ry2, x2 - bV:x2], 75)).mean())
@@ -162,7 +171,7 @@ def find_inner_frame(warped, cb, viz_path=None, max_inset=MAX_INSET, max_inset_t
         sub = Hm[lo:hi, rx1:rx2]; E = sub.sum(1); thr = np.percentile(sub, 75) + 1e-6
         return E * np.clip((sub > thr).mean(1), 0, 1) ** 2
     sT = row_band(y1, y1 + bH); sB = row_band(y2 - bH, y2)[::-1]
-    iT, iB, mTB = _pick_pair(sT, sB, ih, hi=cap_tb, seed_w=seed_w, seed_frac=seed_frac)
+    iT, iB, mTB = _pick_pair(sT, sB, ih, hi=cap_tb, seed_w=seed_w, seed_frac=seed_frac, band_w=band_w, band_center=band_center, band_tol=band_tol, band_fall=band_fall)
     T, B = y1 + iT, y2 - iB
     spanT = float((Hm[T, rx1:rx2] > np.percentile(Hm[y1:y1 + int(0.2 * ih), rx1:rx2], 75)).mean())
     spanB = float((Hm[B, rx1:rx2] > np.percentile(Hm[y2 - int(0.2 * ih):y2, rx1:rx2], 75)).mean())
