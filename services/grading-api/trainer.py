@@ -103,7 +103,7 @@ def retrain(corrections=None):
 
 def save_model(sel, path=MODEL_PATH):
     import joblib
-    joblib.dump(sel.model, path)
+    joblib.dump({"model": sel.model}, path)   # match cv_grader's loader (blob["model"])
     return path
 
 

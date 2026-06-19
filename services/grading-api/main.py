@@ -125,12 +125,22 @@ async def admin_train(req: Request):
     except Exception:
         body = {}
     corrections = body.get("corrections") or []
+    deploy = bool(body.get("deploy"))
     from trainer import retrain
     try:
         r = retrain(corrections)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"train failed: {type(e).__name__}: {e}")
-    r.pop("selector", None)  # the fitted model isn't JSON-serialisable (and hot-swap is P2b)
+    sel = r.pop("selector", None)  # the fitted model isn't JSON-serialisable
+    deployed = False
+    if deploy and sel is not None:
+        try:
+            import cv_grader
+            cv_grader.swap_perside_selector(sel)   # P2b hot-swap — live for subsequent grades
+            deployed = True
+        except Exception as e:
+            r["deploy_error"] = f"{type(e).__name__}: {e}"
+    r["deployed"] = deployed
     return r
 
 

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
 type Probe = { key: string; name: string; host: string | null; ok: boolean; status: string; ms: number | null }
-type TrainResult = { n_corrections: number; loo_before: number | null; loo_after: number | null; delta: number | null }
+type TrainResult = { n_corrections: number; loo_before: number | null; loo_after: number | null; delta: number | null; deployed?: boolean }
 
 function badge(ok: boolean, status: string): string {
   if (ok) return 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
@@ -20,13 +20,18 @@ export default function AdminPage() {
   const [training, setTraining] = useState(false)
   const [trainResult, setTrainResult] = useState<TrainResult | null>(null)
   const [trainErr, setTrainErr] = useState<string | null>(null)
+  const [deployLive, setDeployLive] = useState(false)
 
   async function runTraining() {
     setTraining(true)
     setTrainErr(null)
     setTrainResult(null)
     try {
-      const res = await fetch('/api/admin/train', { method: 'POST' })
+      const res = await fetch('/api/admin/train', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deploy: deployLive }),
+      })
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error ?? 'Training failed')
       setTrainResult(data)
@@ -100,13 +105,19 @@ export default function AdminPage() {
             <div className="text-sm font-medium">Self-improving grader</div>
             <p className="text-xs text-muted-foreground">Retrain the per-side centering selector from your corrections.</p>
           </div>
-          <button
-            onClick={runTraining}
-            disabled={training}
-            className="shrink-0 rounded-md bg-foreground px-3 py-1.5 text-sm font-medium text-background disabled:opacity-50"
-          >
-            {training ? 'Training…' : 'Run training'}
-          </button>
+          <div className="flex shrink-0 items-center gap-3">
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <input type="checkbox" checked={deployLive} onChange={(e) => setDeployLive(e.target.checked)} />
+              deploy live
+            </label>
+            <button
+              onClick={runTraining}
+              disabled={training}
+              className="rounded-md bg-foreground px-3 py-1.5 text-sm font-medium text-background disabled:opacity-50"
+            >
+              {training ? 'Training…' : 'Run training'}
+            </button>
+          </div>
         </div>
 
         {trainErr && <p className="mt-2 text-sm text-red-600">{trainErr}</p>}
@@ -130,8 +141,10 @@ export default function AdminPage() {
           </div>
         )}
 
-        <p className="mt-2 text-[11px] text-muted-foreground">
-          Report-only — shows before/after accuracy. Deploying the retrained model live (hot-swap) is the next step.
+        <p className={`mt-2 text-[11px] ${trainResult?.deployed ? 'text-emerald-600' : 'text-muted-foreground'}`}>
+          {trainResult?.deployed
+            ? '✓ Deployed live — the retrained model is serving grades now (reverts to baseline on restart; durable persistence is next).'
+            : 'Check “deploy live” to hot-swap the retrained model into the live grader; leave it off to just preview the delta.'}
         </p>
       </div>
     </div>

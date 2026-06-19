@@ -11,7 +11,10 @@ export const maxDuration = 60 // the server-side LOO retrain takes ~15–30s
  * them to the grading-api's /admin/train, and returns the leave-one-card-out accuracy delta.
  * Report-only — it doesn't deploy the new model yet (that's the hot-swap, P2b).
  */
-export async function POST() {
+export async function POST(req: Request) {
+  let deploy = false
+  try { deploy = (await req.json())?.deploy === true } catch { /* no body → report-only */ }
+
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -34,7 +37,7 @@ export async function POST() {
         'Content-Type': 'application/json',
         ...(process.env.ADMIN_TRAIN_TOKEN ? { 'X-Admin-Token': process.env.ADMIN_TRAIN_TOKEN } : {}),
       },
-      body: JSON.stringify({ corrections: corrections ?? [] }),
+      body: JSON.stringify({ corrections: corrections ?? [], deploy }),
     })
     const data = await res.json()
     if (!res.ok) return NextResponse.json({ error: data?.detail ?? 'Training failed.' }, { status: 502 })

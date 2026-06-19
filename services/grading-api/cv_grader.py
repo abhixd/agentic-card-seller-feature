@@ -40,6 +40,13 @@ def _perside_selector():
             _perside_cache["sel"] = None
     return _perside_cache["sel"]
 
+
+def swap_perside_selector(sel):
+    """P2b hot-swap — replace the live per-side selector in memory. The grading-api runs a single
+    uvicorn worker, so this takes effect for every subsequent grade immediately. NOT durable: a
+    restart/redeploy reverts to the baked-in perside_lr.joblib (durable persistence is the next step)."""
+    _perside_cache["sel"] = sel
+
 def _perside_inner_frame(warped_cen, cb_center):
     """Return a coherence-shaped centering dict from the per-side selector, or None to fall back."""
     if not _PERSIDE_ENABLED:
