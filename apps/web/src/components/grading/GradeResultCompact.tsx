@@ -152,7 +152,7 @@ export function GradeResultCompact({
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-[170px_1fr]">
+      <div className="grid gap-4 sm:grid-cols-[240px_1fr]">
         {/* LEFT: card + inline correction */}
         <div>
           <div ref={wrap} className={`relative overflow-hidden rounded-md border ${editing ? 'touch-none select-none ring-2 ring-emerald-500/40' : ''}`}>
@@ -173,7 +173,7 @@ export function GradeResultCompact({
                 onPointerDown={(e) => onHandleDown(h.side, e)}
                 onPointerMove={(e) => onHandleMove(h.side, e)}
                 onPointerUp={(e) => onHandleUp(h.side, e)}
-                className={`absolute size-5 -translate-x-1/2 -translate-y-1/2 touch-none rounded-full border-2 border-white bg-emerald-500 shadow ${h.cur}`}
+                className={`absolute size-3 -translate-x-1/2 -translate-y-1/2 touch-none rounded-full border border-white bg-emerald-500 shadow ${h.cur}`}
                 style={{ left: `${h.x}%`, top: `${h.y}%` }} />
             ))}
           </div>

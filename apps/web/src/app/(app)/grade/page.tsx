@@ -11,12 +11,14 @@ export default function GradePage() {
   const [result, setResult] = useState<GradeResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showOriginal, setShowOriginal] = useState(false)
 
   function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0] ?? null
     setFile(f)
     setResult(null)
     setError(null)
+    setShowOriginal(false)
     setPreview(f ? URL.createObjectURL(f) : null)
   }
 
@@ -57,15 +59,32 @@ export default function GradePage() {
         </button>
       </div>
 
+      {/* before grading: show the upload so the user can see what they're grading */}
       {preview && !result && (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={preview} alt="card preview" className="max-h-48 rounded-md border object-contain" />
+        <img src={preview} alt="card preview" className="mx-auto max-h-80 rounded-md border object-contain" />
       )}
       {error && <p className="text-sm text-red-600">{error}</p>}
 
       {result && (
         <>
           <GradeResultCompact result={result} />
+
+          {/* (4) the original upload is hidden after grading — let the user pull it back up to double-check */}
+          {preview && (
+            <div>
+              <button
+                onClick={() => setShowOriginal((v) => !v)}
+                className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              >
+                {showOriginal ? 'Hide original photo' : 'View original photo'}
+              </button>
+              {showOriginal && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={preview} alt="original upload" className="mx-auto mt-2 max-h-96 rounded-md border object-contain" />
+              )}
+            </div>
+          )}
 
           <GradeFeedback
             aspect="centering"
