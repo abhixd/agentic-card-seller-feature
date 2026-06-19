@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import type { GradeResult } from '@/lib/grading/types'
 import { CenteringPanel } from '@/components/grading/CenteringPanel'
+import { CenteringCorrection } from '@/components/grading/CenteringCorrection'
 import { GradeFeedback } from '@/components/grading/GradeFeedback'
 
 const SCORE_COLOR = (s: number) =>
@@ -109,6 +110,14 @@ export default function GradePage() {
             warpedJpegB64={result._warped_jpeg_b64}
             cardBoundary={result._card_boundary}
             borderType={result._border_type}
+          />
+
+          <CenteringCorrection
+            centering={result.centering}
+            warpedJpegB64={result._warped_jpeg_b64}
+            cardBoundary={result._card_boundary}
+            borderType={result._border_type}
+            graderBackend={result._grader_backend}
           />
 
           <GradeFeedback

@@ -136,7 +136,7 @@ export function CenteringPanel({
                     height={(cb![3] - cb![1]) * 100}
                     fill="none"
                     stroke={EDGE_COLOR}
-                    strokeWidth={2}
+                    strokeWidth={1.5}
                     vectorEffect="non-scaling-stroke"
                   />
                   <rect
@@ -146,7 +146,7 @@ export function CenteringPanel({
                     height={(cr!.y2 - cr!.y1) * 100}
                     fill="none"
                     stroke={BORDER_COLOR}
-                    strokeWidth={2}
+                    strokeWidth={1.5}
                     vectorEffect="non-scaling-stroke"
                   />
                 </svg>
