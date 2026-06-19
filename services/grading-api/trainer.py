@@ -20,6 +20,7 @@ import per_side_selector as PS
 
 BASE_PATH = os.path.join(_HERE, "perside_base_dataset.json")
 MODEL_PATH = os.path.join(_HERE, "perside_lr.joblib")
+SIDES = "LRTB"
 
 
 def _nan(v):
@@ -28,8 +29,8 @@ def _nan(v):
 
 def load_base():
     d = json.load(open(BASE_PATH))
-    rows = [{"card": r["card"], "side": r["side"], "det": r["det"], "err": r["err"],
-             "feat": [_nan(x) for x in r["feat"]]} for r in d["rows"]]
+    rows = [{"card": r["card"], "cls": r.get("cls", "normal"), "side": r["side"], "det": r["det"],
+             "err": r["err"], "feat": [_nan(x) for x in r["feat"]]} for r in d["rows"]]
     return rows, d
 
 
@@ -85,18 +86,47 @@ def loo_from_rows(rows, model_factory=PS.make_logreg, tau=PS.TAU):
     return round(100 * float(np.mean(tights)), 1) if tights else None
 
 
+def loo_detail(rows, model_factory=PS.make_logreg, tau=PS.TAU):
+    """LOO tight-rate overall + per side (L/R/T/B) + per card-class (full-art/normal), from rows alone."""
+    by = {}
+    for r in rows:
+        by.setdefault(r["card"], []).append(r)
+    whole, side_ok, cls_ok = [], {s: [] for s in SIDES}, {}
+    for held in sorted(by):
+        train = [r for r in rows if r["card"] != held]
+        if not train:
+            continue
+        sel = PS.PerSideSelector(model_factory).fit(train)
+        se = {}
+        for s in SIDES:
+            cs = [r for r in by[held] if r["side"] == s]
+            if cs:
+                se[s] = cs[int(np.argmax(sel.score([r["feat"] for r in cs])))]["err"]
+        if len(se) == 4:
+            ok = max(se.values()) <= tau
+            whole.append(ok)
+            for s in SIDES:
+                side_ok[s].append(se[s] <= tau)
+            cls_ok.setdefault(by[held][0].get("cls", "normal"), []).append(ok)
+    pct = lambda v: round(100 * float(np.mean(v)), 1) if v else None
+    return {"overall": pct(whole), "per_side": {s: pct(side_ok[s]) for s in SIDES},
+            "per_class": {c: pct(v) for c, v in cls_ok.items()}, "n_cards": len(whole)}
+
+
 def retrain(corrections=None):
-    """Fold corrections into the base, report LOO before/after, return a fresh selector."""
+    """Fold corrections into the base, report LOO before/after (+ per-side/class), return a fresh selector."""
     base, meta = load_base()
     corr = correction_rows(corrections or [])
-    before = loo_from_rows(base)
-    after = loo_from_rows(base + corr) if corr else before
+    before = loo_detail(base)
+    after = loo_detail(base + corr) if corr else before
     sel = PS.PerSideSelector(PS.make_logreg).fit(base + corr)
+    delta = (round(after["overall"] - before["overall"], 1)
+             if (after["overall"] is not None and before["overall"] is not None) else None)
     return {
         "n_base_cards": meta.get("n_cards"), "n_base_rows": len(base),
         "n_corrections": len({r["card"] for r in corr}), "n_correction_rows": len(corr),
-        "loo_before": before, "loo_after": after,
-        "delta": (round(after - before, 1) if (after is not None and before is not None) else None),
+        "loo_before": before["overall"], "loo_after": after["overall"], "delta": delta,
+        "per_side": after["per_side"], "per_class": after["per_class"],
         "selector": sel,
     }
 
