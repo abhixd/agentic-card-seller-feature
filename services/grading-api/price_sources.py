@@ -288,7 +288,8 @@ def ppt_probe(identity, timeout=12.0):
 
 # ── Pokémon Price Tracker live client — real PSA SOLD comps ───────────────────────────────────────────
 PPT_CARDS_URL = "https://www.pokemonpricetracker.com/api/v2/cards"
-PPT_LIMIT = 3                       # cards returned per search; cost = 2 credits each (free tier = 100/day)
+PPT_LIMIT = 12                      # cards returned per search; cost = 2 credits each. Higher = better match
+                                    # odds (rank picks by number+set); affordable on the 20k/day paid tier.
 _PPT_CACHE = {}                     # card_key -> (result|None, expiry_ts)
 _PPT_TTL = 24 * 3600
 _PPT_MISS_TTL = 3600
@@ -318,7 +319,7 @@ def ppt_lookup(identity):
     if hit and hit[1] > now:
         return hit[0]
 
-    q = " ".join(x for x in [name, num] if x)
+    q = " ".join(x for x in [name, st, num] if x)           # include set so the right card surfaces
     try:
         r = requests.get(PPT_CARDS_URL, params={"search": q, "includeEbay": "true", "limit": str(PPT_LIMIT)},
                          headers={"Authorization": f"Bearer {tok}", "Accept": "application/json"}, timeout=12)
