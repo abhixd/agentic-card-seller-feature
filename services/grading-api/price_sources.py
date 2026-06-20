@@ -229,16 +229,28 @@ def ebay_graded_asks(name, set_name=None, number=None):
 PPT_BASE = "https://www.pokemonpricetracker.com/api/v1"
 
 
+_PPT_NAMES = ("POKEMON_PRICE_TRACKER_TOKEN", "POKEMON_PRICE_TRACKER_API_KEY",
+              "POKEMONPRICETRACKER_TOKEN", "POKEMONPRICETRACKER_API_KEY",
+              "PPT_TOKEN", "PPT_API_KEY", "POKEMON_PRICE_TRACKER_KEY")
+
+
 def _ppt_token():
-    return _clean_cred(os.environ.get("POKEMON_PRICE_TRACKER_TOKEN"))
+    for n in _PPT_NAMES:
+        v = _clean_cred(os.environ.get(n))
+        if v:
+            return v
+    return None
 
 
 def ppt_probe(identity, timeout=12.0):
     """Diagnostic only (inert without a token): hit likely PPT search shapes and return the raw responses,
     so the real endpoint + field names can be mapped before wiring the live client."""
     tok = _ppt_token()
-    if not tok:
-        return {"token": False}
+    if not tok:                                              # help locate a misnamed / wrong-service var
+        present = {n: bool(os.environ.get(n)) for n in _PPT_NAMES}
+        hint = sorted(k for k in os.environ
+                      if any(s in k.upper() for s in ("POKEMON", "PRICE", "TRACKER", "PPT")))
+        return {"token": False, "checked_names": present, "env_names_seen": hint}
     name = identity.get("name"); num = _num(identity.get("number")); st = identity.get("set")
     q = " ".join(x for x in [name, num, st] if x)
     headers = {"Authorization": f"Bearer {tok}", "Accept": "application/json"}
