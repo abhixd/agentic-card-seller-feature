@@ -70,6 +70,10 @@ def pokemontcg_lookup(name, set_name=None, number=None, variant=None, timeout=10
             return []
 
     cards = _query(f'name:"{name}" number:"{num}"') if num else []
+    if not cards and num:                                     # pokemontcg.io hyphenates suffixes
+        base = name.split()[0]                                # "Charizard GX" -> "Charizard" (-> "Charizard-GX")
+        if base and base.lower() != name.lower():
+            cards = _query(f'name:"{base}" number:"{num}"')
     if not cards:
         cards = _query(f'name:"{name}"')                      # fallback: name only (number format varies)
     if not cards:
