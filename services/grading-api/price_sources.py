@@ -258,22 +258,21 @@ def ppt_probe(identity, timeout=12.0):
     pc = pokemontcg_lookup(name, st, identity.get("number"), identity.get("variant"))
     cid = pc.get("id") if pc else None                       # pokemontcg.io id, e.g. "base1-4"
     setid = pc.get("set_id") if pc else None                 # e.g. "base1"
-    B = "https://www.pokemonpricetracker.com"
-    cands = [("GET", f"{B}/api/v1/cards/{cid}/price", None),
-             ("GET", f"{B}/api/v1/cards/{cid}", None),
-             ("GET", f"{B}/api/v1/cards", {"id": cid}),
-             ("GET", f"{B}/api/v1/cards", {"setId": setid, "number": num}),
-             ("GET", f"{B}/api/v1/cards", {"set": setid, "number": num}),
-             ("GET", f"{B}/api/v1/prices", {"name": name, "number": num}),
-             ("GET", f"{B}/api/v1/search", {"query": q}),
-             ("GET", f"{B}/api/v1/cards/search", {"query": q}),
-             ("GET", f"{B}/api/v1/products", {"search": q}),
-             ("POST", f"{B}/api/v1/cards/bulk-price", {"ids": [cid]})]
+    C = "https://www.pokemonpricetracker.com/api/v2/cards"   # confirmed-existing endpoint (was v2, not v1)
+    cands = [("GET", C, {"search": q}),
+             ("GET", C, {"name": name, "number": num}),
+             ("GET", C, {"setId": setid, "number": num}),
+             ("GET", C, {"set": setid, "number": num}),
+             ("GET", C, {"id": cid}),
+             ("GET", C, {"cardId": cid}),
+             ("GET", C, {"q": q}),
+             ("GET", C, {"name": name}),
+             ("GET", C, None)]                                # no params -> list page, reveals schema
     out = {"token": True, "pokemontcg_id": cid, "set_id": setid, "query": q, "attempts": []}
     for method, url, params in cands:
-        if cid is None and ("/cards/None" in url or "None" in str(params)):   # skip id-based calls w/o an id
+        if isinstance(params, dict) and any(v is None for v in params.values()):  # skip calls w/ a None value
             continue
-        rec = {"method": method, "path": url.replace(B, ""), "params": params}
+        rec = {"method": method, "path": url.replace("https://www.pokemonpricetracker.com", ""), "params": params}
         try:
             r = (requests.get(url, params=params, headers=headers, timeout=timeout) if method == "GET"
                  else requests.post(url, json=params, headers=headers, timeout=timeout))
