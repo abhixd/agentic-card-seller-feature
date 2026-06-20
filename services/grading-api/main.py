@@ -439,6 +439,7 @@ async def scout_card(
                   "summary": result.get("summary"), "border_type": result.get("_border_type")},
         # full per-pillar breakdown so the worklist can show "why this grade" on click (builds trust)
         "pillars": {k: result.get(k) for k in ("centering", "corners", "edges", "surface")},
+        "card_boundary": result.get("_card_boundary"),   # outer card edge for the centering overlay
         "issues": result.get("issues"),
         "economics": economics, "decision": decision,
         "comps_source": comps_source, "comps_basis": comps_basis,

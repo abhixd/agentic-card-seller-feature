@@ -13,6 +13,7 @@ type Grade = {
 }
 type Pillar = {
   score?: number; left_right?: string; top_bottom?: string; notes?: string; worst_severity?: string
+  content_region?: { x1: number; y1: number; x2: number; y2: number }
 }
 type Pillars = { centering?: Pillar; corners?: Pillar; edges?: Pillar; surface?: Pillar }
 type Economics = {
@@ -20,6 +21,7 @@ type Economics = {
   max_buy_price_for_psa9_target?: number | null
   max_buy_price_for_psa8_target?: number | null
   raw_estimate?: number | null
+  psa8_estimate?: number | null
   psa9_estimate?: number | null
   psa10_estimate?: number | null
   listing_price?: number | null
@@ -41,6 +43,7 @@ type ScoutResult = {
   identify_error?: string | null
   grade: Grade
   pillars?: Pillars
+  card_boundary?: number[] | null
   issues?: Record<string, string[]>
   economics: Economics
   decision: Decision
@@ -324,6 +327,53 @@ function Stat({ label, v }: { label: string; v: string | null }) {
   )
 }
 
+// Visual "value by grade" ladder — raw → PSA 8/9/10 bars, predicted grade highlighted, source labelled.
+function PriceLadder({ res }: { res: ScoutResult }) {
+  const e = res.economics
+  if (!e) return null
+  const rows = ([
+    { key: 'raw', label: 'Raw', v: e.raw_estimate },
+    { key: 'psa8', label: 'PSA 8', v: e.psa8_estimate },
+    { key: 'psa9', label: 'PSA 9', v: e.psa9_estimate },
+    { key: 'psa10', label: 'PSA 10', v: e.psa10_estimate },
+  ].filter((r) => r.v != null) as { key: string; label: string; v: number }[])
+  if (!rows.length) return null
+  const max = Math.max(...rows.map((r) => r.v))
+  const pm = (res.grade.psa_equivalent || '').match(/PSA\s*(\d+)/i)
+  const predicted = pm ? `psa${pm[1]}` : null
+  const src = res.comps_basis === 'sold' ? 'real PSA sold · PPT'
+    : res.comps_basis === 'active' ? 'eBay asking (skews high)'
+    : res.estimated ? 'modeled from raw' : ''
+  return (
+    <div className="mt-4 rounded-lg border border-white/10 p-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] uppercase tracking-wide text-white/40">Value by grade</span>
+        {src && <span className="text-[10px] text-white/40">{src}</span>}
+      </div>
+      <div className="mt-2 space-y-1.5">
+        {rows.map((r) => {
+          const hot = r.key === predicted
+          return (
+            <div key={r.key} className="flex items-center gap-2">
+              <span className={`w-12 text-[11px] ${hot ? 'font-semibold text-emerald-300' : 'text-white/50'}`}>{r.label}</span>
+              <div className="h-5 flex-1 rounded bg-white/5">
+                <div
+                  className={`flex h-full min-w-[2.75rem] items-center justify-end rounded px-1.5 ${hot ? 'bg-emerald-500/80' : 'bg-cyan-600/70'}`}
+                  style={{ width: `${Math.max(10, Math.round((r.v / max) * 100))}%` }}
+                >
+                  <span className="text-[10px] font-medium tabular-nums text-white">{money(r.v)}</span>
+                </div>
+              </div>
+              {hot && <span className="w-16 text-[9px] uppercase tracking-wide text-emerald-300/70">your grade</span>}
+              {!hot && <span className="w-16" />}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function PillarBar({ label, p }: { label: string; p?: Pillar }) {
   const s = p?.score
   const color = s == null ? 'bg-white/10' : s >= 9 ? 'bg-emerald-500' : s >= 7 ? 'bg-amber-500' : 'bg-rose-500'
@@ -345,10 +395,13 @@ function ScoutDetail({ row, onClose }: { row: Row; onClose: () => void }) {
   const p = res.pillars
   const comps = hasComps(res)
   const dist = g.tier_distribution || {}
+  const cr = p?.centering?.content_region
+  const cb = res.card_boundary && res.card_boundary.length === 4 ? res.card_boundary : null
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+    // scrollable overlay so a tall modal never clips at the top
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 p-4" onClick={onClose}>
       <div
-        className="max-h-[88vh] w-full max-w-2xl overflow-auto rounded-2xl border border-white/10 bg-[#0e0e12] p-5"
+        className="mx-auto my-[2vh] w-full max-w-2xl rounded-2xl border border-white/10 bg-[#0e0e12] p-5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
@@ -363,12 +416,25 @@ function ScoutDetail({ row, onClose }: { row: Row; onClose: () => void }) {
         </div>
 
         <div className="mt-4 flex gap-4">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={res.thumb_b64 ? `data:image/jpeg;base64,${res.thumb_b64}` : row.previewUrl}
-            alt={id.title || row.name}
-            className="h-44 w-32 shrink-0 rounded-lg bg-white/5 object-cover"
-          />
+          {/* warped card + centering overlay (outer edge blue, inner print border emerald) — matches Grade Card */}
+          <div className="relative w-32 shrink-0 self-start overflow-hidden rounded-lg bg-white/5">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={res.thumb_b64 ? `data:image/jpeg;base64,${res.thumb_b64}` : row.previewUrl}
+              alt={id.title || row.name}
+              className="block w-full"
+            />
+            {cr && res.thumb_b64 && (
+              <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="pointer-events-none absolute inset-0 size-full">
+                {cb && (
+                  <rect x={cb[0] * 100} y={cb[1] * 100} width={(cb[2] - cb[0]) * 100} height={(cb[3] - cb[1]) * 100}
+                    fill="none" stroke="#3b82f6" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+                )}
+                <rect x={cr.x1 * 100} y={cr.y1 * 100} width={(cr.x2 - cr.x1) * 100} height={(cr.y2 - cr.y1) * 100}
+                  fill="none" stroke="#10b981" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+              </svg>
+            )}
+          </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-2">
               <span className="text-2xl font-bold">{g.psa_equivalent || g.overall_score}</span>
@@ -421,9 +487,11 @@ function ScoutDetail({ row, onClose }: { row: Row; onClose: () => void }) {
 
         {g.summary && <p className="mt-3 rounded-lg bg-white/[0.03] p-2 text-xs text-white/60">{g.summary}</p>}
 
+        {comps && <PriceLadder res={res} />}
+
         <div className="mt-4 rounded-lg border border-white/10 p-3">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] uppercase tracking-wide text-white/40">Economics</span>
+            <span className="text-[11px] uppercase tracking-wide text-white/40">Decision math</span>
             <span className="text-[11px] text-white/40">comps: {res.comps_source || 'none'}</span>
           </div>
           {comps ? (
