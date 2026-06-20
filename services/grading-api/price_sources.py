@@ -105,7 +105,8 @@ def pokemontcg_lookup(name, set_name=None, number=None, variant=None, timeout=10
                 break
     if raw is None:
         return None
-    return {"raw": round(raw, 2), "source": f"pokemontcg.io/{src}",
+    return {"raw": round(raw, 2), "source": f"pokemontcg.io/{src}", "id": chosen.get("id"),
+            "set_id": (chosen.get("set", {}) or {}).get("id"), "number": chosen.get("number"),
             "matched": f"{chosen.get('name')} · {chosen.get('set', {}).get('name')} #{chosen.get('number')}"}
 
 
@@ -252,21 +253,38 @@ def ppt_probe(identity, timeout=12.0):
                       if any(s in k.upper() for s in ("POKEMON", "PRICE", "TRACKER", "PPT")))
         return {"token": False, "checked_names": present, "env_names_seen": hint}
     name = identity.get("name"); num = _num(identity.get("number")); st = identity.get("set")
-    q = " ".join(x for x in [name, num, st] if x)
+    q = " ".join(x for x in [name, num] if x)
     headers = {"Authorization": f"Bearer {tok}", "Accept": "application/json"}
-    out = {"token": True, "query": q, "attempts": []}
-    for path, params in [("/cards", {"search": q}), ("/cards", {"q": q}), ("/search", {"q": q}),
-                         ("/cards", {"name": name, "number": num})]:
-        rec = {"path": path, "params": params}
+    pc = pokemontcg_lookup(name, st, identity.get("number"), identity.get("variant"))
+    cid = pc.get("id") if pc else None                       # pokemontcg.io id, e.g. "base1-4"
+    setid = pc.get("set_id") if pc else None                 # e.g. "base1"
+    B = "https://www.pokemonpricetracker.com"
+    cands = [("GET", f"{B}/api/v1/cards/{cid}/price", None),
+             ("GET", f"{B}/api/v1/cards/{cid}", None),
+             ("GET", f"{B}/api/v1/cards", {"id": cid}),
+             ("GET", f"{B}/api/v1/cards", {"setId": setid, "number": num}),
+             ("GET", f"{B}/api/v1/cards", {"set": setid, "number": num}),
+             ("GET", f"{B}/api/v1/prices", {"name": name, "number": num}),
+             ("GET", f"{B}/api/v1/search", {"query": q}),
+             ("GET", f"{B}/api/v1/cards/search", {"query": q}),
+             ("GET", f"{B}/api/v1/products", {"search": q}),
+             ("POST", f"{B}/api/v1/cards/bulk-price", {"ids": [cid]})]
+    out = {"token": True, "pokemontcg_id": cid, "set_id": setid, "query": q, "attempts": []}
+    for method, url, params in cands:
+        if cid is None and ("/cards/None" in url or "None" in str(params)):   # skip id-based calls w/o an id
+            continue
+        rec = {"method": method, "path": url.replace(B, ""), "params": params}
         try:
-            r = requests.get(f"{PPT_BASE}{path}", params=params, headers=headers, timeout=timeout)
+            r = (requests.get(url, params=params, headers=headers, timeout=timeout) if method == "GET"
+                 else requests.post(url, json=params, headers=headers, timeout=timeout))
             rec["status"] = r.status_code
             try:
-                rec["body"] = json.loads(json.dumps(r.json()))  # ensure serialisable
+                rec["body"] = json.loads(json.dumps(r.json()))
             except Exception:
-                rec["body"] = (r.text or "")[:300]
+                rec["body"] = (r.text or "")[:200]
             out["attempts"].append(rec)
             if r.status_code == 200 and rec.get("body"):
+                rec["HIT"] = True
                 break
         except Exception as e:
             rec["error"] = type(e).__name__
