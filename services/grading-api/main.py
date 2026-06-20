@@ -457,10 +457,11 @@ async def price_lookup_endpoint(name: str, card_set: str = "", number: str = "",
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
     res["ebay_auth"] = await loop.run_in_executor(None, price_sources.ebay_auth_debug)
-    if res["ebay_auth"].get("ok"):                            # token works → probe a search too
-        med, reason = await loop.run_in_executor(
-            None, price_sources._ebay_median, " ".join(x for x in [name, "PSA 9"] if x))
-        res["ebay_probe"] = {"median": med, "reason": reason}
+    if res["ebay_auth"].get("ok"):                            # token works → show the raw graded asks
+        asks = await loop.run_in_executor(
+            None, price_sources.ebay_graded_asks, name, card_set or None, number or None)
+        res["ebay_asks_raw"] = asks
+        res["ebay_asks_sane"] = price_sources._ebay_asks_sane(asks, res["prices"].get("raw")) if asks else None
     return res
 
 

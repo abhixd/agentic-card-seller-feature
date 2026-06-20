@@ -224,6 +224,22 @@ def ebay_graded_asks(name, set_name=None, number=None):
     return out or None
 
 
+def _ebay_asks_sane(eb, raw):
+    """eBay keyword-ask medians are noisy (lots, accessories, wrong cards). Trust them only if internally
+    ordered AND plausible vs raw: PSA 10 >= PSA 9, and each graded ask within a sane band of the raw
+    price. Otherwise fall back to the modeled estimate (which at least preserves grade ordering)."""
+    psa9, psa10 = eb.get("psa9"), eb.get("psa10")
+    if not (psa9 or psa10):
+        return False
+    if psa9 and psa10 and psa10 < psa9 * 0.95:               # PSA 10 should not be cheaper than PSA 9
+        return False
+    if raw:
+        for v in (psa9, psa10):
+            if v and not (raw * 0.8 <= v <= raw * 120):       # graded within a sane multiple of raw
+                return False
+    return True
+
+
 def lookup(identity):
     """identity dict -> {prices:{raw,psa8,psa9,psa10}, basis, source, matched, estimated, asking}.
     Prefers real eBay graded ASKS (basis 'active') for PSA 9/10; else pokemontcg raw + modeled grades
@@ -234,7 +250,7 @@ def lookup(identity):
     matched = res["matched"] if res else None
     eb = ebay_graded_asks(identity.get("name"), identity.get("set"), identity.get("number"))
 
-    if eb:                                                   # real (asking) graded prices from eBay
+    if eb and _ebay_asks_sane(eb, raw):                      # real (asking) graded prices from eBay
         def _g(key):
             return eb.get(key) or (round(raw * GRADE_MULT[key], 2) if raw else None)
         prices = {"raw": raw,
