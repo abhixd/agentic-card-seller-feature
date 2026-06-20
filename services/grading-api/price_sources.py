@@ -118,10 +118,18 @@ EBAY_SCOPE = "https://api.ebay.com/oauth/api_scope"
 _EBAY_TOKEN = {"value": None, "exp": 0.0}
 
 
+def _clean_cred(v):
+    """Strip stray quotes/whitespace/newlines that env values sometimes carry on this host."""
+    return v.strip().strip('"').strip("'").strip() if v else v
+
+
+def _ebay_creds():
+    return _clean_cred(os.environ.get("EBAY_CLIENT_ID")), _clean_cred(os.environ.get("EBAY_CLIENT_SECRET"))
+
+
 def _ebay_token(timeout=10.0):
     """Cached application access token (client_credentials), or None if creds missing/sandbox/failed."""
-    cid = os.environ.get("EBAY_CLIENT_ID")
-    sec = os.environ.get("EBAY_CLIENT_SECRET")
+    cid, sec = _ebay_creds()
     if not cid or not sec or "SBX-" in sec:                  # production creds required
         return None
     now = time.time()
@@ -141,6 +149,40 @@ def _ebay_token(timeout=10.0):
     except Exception:
         return None
     return None
+
+
+def ebay_auth_debug(timeout=10.0):
+    """Sanitised diagnostic for the eBay token request — NEVER returns the credential values."""
+    cid, sec = _ebay_creds()
+    info = {"has_client_id": bool(cid), "has_secret": bool(sec),
+            "client_id_prefix": (cid[:5] if cid else None),     # App ID is the public Client ID, ok to hint
+            "secret_is_sbx": bool(sec and "SBX-" in sec),
+            "marketplace": os.environ.get("EBAY_MARKETPLACE_ID", "EBAY_US")}
+    if not cid or not sec:
+        info["status"] = "missing-creds"
+        return info
+    if "SBX-" in sec:
+        info["status"] = "sandbox-secret (need production Cert ID)"
+        return info
+    try:
+        basic = base64.b64encode(f"{cid}:{sec}".encode()).decode()
+        r = requests.post(EBAY_OAUTH_URL,
+                          headers={"Authorization": f"Basic {basic}",
+                                   "Content-Type": "application/x-www-form-urlencoded"},
+                          data={"grant_type": "client_credentials", "scope": EBAY_SCOPE}, timeout=timeout)
+        info["http_status"] = r.status_code
+        j = {}
+        try:
+            j = r.json()
+        except Exception:
+            pass
+        info["ok"] = (r.status_code == 200 and bool(j.get("access_token")))
+        if not info["ok"]:
+            info["error"] = j.get("error")
+            info["error_description"] = (j.get("error_description") or "")[:200]
+    except Exception as e:
+        info["status"] = f"exception:{type(e).__name__}"
+    return info
 
 
 def _ebay_median(query, limit=25, timeout=10.0):
