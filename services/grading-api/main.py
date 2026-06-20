@@ -462,6 +462,7 @@ async def price_lookup_endpoint(name: str, card_set: str = "", number: str = "",
             None, price_sources.ebay_graded_asks, name, card_set or None, number or None)
         res["ebay_asks_raw"] = asks
         res["ebay_asks_sane"] = price_sources._ebay_asks_sane(asks, res["prices"].get("raw")) if asks else None
+    res["ppt"] = await loop.run_in_executor(None, price_sources.ppt_probe, ident)  # schema probe (token-gated)
     return res
 
 

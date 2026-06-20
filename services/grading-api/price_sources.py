@@ -8,6 +8,7 @@ labelled as modeled (comps_basis "raw+estimated"), never presented as observed. 
 Pokemon Price Tracker) can later return real psa8/9/10 and replace the estimate with no other change.
 """
 import base64
+import json
 import os
 import re
 import time
@@ -222,6 +223,43 @@ def ebay_graded_asks(name, set_name=None, number=None):
         if med:
             out[f"psa{g}"] = round(med, 2)
     return out or None
+
+
+# ── Pokémon Price Tracker (paid, real PSA SOLD comps) — schema probe; client finalized vs live response ──
+PPT_BASE = "https://www.pokemonpricetracker.com/api/v1"
+
+
+def _ppt_token():
+    return _clean_cred(os.environ.get("POKEMON_PRICE_TRACKER_TOKEN"))
+
+
+def ppt_probe(identity, timeout=12.0):
+    """Diagnostic only (inert without a token): hit likely PPT search shapes and return the raw responses,
+    so the real endpoint + field names can be mapped before wiring the live client."""
+    tok = _ppt_token()
+    if not tok:
+        return {"token": False}
+    name = identity.get("name"); num = _num(identity.get("number")); st = identity.get("set")
+    q = " ".join(x for x in [name, num, st] if x)
+    headers = {"Authorization": f"Bearer {tok}", "Accept": "application/json"}
+    out = {"token": True, "query": q, "attempts": []}
+    for path, params in [("/cards", {"search": q}), ("/cards", {"q": q}), ("/search", {"q": q}),
+                         ("/cards", {"name": name, "number": num})]:
+        rec = {"path": path, "params": params}
+        try:
+            r = requests.get(f"{PPT_BASE}{path}", params=params, headers=headers, timeout=timeout)
+            rec["status"] = r.status_code
+            try:
+                rec["body"] = json.loads(json.dumps(r.json()))  # ensure serialisable
+            except Exception:
+                rec["body"] = (r.text or "")[:300]
+            out["attempts"].append(rec)
+            if r.status_code == 200 and rec.get("body"):
+                break
+        except Exception as e:
+            rec["error"] = type(e).__name__
+            out["attempts"].append(rec)
+    return out
 
 
 def _ebay_asks_sane(eb, raw):
