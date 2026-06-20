@@ -379,9 +379,30 @@ def ppt_lookup(identity):
         _PPT_CACHE[key] = (None, now + _PPT_MISS_TTL)
         return None
     conf = ((sg.get("psa9") or sg.get("psa10") or {}).get("smartMarketPrice") or {}).get("confidence")
+
+    # capture EVERYTHING PPT gives us per card (all grades + card meta + raw) for later display decisions
+    def _grade_detail(cell):
+        if not isinstance(cell, dict):
+            return None
+        sm = cell.get("smartMarketPrice") or {}
+        keep = {k: cell.get(k) for k in ("count", "medianPrice", "averagePrice", "minPrice", "maxPrice",
+                                         "marketPrice7Day", "marketPriceMedian7Day", "dailyVolume7Day",
+                                         "marketTrend", "lastMarketUpdate")}
+        return {**keep, "smartPrice": sm.get("price"), "smartConfidence": sm.get("confidence"),
+                "smartMethod": sm.get("method")}
+    cprices = chosen.get("prices") or {}
+    detail = {
+        "card": {k: chosen.get(k) for k in ("name", "setName", "cardNumber", "rarity", "tcgPlayerUrl",
+                                            "externalCatalogId", "imageCdnUrl", "tcgPlayerId")},
+        "raw": {"market": cprices.get("market"), "low": cprices.get("low"),
+                "sellers": cprices.get("sellers"), "lastUpdated": cprices.get("lastUpdated")},
+        "ebay_updated": (chosen.get("ebay") or {}).get("updatedAt"),
+        "grades": {g: _grade_detail(cell) for g, cell in sg.items() if isinstance(cell, dict)},
+    }
+
     res = {"prices": prices, "basis": "sold", "source": "pokemonpricetracker(sold)",
            "matched": f"{chosen.get('name')} · {chosen.get('setName')} #{chosen.get('cardNumber')}",
-           "estimated": False, "asking": False, "confidence": conf}
+           "estimated": False, "asking": False, "confidence": conf, "detail": detail}
     _PPT_CACHE[key] = (res, now + _PPT_TTL)
     return res
 

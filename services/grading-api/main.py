@@ -411,6 +411,7 @@ async def scout_card(
     # SOLD comps (basis 'sold') > eBay graded asks (basis 'active') > pokemontcg raw + modeled (basis
     # 'raw+estimated', flagged "estimated") > NO DATA. ──
     economics = decision = comps_source = comps_basis = price_matched = price_confidence = None
+    price_detail = None
     estimated = asking = False
     if identity.get("name"):
         try:
@@ -424,6 +425,7 @@ async def scout_card(
             comps_source, comps_basis = pr["source"], pr["basis"]
             price_matched, estimated, asking = pr["matched"], pr["estimated"], pr.get("asking", False)
             price_confidence = pr.get("confidence")
+            price_detail = pr.get("detail")
         except Exception as e:
             traceback.print_exc()
             comps_source = f"error: {type(e).__name__}"
@@ -441,7 +443,7 @@ async def scout_card(
         "economics": economics, "decision": decision,
         "comps_source": comps_source, "comps_basis": comps_basis,
         "estimated": estimated, "asking": asking, "price_matched": price_matched,
-        "price_confidence": price_confidence,
+        "price_confidence": price_confidence, "comps_detail": price_detail,
         "ask": ask, "shipping": shipping,
         "thumb_b64": result.get("_warped_jpeg_b64"),
     })

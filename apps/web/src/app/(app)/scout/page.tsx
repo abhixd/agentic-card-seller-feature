@@ -25,6 +25,17 @@ type Economics = {
   listing_price?: number | null
 } | null
 type Decision = { label: string; reason: string } | null
+type GradeStat = {
+  count?: number; medianPrice?: number; averagePrice?: number; minPrice?: number; maxPrice?: number
+  marketPrice7Day?: number; marketPriceMedian7Day?: number; dailyVolume7Day?: number
+  marketTrend?: string; smartPrice?: number; smartConfidence?: string; smartMethod?: string
+}
+type CompsDetail = {
+  card?: { name?: string; setName?: string; cardNumber?: string; rarity?: string; tcgPlayerUrl?: string; imageCdnUrl?: string }
+  raw?: { market?: number; low?: number; sellers?: number; lastUpdated?: string }
+  ebay_updated?: string
+  grades?: Record<string, GradeStat>
+}
 type ScoutResult = {
   identity: Identity
   identify_error?: string | null
@@ -37,6 +48,8 @@ type ScoutResult = {
   comps_basis?: string | null
   estimated?: boolean
   price_matched?: string | null
+  price_confidence?: string | null
+  comps_detail?: CompsDetail | null
   thumb_b64?: string | null
 }
 
@@ -441,7 +454,77 @@ function ScoutDetail({ row, onClose }: { row: Row; onClose: () => void }) {
             </p>
           )}
         </div>
+
+        {res.comps_detail && <CompsTable d={res.comps_detail} />}
       </div>
+    </div>
+  )
+}
+
+const gradeOrder = (g: string) => {
+  const m = g.match(/^psa(\d+)(?:_(\d))?$/i)
+  if (m) return 100 - (parseInt(m[1]) + (m[2] ? 0.5 : 0)) // PSA 10 first … PSA 1
+  if (g === 'ungraded') return 200
+  return 300 // bgs/cgc/sgc/ace/etc. last
+}
+
+function CompsTable({ d }: { d: CompsDetail }) {
+  const grades = Object.entries(d.grades || {})
+    .filter(([, v]) => v && (v.medianPrice != null || v.count))
+    .sort((a, b) => gradeOrder(a[0]) - gradeOrder(b[0]))
+  const meta = [
+    d.card?.rarity,
+    d.raw?.market != null ? `raw $${d.raw.market}` : null,
+    d.raw?.sellers != null ? `${d.raw.sellers} sellers` : null,
+  ].filter(Boolean).join(' · ')
+  return (
+    <div className="mt-3 rounded-lg border border-white/10 p-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] uppercase tracking-wide text-white/40">All comps · eBay sold (PPT)</span>
+        {d.card?.tcgPlayerUrl && (
+          <a href={d.card.tcgPlayerUrl} target="_blank" rel="noreferrer" className="text-[11px] text-cyan-400/80 hover:underline">
+            TCGplayer ↗
+          </a>
+        )}
+      </div>
+      {meta && <div className="mt-1 text-[11px] text-white/40">{meta}</div>}
+      {grades.length > 0 && (
+        <div className="mt-2 overflow-x-auto">
+          <table className="w-full text-[11px] tabular-nums">
+            <thead className="text-white/35">
+              <tr>
+                <th className="px-1 py-1 text-left font-normal">Grade</th>
+                <th className="px-1 py-1 text-right font-normal">Median</th>
+                <th className="px-1 py-1 text-right font-normal">7-day</th>
+                <th className="px-1 py-1 text-right font-normal">n</th>
+                <th className="px-1 py-1 text-right font-normal">Range</th>
+                <th className="px-1 py-1 text-center font-normal">Trend</th>
+                <th className="px-1 py-1 text-right font-normal">Smart</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {grades.map(([g, v]) => (
+                <tr key={g} className="text-white/70">
+                  <td className="px-1 py-1 uppercase">{g.replace('_', '.')}</td>
+                  <td className="px-1 py-1 text-right">{money(v.medianPrice) ?? '—'}</td>
+                  <td className="px-1 py-1 text-right">{money(v.marketPrice7Day) ?? '—'}</td>
+                  <td className="px-1 py-1 text-right text-white/40">{v.count ?? '—'}</td>
+                  <td className="px-1 py-1 text-right text-white/40">
+                    {v.minPrice != null && v.maxPrice != null ? `${money(v.minPrice)}–${money(v.maxPrice)}` : '—'}
+                  </td>
+                  <td className="px-1 py-1 text-center">
+                    {v.marketTrend === 'up' ? '↑' : v.marketTrend === 'down' ? '↓' : '·'}
+                  </td>
+                  <td className="px-1 py-1 text-right">
+                    {money(v.smartPrice) ?? '—'}
+                    {v.smartConfidence ? <span className="text-white/30"> {v.smartConfidence[0]}</span> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
