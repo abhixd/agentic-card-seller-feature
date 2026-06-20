@@ -286,6 +286,81 @@ def ppt_probe(identity, timeout=12.0):
     return out
 
 
+# ── Pokémon Price Tracker live client — real PSA SOLD comps ───────────────────────────────────────────
+PPT_CARDS_URL = "https://www.pokemonpricetracker.com/api/v2/cards"
+PPT_LIMIT = 3                       # cards returned per search; cost = 2 credits each (free tier = 100/day)
+_PPT_CACHE = {}                     # card_key -> (result|None, expiry_ts)
+_PPT_TTL = 24 * 3600
+_PPT_MISS_TTL = 3600
+
+
+def _ppt_grade_price(cell):
+    """A grade's price: prefer the weighted smartMarketPrice, else the sold median."""
+    if not isinstance(cell, dict):
+        return None
+    sm = (cell.get("smartMarketPrice") or {}).get("price")
+    return sm if sm else cell.get("medianPrice")
+
+
+def ppt_lookup(identity):
+    """Real PSA-sold prices from Pokémon Price Tracker, or None (no token / no match / credits out).
+    Cached per card 24h to conserve credits. {prices, basis 'sold', source, matched, confidence}."""
+    tok = _ppt_token()
+    if not tok:
+        return None
+    name = identity.get("name"); num = _num(identity.get("number")); st = identity.get("set")
+    if not name:
+        return None
+    key = f"{name.lower()}|{(st or '').lower()}|{num or ''}"
+    now = time.time()
+    hit = _PPT_CACHE.get(key)
+    if hit and hit[1] > now:
+        return hit[0]
+
+    q = " ".join(x for x in [name, num] if x)
+    try:
+        r = requests.get(PPT_CARDS_URL, params={"search": q, "includeEbay": "true", "limit": str(PPT_LIMIT)},
+                         headers={"Authorization": f"Bearer {tok}", "Accept": "application/json"}, timeout=12)
+        if r.status_code != 200:                            # 429 = credits/rate exhausted -> graceful fallback
+            return None
+        cards = (r.json() or {}).get("data") or []
+    except Exception:
+        return None
+    if not cards:
+        _PPT_CACHE[key] = (None, now + _PPT_MISS_TTL)
+        return None
+
+    sl = (st or "").lower()
+
+    def rank(c):                                            # number match > set match > has-PSA-data
+        sc = 0
+        if num and _num(c.get("cardNumber")) == num:
+            sc += 4
+        cs = (c.get("setName") or "").lower()
+        if sl and (sl in cs or cs in sl):
+            sc += 2
+        sg = (c.get("ebay") or {}).get("salesByGrade") or {}
+        if sg.get("psa9") or sg.get("psa10"):
+            sc += 1
+        return sc
+
+    chosen = max(cards, key=rank)
+    sg = (chosen.get("ebay") or {}).get("salesByGrade") or {}
+    prices = {"raw": (chosen.get("prices") or {}).get("market"),
+              "psa8": _ppt_grade_price(sg.get("psa8")),
+              "psa9": _ppt_grade_price(sg.get("psa9")),
+              "psa10": _ppt_grade_price(sg.get("psa10"))}
+    if not (prices["psa9"] or prices["psa10"] or prices["raw"]):
+        _PPT_CACHE[key] = (None, now + _PPT_MISS_TTL)
+        return None
+    conf = ((sg.get("psa9") or sg.get("psa10") or {}).get("smartMarketPrice") or {}).get("confidence")
+    res = {"prices": prices, "basis": "sold", "source": "pokemonpricetracker(sold)",
+           "matched": f"{chosen.get('name')} · {chosen.get('setName')} #{chosen.get('cardNumber')}",
+           "estimated": False, "asking": False, "confidence": conf}
+    _PPT_CACHE[key] = (res, now + _PPT_TTL)
+    return res
+
+
 def _ebay_asks_sane(eb, raw):
     """eBay keyword-ask medians are noisy (lots, accessories, wrong cards). Trust them only if internally
     ordered AND plausible vs raw: PSA 10 >= PSA 9, and each graded ask within a sane band of the raw
@@ -304,8 +379,20 @@ def _ebay_asks_sane(eb, raw):
 
 def lookup(identity):
     """identity dict -> {prices:{raw,psa8,psa9,psa10}, basis, source, matched, estimated, asking}.
-    Prefers real eBay graded ASKS (basis 'active') for PSA 9/10; else pokemontcg raw + modeled grades
-    (basis 'raw+estimated'); else 'none'."""
+    Priority: Pokémon Price Tracker real SOLD comps (basis 'sold') > eBay graded ASKS (basis 'active')
+    > pokemontcg raw + modeled grades (basis 'raw+estimated') > 'none'."""
+    # 1. Pokémon Price Tracker — real PSA SOLD prices (best signal).
+    ppt = ppt_lookup(identity)
+    if ppt:
+        p = ppt["prices"]
+        if p.get("raw"):                                     # fill any missing graded value so EV still computes
+            for k in ("psa8", "psa9", "psa10"):
+                if not p.get(k):
+                    p[k] = round(p["raw"] * GRADE_MULT[k], 2)
+        ppt.setdefault("asking", False)
+        return ppt
+
+    # 2/3. eBay graded asks (gated) → pokemontcg raw + modeled.
     res = pokemontcg_lookup(identity.get("name"), identity.get("set"),
                             identity.get("number"), identity.get("variant"))
     raw = res["raw"] if res else None

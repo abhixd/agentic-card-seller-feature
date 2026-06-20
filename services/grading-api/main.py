@@ -407,10 +407,10 @@ async def scout_card(
     overall = result.get("overall_score") or 0
     confidence = result.get("_confidence") or ("low" if result.get("_truncated") else "high")
 
-    # ── economics: FREE price feed (pokemontcg.io raw + modeled graded) → EV / max-bid ──
-    # Real raw market price; PSA 8/9/10 are estimated from raw × multipliers (flagged "estimated").
-    # A paid graded API later returns real psa8/9/10 with no change here. NO DATA if no price match.
-    economics = decision = comps_source = comps_basis = price_matched = None
+    # ── economics → EV / max-bid. Source priority (price_sources.lookup): Pokémon Price Tracker real PSA
+    # SOLD comps (basis 'sold') > eBay graded asks (basis 'active') > pokemontcg raw + modeled (basis
+    # 'raw+estimated', flagged "estimated") > NO DATA. ──
+    economics = decision = comps_source = comps_basis = price_matched = price_confidence = None
     estimated = asking = False
     if identity.get("name"):
         try:
@@ -418,11 +418,12 @@ async def scout_card(
             pr = price_sources.lookup(identity)
             dist = grade_comps.distribution_from_overall(overall)
             economics = grade_comps.compute_roi((ask or 0) + (shipping or 0), dist, pr["prices"])
-            db = "active" if pr.get("asking") else ("estimated" if pr["estimated"] else "none")
+            db = {"sold": "sold", "active": "active", "raw+estimated": "estimated"}.get(pr["basis"], "none")
             decision = grade_comps.compute_decision(
                 economics, confidence, has_prices=(pr["basis"] != "none"), basis=db)
             comps_source, comps_basis = pr["source"], pr["basis"]
             price_matched, estimated, asking = pr["matched"], pr["estimated"], pr.get("asking", False)
+            price_confidence = pr.get("confidence")
         except Exception as e:
             traceback.print_exc()
             comps_source = f"error: {type(e).__name__}"
@@ -440,6 +441,7 @@ async def scout_card(
         "economics": economics, "decision": decision,
         "comps_source": comps_source, "comps_basis": comps_basis,
         "estimated": estimated, "asking": asking, "price_matched": price_matched,
+        "price_confidence": price_confidence,
         "ask": ask, "shipping": shipping,
         "thumb_b64": result.get("_warped_jpeg_b64"),
     })
@@ -462,7 +464,7 @@ async def price_lookup_endpoint(name: str, card_set: str = "", number: str = "",
             None, price_sources.ebay_graded_asks, name, card_set or None, number or None)
         res["ebay_asks_raw"] = asks
         res["ebay_asks_sane"] = price_sources._ebay_asks_sane(asks, res["prices"].get("raw")) if asks else None
-    res["ppt"] = await loop.run_in_executor(None, price_sources.ppt_probe, ident)  # schema probe (token-gated)
+    res["ppt_token_ok"] = bool(price_sources._ppt_token())   # lookup() above already used PPT if available
     return res
 
 
