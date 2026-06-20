@@ -366,6 +366,71 @@ async def grade_card_endpoint(
     return JSONResponse({k: v for k, v in result.items() if k not in _STRIP})
 
 
+@app.post("/scout")
+async def scout_card(
+    image:    UploadFile = File(..., description="One card photo (front)"),
+    ask:      float = Form(0.0),     # asking price (optional → enables buy/pass against the max-bid)
+    shipping: float = Form(0.0),
+    title:    str   = Form(""),      # optional identity override; else Claude vision-ID
+):
+    """Sourcing scout, one card: identify → grade → economics. Compact result for the buy/pass worklist.
+    Identity comes from Claude vision (a photo dump has no listing title); the economics reuse the same
+    compute_economics() as /grade and degrade to NO DATA when comps are unavailable."""
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    try:
+        img_bgr = _decode(await image.read())
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Image decode error: {e}")
+
+    loop = asyncio.get_event_loop()
+    # ── identify (vision) unless a title was supplied ──
+    identity = {"title": title} if title else {}
+    if not title:
+        try:
+            import identify as _identify
+            identity = await loop.run_in_executor(None, _identify.identify_card, img_bgr, api_key)
+        except Exception as e:
+            identity = {"title": "", "error": f"{type(e).__name__}: {e}"}
+    use_title = (identity.get("title") or title or "").strip()
+
+    # ── grade (reuses the production grader) ──
+    grader = _get_grader()
+    aggregator, grade_comps = _get_grade_mods()
+    try:
+        result = await loop.run_in_executor(None, grader.detect_and_grade, img_bgr, api_key)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Grading error: {type(e).__name__}: {e}")
+
+    overall = result.get("overall_score") or 0
+    confidence = result.get("_confidence") or ("low" if result.get("_truncated") else "high")
+
+    # ── economics (same path as /grade; NO DATA until a comp feed is wired) ──
+    economics = decision = comps_source = comps_basis = None
+    if use_title:
+        try:
+            econ = grade_comps.compute_economics(title=use_title, price=ask, shipping=shipping,
+                                                 overall_score=overall, confidence=confidence)
+            economics, decision = econ["economics"], econ["decision"]
+            comps_source, comps_basis = econ["comps_source"], econ["comps_basis"]
+        except Exception as e:
+            comps_source = f"error: {type(e).__name__}"
+
+    return JSONResponse({
+        "identity": {k: identity.get(k) for k in
+                     ("name", "set", "number", "year", "variant", "language", "title", "confidence")},
+        "identify_error": identity.get("error"),
+        "grade": {"overall_score": overall, "psa_equivalent": result.get("psa_equivalent"),
+                  "confidence": confidence, "tier_distribution": result.get("_tier_distribution")},
+        "economics": economics, "decision": decision,
+        "comps_source": comps_source, "comps_basis": comps_basis,
+        "ask": ask, "shipping": shipping,
+        "thumb_b64": result.get("_warped_jpeg_b64"),
+    })
+
+
 @app.post("/feedback")
 async def feedback_endpoint(request: Request):
     """Persist a user boundary correction for YOLO retraining (see feedback_to_yolo.py)."""

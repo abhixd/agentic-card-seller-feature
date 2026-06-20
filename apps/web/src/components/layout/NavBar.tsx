@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, ScanLine, Archive, LogOut, Layers,
   BookOpen, Newspaper, Users, ArrowLeftRight, TrendingUp, Heart, ShoppingBag, CalendarDays,
-  ShoppingCart, Settings, Wrench, Award,
+  ShoppingCart, Settings, Wrench, Award, Target,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -38,6 +38,14 @@ const navItems = [
     grad:  ['#f43f5e', '#be123c'],   // rose
     glow:  'rgba(244,63,94,0.7)',
     text:  'text-rose-300',
+  },
+  {
+    href:  '/scout',
+    label: 'Sourcing Scout',
+    icon:  Target,
+    grad:  ['#06b6d4', '#0e7490'],   // cyan
+    glow:  'rgba(6,182,212,0.7)',
+    text:  'text-cyan-300',
   },
   {
     href:  '/inventory',

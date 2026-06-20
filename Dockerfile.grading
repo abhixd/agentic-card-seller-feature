@@ -30,6 +30,7 @@ RUN grep -vE "^torch|^torchvision" /tmp/requirements.txt \
 # pipeline (grader/aggregator/grade_comps/grade_model) used by /grade.
 COPY services/grading-api/main.py services/grading-api/inference.py services/grading-api/schemas.py services/grading-api/comps.py \
      services/grading-api/grader.py services/grading-api/aggregator.py services/grading-api/grade_comps.py \
+     services/grading-api/identify.py \
      services/grading-api/card_segmenter.py \
      services/grading-api/cv_grader.py services/grading-api/nonvlm_cv.py services/grading-api/inner_frame.py \
      services/grading-api/per_side_selector.py services/grading-api/inner_frame_var.py services/grading-api/inner_frame_dp.py \
