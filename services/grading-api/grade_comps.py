@@ -287,8 +287,9 @@ def compute_decision(economics: dict, confidence: str,
                 "reason": "No eBay comp data available — economics can't be computed "
                           "(sold-comp quota likely exhausted)."}
 
-    # When working from active asking prices, prefix the reason so the user knows.
-    caveat = "Asking-price estimate — " if basis == "active" else ""
+    # Prefix the reason so the user knows the basis isn't a real graded sold comp.
+    caveat = {"active": "Asking-price estimate — ",
+              "estimated": "Modeled from raw price — "}.get(basis, "")
 
     p  = economics["listing_price"]
     m9 = economics["max_buy_price_for_psa9_target"]

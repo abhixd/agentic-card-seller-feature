@@ -19,7 +19,10 @@ type Economics = {
   expected_value?: number | null
   max_buy_price_for_psa9_target?: number | null
   max_buy_price_for_psa8_target?: number | null
+  raw_estimate?: number | null
   psa9_estimate?: number | null
+  psa10_estimate?: number | null
+  listing_price?: number | null
 } | null
 type Decision = { label: string; reason: string } | null
 type ScoutResult = {
@@ -32,6 +35,8 @@ type ScoutResult = {
   decision: Decision
   comps_source?: string | null
   comps_basis?: string | null
+  estimated?: boolean
+  price_matched?: string | null
   thumb_b64?: string | null
 }
 
@@ -121,6 +126,7 @@ export default function ScoutPage() {
   const done = rows.filter((r) => r.status === 'done').length
   const pendingCount = rows.filter((r) => r.status === 'pending' || r.status === 'error').length
   const anyComps = rows.some((r) => hasComps(r.result))
+  const anyEstimated = rows.some((r) => r.result?.estimated)
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-6">
@@ -179,10 +185,17 @@ export default function ScoutPage() {
       </div>
 
       {/* comps caveat */}
+      {done > 0 && anyEstimated && (
+        <div className="mt-4 rounded-lg border border-cyan-500/25 bg-cyan-500/[0.06] px-3 py-2 text-xs text-cyan-100/90">
+          <b>Prices via pokemontcg.io (free).</b> Raw is real market price; PSA 8/9/10, EV and max-bid are
+          <b> estimated</b> from raw × grade multipliers (shown with a ~). Connect a paid graded feed for true
+          PSA sold comps — the estimate is replaced automatically.
+        </div>
+      )}
       {done > 0 && !anyComps && (
         <div className="mt-4 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200/90">
-          <b>Comps unavailable</b> — identity + predicted grade are live (click any card for the full grading
-          breakdown), but max-bid / EV / verdict stay <b>NO DATA</b> until a graded-price feed is connected.
+          <b>No price match</b> — identity + predicted grade are live (click any card for the full grading
+          breakdown), but max-bid / EV / verdict stay <b>NO DATA</b> when no card matched in pokemontcg.io.
           Ranked by predicted grade for now.
         </div>
       )}
@@ -209,6 +222,8 @@ export default function ScoutPage() {
                 const econ = res?.economics
                 const dec = res?.decision?.label
                 const comps = hasComps(res)
+                const est = res?.estimated
+                const tilde = est ? '~' : ''
                 const clickable = r.status === 'done'
                 return (
                   <tr
@@ -250,12 +265,12 @@ export default function ScoutPage() {
                         </div>
                       ) : '—'}
                     </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {comps ? (money(econ?.max_buy_price_for_psa9_target) ?? '—')
+                    <td className="px-3 py-2 text-right tabular-nums" title={est ? 'estimated from raw price' : undefined}>
+                      {comps ? `${tilde}${money(econ?.max_buy_price_for_psa9_target) ?? '—'}`
                         : <span className="text-white/25">NO DATA</span>}
                     </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {comps ? (money(econ?.expected_value) ?? '—')
+                    <td className="px-3 py-2 text-right tabular-nums" title={est ? 'estimated from raw price' : undefined}>
+                      {comps ? `${tilde}${money(econ?.expected_value) ?? '—'}`
                         : <span className="text-white/25">NO DATA</span>}
                     </td>
                     <td className="px-3 py-2 text-center">
@@ -399,15 +414,30 @@ function ScoutDetail({ row, onClose }: { row: Row; onClose: () => void }) {
             <span className="text-[11px] text-white/40">comps: {res.comps_source || 'none'}</span>
           </div>
           {comps ? (
-            <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-              <Stat label="Max bid (PSA 9)" v={money(res.economics?.max_buy_price_for_psa9_target)} />
-              <Stat label="Expected value" v={money(res.economics?.expected_value)} />
-              <Stat label="PSA 9 comp" v={money(res.economics?.psa9_estimate)} />
-            </div>
+            <>
+              <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                <Stat label="Raw (market)" v={money(res.economics?.raw_estimate)} />
+                <Stat label={`PSA 9${res.estimated ? ' (est)' : ''}`} v={money(res.economics?.psa9_estimate)} />
+                <Stat label={`PSA 10${res.estimated ? ' (est)' : ''}`} v={money(res.economics?.psa10_estimate)} />
+                <Stat label={`Max bid PSA 9${res.estimated ? ' (est)' : ''}`} v={money(res.economics?.max_buy_price_for_psa9_target)} />
+                <Stat label={`Expected value${res.estimated ? ' (est)' : ''}`} v={money(res.economics?.expected_value)} />
+                <Stat label="Your ask" v={money(res.economics?.listing_price ?? null)} />
+              </div>
+              {res.price_matched && (
+                <p className="mt-2 text-[11px] text-white/40">matched: {res.price_matched}</p>
+              )}
+              {res.estimated && (
+                <p className="mt-1 text-[11px] text-cyan-200/70">
+                  Raw is real market price (pokemontcg.io). PSA 8/9/10, EV and max-bid are <b>modeled</b> from
+                  raw × grade multipliers — not real sold comps. A paid graded feed replaces these with
+                  observed PSA prices.
+                </p>
+              )}
+            </>
           ) : (
             <p className="mt-2 text-xs text-amber-200/80">
-              No comp prices available yet, so max-bid / EV / verdict can&apos;t be computed. These populate
-              once a graded-price feed is connected.
+              No price match in pokemontcg.io for this card, so max-bid / EV / verdict can&apos;t be computed.
+              They populate when the card matches or a graded-price feed is connected.
             </p>
           )}
         </div>

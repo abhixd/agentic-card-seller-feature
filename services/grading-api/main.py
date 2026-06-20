@@ -407,15 +407,24 @@ async def scout_card(
     overall = result.get("overall_score") or 0
     confidence = result.get("_confidence") or ("low" if result.get("_truncated") else "high")
 
-    # ── economics (same path as /grade; NO DATA until a comp feed is wired) ──
-    economics = decision = comps_source = comps_basis = None
-    if use_title:
+    # ── economics: FREE price feed (pokemontcg.io raw + modeled graded) → EV / max-bid ──
+    # Real raw market price; PSA 8/9/10 are estimated from raw × multipliers (flagged "estimated").
+    # A paid graded API later returns real psa8/9/10 with no change here. NO DATA if no price match.
+    economics = decision = comps_source = comps_basis = price_matched = None
+    estimated = False
+    if identity.get("name"):
         try:
-            econ = grade_comps.compute_economics(title=use_title, price=ask, shipping=shipping,
-                                                 overall_score=overall, confidence=confidence)
-            economics, decision = econ["economics"], econ["decision"]
-            comps_source, comps_basis = econ["comps_source"], econ["comps_basis"]
+            import price_sources
+            pr = price_sources.lookup(identity)
+            dist = grade_comps.distribution_from_overall(overall)
+            economics = grade_comps.compute_roi((ask or 0) + (shipping or 0), dist, pr["prices"])
+            decision = grade_comps.compute_decision(
+                economics, confidence, has_prices=(pr["basis"] != "none"),
+                basis="estimated" if pr["estimated"] else "none")
+            comps_source, comps_basis = pr["source"], pr["basis"]
+            price_matched, estimated = pr["matched"], pr["estimated"]
         except Exception as e:
+            traceback.print_exc()
             comps_source = f"error: {type(e).__name__}"
 
     return JSONResponse({
@@ -430,6 +439,7 @@ async def scout_card(
         "issues": result.get("issues"),
         "economics": economics, "decision": decision,
         "comps_source": comps_source, "comps_basis": comps_basis,
+        "estimated": estimated, "price_matched": price_matched,
         "ask": ask, "shipping": shipping,
         "thumb_b64": result.get("_warped_jpeg_b64"),
     })
