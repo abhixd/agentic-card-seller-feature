@@ -423,7 +423,11 @@ async def scout_card(
                      ("name", "set", "number", "year", "variant", "language", "title", "confidence")},
         "identify_error": identity.get("error"),
         "grade": {"overall_score": overall, "psa_equivalent": result.get("psa_equivalent"),
-                  "confidence": confidence, "tier_distribution": result.get("_tier_distribution")},
+                  "confidence": confidence, "tier_distribution": result.get("_tier_distribution"),
+                  "summary": result.get("summary"), "border_type": result.get("_border_type")},
+        # full per-pillar breakdown so the worklist can show "why this grade" on click (builds trust)
+        "pillars": {k: result.get(k) for k in ("centering", "corners", "edges", "surface")},
+        "issues": result.get("issues"),
         "economics": economics, "decision": decision,
         "comps_source": comps_source, "comps_basis": comps_basis,
         "ask": ask, "shipping": shipping,

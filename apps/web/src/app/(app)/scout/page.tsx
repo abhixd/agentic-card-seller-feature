@@ -7,7 +7,14 @@ type Identity = {
   name?: string; set?: string; number?: string; year?: number
   variant?: string; language?: string; title?: string; confidence?: number
 }
-type Grade = { overall_score: number; psa_equivalent?: string; confidence?: string }
+type Grade = {
+  overall_score: number; psa_equivalent?: string; confidence?: string
+  tier_distribution?: Record<string, number>; summary?: string; border_type?: string
+}
+type Pillar = {
+  score?: number; left_right?: string; top_bottom?: string; notes?: string; worst_severity?: string
+}
+type Pillars = { centering?: Pillar; corners?: Pillar; edges?: Pillar; surface?: Pillar }
 type Economics = {
   expected_value?: number | null
   max_buy_price_for_psa9_target?: number | null
@@ -19,11 +26,17 @@ type ScoutResult = {
   identity: Identity
   identify_error?: string | null
   grade: Grade
+  pillars?: Pillars
+  issues?: Record<string, string[]>
   economics: Economics
   decision: Decision
   comps_source?: string | null
+  comps_basis?: string | null
   thumb_b64?: string | null
 }
+
+/** comps present only when the service reports a real pricing basis (not "none"). */
+const hasComps = (r?: ScoutResult | null) => !!r?.comps_basis && r.comps_basis !== 'none'
 type Row = {
   id: string; file: File; name: string; previewUrl: string
   status: 'pending' | 'scanning' | 'done' | 'error'
@@ -42,6 +55,7 @@ const DECISION_STYLE: Record<string, string> = {
 export default function ScoutPage() {
   const [rows, setRows] = useState<Row[]>([])
   const [scanning, setScanning] = useState(false)
+  const [selected, setSelected] = useState<Row | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const addFiles = (files: FileList | null) => {
@@ -105,9 +119,7 @@ export default function ScoutPage() {
   const total = rows.length
   const done = rows.filter((r) => r.status === 'done').length
   const pendingCount = rows.filter((r) => r.status === 'pending' || r.status === 'error').length
-  const anyEconomics = rows.some(
-    (r) => r.result?.economics && Object.values(r.result.economics).some((v) => v != null),
-  )
+  const anyComps = rows.some((r) => hasComps(r.result))
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-6">
@@ -159,10 +171,11 @@ export default function ScoutPage() {
       </div>
 
       {/* comps caveat */}
-      {done > 0 && !anyEconomics && (
+      {done > 0 && !anyComps && (
         <div className="mt-4 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-200/90">
-          <b>Comps unavailable</b> — identity + predicted grade are live, but max-bid / EV / buy-pass stay blank
-          until a graded-price feed is connected. Ranked by predicted grade for now.
+          <b>Comps unavailable</b> — identity + predicted grade are live (click any card for the full grading
+          breakdown), but max-bid / EV / verdict stay <b>NO DATA</b> until a graded-price feed is connected.
+          Ranked by predicted grade for now.
         </div>
       )}
 
@@ -187,8 +200,15 @@ export default function ScoutPage() {
                 const id = res?.identity
                 const econ = res?.economics
                 const dec = res?.decision?.label
+                const comps = hasComps(res)
+                const clickable = r.status === 'done'
                 return (
-                  <tr key={r.id} className="hover:bg-white/[0.02]">
+                  <tr
+                    key={r.id}
+                    onClick={() => clickable && setSelected(r)}
+                    className={`hover:bg-white/[0.02] ${clickable ? 'cursor-pointer' : ''}`}
+                    title={clickable ? 'Click for grading details' : undefined}
+                  >
                     <td className="px-3 py-2">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
@@ -207,6 +227,7 @@ export default function ScoutPage() {
                           <div className="text-[11px] text-white/40">
                             {[id?.set, id?.number, id?.variant].filter(Boolean).join(' · ')}
                             {id?.confidence != null && <> · id {Math.round(id.confidence * 100)}%</>}
+                            <span className="ml-1.5 text-cyan-400/70">· details</span>
                           </div>
                         </div>
                       )}
@@ -222,20 +243,26 @@ export default function ScoutPage() {
                       ) : '—'}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">
-                      {money(econ?.max_buy_price_for_psa9_target) ?? <span className="text-white/25">NO DATA</span>}
+                      {comps ? (money(econ?.max_buy_price_for_psa9_target) ?? '—')
+                        : <span className="text-white/25">NO DATA</span>}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">
-                      {money(econ?.expected_value) ?? <span className="text-white/25">—</span>}
+                      {comps ? (money(econ?.expected_value) ?? '—')
+                        : <span className="text-white/25">NO DATA</span>}
                     </td>
                     <td className="px-3 py-2 text-center">
-                      {dec ? (
-                        <span className={`rounded-full border px-2 py-0.5 text-[11px] capitalize ${DECISION_STYLE[dec] || DECISION_STYLE.unknown}`}>
-                          {dec}
-                        </span>
-                      ) : <span className="text-white/25 text-[11px]">—</span>}
+                      {!res ? <span className="text-white/25 text-[11px]">—</span>
+                        : comps && dec ? (
+                          <span className={`rounded-full border px-2 py-0.5 text-[11px] capitalize ${DECISION_STYLE[dec] || DECISION_STYLE.unknown}`}>
+                            {dec}
+                          </span>
+                        ) : <span className="text-white/25 text-[11px]">NO DATA</span>}
                     </td>
                     <td className="px-2 py-2 text-right">
-                      <button onClick={() => removeRow(r.id)} className="text-white/25 hover:text-white/60">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); removeRow(r.id) }}
+                        className="text-white/25 hover:text-white/60"
+                      >
                         <X className="h-3.5 w-3.5" />
                       </button>
                     </td>
@@ -246,6 +273,137 @@ export default function ScoutPage() {
           </table>
         </div>
       )}
+
+      {selected?.result && <ScoutDetail row={selected} onClose={() => setSelected(null)} />}
+    </div>
+  )
+}
+
+function Stat({ label, v }: { label: string; v: string | null }) {
+  return (
+    <div className="rounded bg-white/[0.03] p-2">
+      <div className="text-[10px] text-white/40">{label}</div>
+      <div className="font-semibold tabular-nums">{v ?? '—'}</div>
+    </div>
+  )
+}
+
+function PillarBar({ label, p }: { label: string; p?: Pillar }) {
+  const s = p?.score
+  const color = s == null ? 'bg-white/10' : s >= 9 ? 'bg-emerald-500' : s >= 7 ? 'bg-amber-500' : 'bg-rose-500'
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="w-20 capitalize text-white/50">{label}</span>
+      <div className="h-1.5 flex-1 rounded bg-white/5">
+        <div className={`h-full rounded ${color}`} style={{ width: `${Math.max(0, Math.min(10, s ?? 0)) * 10}%` }} />
+      </div>
+      <span className="w-8 text-right tabular-nums">{s != null ? s.toFixed(1) : '—'}</span>
+    </div>
+  )
+}
+
+function ScoutDetail({ row, onClose }: { row: Row; onClose: () => void }) {
+  const res = row.result!
+  const id = res.identity
+  const g = res.grade
+  const p = res.pillars
+  const comps = hasComps(res)
+  const dist = g.tier_distribution || {}
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <div
+        className="max-h-[88vh] w-full max-w-2xl overflow-auto rounded-2xl border border-white/10 bg-[#0e0e12] p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold">{id.title || id.name || 'Unknown card'}</h2>
+            <p className="text-[11px] text-white/40">
+              {[id.set, id.number, id.variant, id.language, id.year].filter(Boolean).join(' · ')}
+              {id.confidence != null && <> · identified {Math.round(id.confidence * 100)}%</>}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-white/40 hover:text-white"><X className="h-5 w-5" /></button>
+        </div>
+
+        <div className="mt-4 flex gap-4">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={res.thumb_b64 ? `data:image/jpeg;base64,${res.thumb_b64}` : row.previewUrl}
+            alt={id.title || row.name}
+            className="h-44 w-32 shrink-0 rounded-lg bg-white/5 object-cover"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-bold">{g.psa_equivalent || g.overall_score}</span>
+              <span className="text-sm text-white/50">
+                overall {g.overall_score?.toFixed(1)}/10 · {g.confidence} confidence
+              </span>
+            </div>
+            {Object.keys(dist).length > 0 && (
+              <div className="mt-2 space-y-1">
+                {Object.entries(dist).sort((a, b) => b[1] - a[1]).map(([k, v]) => (
+                  <div key={k} className="flex items-center gap-2 text-[11px]">
+                    <span className="w-14 text-white/50">{k}</span>
+                    <div className="h-1.5 flex-1 rounded bg-white/5">
+                      <div className="h-full rounded bg-cyan-500" style={{ width: `${Math.round(v * 100)}%` }} />
+                    </div>
+                    <span className="w-8 text-right tabular-nums text-white/60">{Math.round(v * 100)}%</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-4 space-y-1.5">
+          <div className="text-[11px] uppercase tracking-wide text-white/40">Pillar scores</div>
+          <PillarBar label="centering" p={p?.centering} />
+          <PillarBar label="corners" p={p?.corners} />
+          <PillarBar label="edges" p={p?.edges} />
+          <PillarBar label="surface" p={p?.surface} />
+          {p?.centering && (p.centering.left_right || p.centering.top_bottom) && (
+            <p className="pt-1 text-[11px] text-white/40">
+              centering: {p.centering.left_right} L/R · {p.centering.top_bottom} T/B
+              {p.centering.notes ? ` — ${p.centering.notes}` : ''}
+            </p>
+          )}
+        </div>
+
+        {res.issues && Object.values(res.issues).some((v) => v && v.length) && (
+          <div className="mt-3">
+            <div className="text-[11px] uppercase tracking-wide text-white/40">Detected issues</div>
+            <ul className="mt-1 space-y-0.5 text-xs text-white/60">
+              {Object.entries(res.issues).flatMap(([pillar, list]) =>
+                (list || []).map((it, i) => (
+                  <li key={`${pillar}-${i}`}>· <span className="capitalize text-white/40">{pillar}:</span> {it}</li>
+                )),
+              )}
+            </ul>
+          </div>
+        )}
+
+        {g.summary && <p className="mt-3 rounded-lg bg-white/[0.03] p-2 text-xs text-white/60">{g.summary}</p>}
+
+        <div className="mt-4 rounded-lg border border-white/10 p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] uppercase tracking-wide text-white/40">Economics</span>
+            <span className="text-[11px] text-white/40">comps: {res.comps_source || 'none'}</span>
+          </div>
+          {comps ? (
+            <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+              <Stat label="Max bid (PSA 9)" v={money(res.economics?.max_buy_price_for_psa9_target)} />
+              <Stat label="Expected value" v={money(res.economics?.expected_value)} />
+              <Stat label="PSA 9 comp" v={money(res.economics?.psa9_estimate)} />
+            </div>
+          ) : (
+            <p className="mt-2 text-xs text-amber-200/80">
+              No comp prices available yet, so max-bid / EV / verdict can&apos;t be computed. These populate
+              once a graded-price feed is connected.
+            </p>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
