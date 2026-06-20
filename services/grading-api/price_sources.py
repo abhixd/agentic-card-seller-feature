@@ -258,16 +258,12 @@ def ppt_probe(identity, timeout=12.0):
     pc = pokemontcg_lookup(name, st, identity.get("number"), identity.get("variant"))
     cid = pc.get("id") if pc else None                       # pokemontcg.io id, e.g. "base1-4"
     setid = pc.get("set_id") if pc else None                 # e.g. "base1"
-    C = "https://www.pokemonpricetracker.com/api/v2/cards"   # confirmed-existing endpoint (was v2, not v1)
-    cands = [("GET", C, {"search": q}),
-             ("GET", C, {"name": name, "number": num}),
-             ("GET", C, {"setId": setid, "number": num}),
-             ("GET", C, {"set": setid, "number": num}),
-             ("GET", C, {"id": cid}),
-             ("GET", C, {"cardId": cid}),
-             ("GET", C, {"q": q}),
-             ("GET", C, {"name": name}),
-             ("GET", C, None)]                                # no params -> list page, reveals schema
+    C = "https://www.pokemonpricetracker.com/api/v2/cards"   # confirmed: ?cardId=<pokemontcg id>, base /api/v2
+    cands = [("GET", C, {"cardId": "base1-4", "includeEbay": "true"}),   # known card; find the ebay/PSA toggle
+             ("GET", C, {"cardId": "base1-4", "include": "ebay"}),
+             ("GET", C, {"cardId": "base1-4", "ebay": "true"}),
+             ("GET", C, {"cardId": "base1-4"}),
+             ("GET", C, {"cardId": cid, "includeEbay": "true"})]         # the actually-identified card
     out = {"token": True, "pokemontcg_id": cid, "set_id": setid, "query": q, "attempts": []}
     for method, url, params in cands:
         if isinstance(params, dict) and any(v is None for v in params.values()):  # skip calls w/ a None value
