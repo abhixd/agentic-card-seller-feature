@@ -56,6 +56,7 @@ export default function ScoutPage() {
   const [rows, setRows] = useState<Row[]>([])
   const [scanning, setScanning] = useState(false)
   const [selected, setSelected] = useState<Row | null>(null)
+  const [dragOver, setDragOver] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const addFiles = (files: FileList | null) => {
@@ -135,8 +136,15 @@ export default function ScoutPage() {
         </div>
       </div>
 
-      {/* Upload + actions */}
-      <div className="mt-5 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+      {/* Upload (drag-and-drop, multi-select) + actions */}
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => { e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files) }}
+        className={`mt-5 rounded-xl border border-dashed bg-white/[0.02] p-4 transition-colors ${
+          dragOver ? 'border-cyan-500/60 bg-cyan-500/[0.06]' : 'border-white/15'
+        }`}
+      >
         <div className="flex flex-wrap items-center gap-3">
           <button
             onClick={() => inputRef.current?.click()}
@@ -146,7 +154,7 @@ export default function ScoutPage() {
           </button>
           <input
             ref={inputRef} type="file" accept="image/*" multiple hidden
-            onChange={(e) => addFiles(e.target.files)}
+            onChange={(e) => { addFiles(e.target.files); if (inputRef.current) inputRef.current.value = '' }}
           />
           <button
             onClick={scan}
@@ -163,11 +171,11 @@ export default function ScoutPage() {
             <span className="ml-auto text-xs text-white/40 tabular-nums">{done}/{total} scanned</span>
           )}
         </div>
-        {total === 0 && (
-          <p className="mt-3 text-xs text-white/40">
-            Select multiple card photos (front-facing). Each is scanned independently, so results stream in.
-          </p>
-        )}
+        <p className="mt-3 text-xs text-white/40">
+          {dragOver
+            ? 'Drop to add these photos…'
+            : 'Drag a whole batch of card photos here, or click “Add photos” and select several at once (Cmd/Ctrl- or Shift-click). Each scans independently and streams in.'}
+        </p>
       </div>
 
       {/* comps caveat */}
