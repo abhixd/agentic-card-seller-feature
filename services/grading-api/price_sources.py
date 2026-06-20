@@ -7,8 +7,10 @@ source of GRADED sold comps, so we ESTIMATE PSA 8/9/10 from the raw price via gr
 labelled as modeled (comps_basis "raw+estimated"), never presented as observed. A paid graded API (e.g.
 Pokemon Price Tracker) can later return real psa8/9/10 and replace the estimate with no other change.
 """
+import base64
 import os
 import re
+import time
 
 import requests
 
@@ -106,18 +108,107 @@ def pokemontcg_lookup(name, set_name=None, number=None, variant=None, timeout=10
             "matched": f"{chosen.get('name')} · {chosen.get('set', {}).get('name')} #{chosen.get('number')}"}
 
 
+# ── eBay Browse API — real (asking) graded prices via client-credentials OAuth ─────────────────────────
+# Browse gives ACTIVE-listing ask prices (skew high vs sold), but searching "<card> PSA 9" yields real
+# graded-slab prices — an upgrade over the modeled estimate. Needs PRODUCTION EBAY_CLIENT_ID/SECRET
+# (sandbox can't return real data). Degrades silently to None so the pokemontcg path still runs.
+EBAY_OAUTH_URL = "https://api.ebay.com/identity/v1/oauth2/token"
+EBAY_BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
+EBAY_SCOPE = "https://api.ebay.com/oauth/api_scope"
+_EBAY_TOKEN = {"value": None, "exp": 0.0}
+
+
+def _ebay_token(timeout=10.0):
+    """Cached application access token (client_credentials), or None if creds missing/sandbox/failed."""
+    cid = os.environ.get("EBAY_CLIENT_ID")
+    sec = os.environ.get("EBAY_CLIENT_SECRET")
+    if not cid or not sec or "SBX-" in sec:                  # production creds required
+        return None
+    now = time.time()
+    if _EBAY_TOKEN["value"] and _EBAY_TOKEN["exp"] > now + 60:
+        return _EBAY_TOKEN["value"]
+    try:
+        basic = base64.b64encode(f"{cid}:{sec}".encode()).decode()
+        r = requests.post(EBAY_OAUTH_URL,
+                          headers={"Authorization": f"Basic {basic}",
+                                   "Content-Type": "application/x-www-form-urlencoded"},
+                          data={"grant_type": "client_credentials", "scope": EBAY_SCOPE}, timeout=timeout)
+        tok = (r.json() or {}).get("access_token") if r.status_code == 200 else None
+        if tok:
+            _EBAY_TOKEN["value"] = tok
+            _EBAY_TOKEN["exp"] = now + float((r.json() or {}).get("expires_in", 7200))
+            return tok
+    except Exception:
+        return None
+    return None
+
+
+def _ebay_median(query, limit=25, timeout=10.0):
+    """Median fixed-price USD ask for a keyword query, or (None, reason)."""
+    tok = _ebay_token()
+    if not tok:
+        return None, "no-token"
+    mkt = os.environ.get("EBAY_MARKETPLACE_ID", "EBAY_US")
+    try:
+        r = requests.get(EBAY_BROWSE_URL,
+                         params={"q": query, "limit": str(limit), "filter": "buyingOptions:{FIXED_PRICE}"},
+                         headers={"Authorization": f"Bearer {tok}", "X-EBAY-C-MARKETPLACE-ID": mkt},
+                         timeout=timeout)
+        if r.status_code != 200:
+            return None, f"http-{r.status_code}"
+        items = (r.json() or {}).get("itemSummaries") or []
+    except Exception as e:
+        return None, type(e).__name__
+    vals = sorted(float(p["value"]) for it in items
+                  for p in [it.get("price") or {}]
+                  if p.get("value") and p.get("currency") in (None, "USD"))
+    if not vals:
+        return None, "no-items"
+    return vals[len(vals) // 2], None
+
+
+def ebay_graded_asks(name, set_name=None, number=None):
+    """{psa9, psa10} real asking prices from active eBay listings, or None if eBay unavailable/empty."""
+    if not name or not _ebay_token():
+        return None
+    num = _num(number) or ""
+    out = {}
+    for g in (9, 10):
+        med, _ = _ebay_median(" ".join(x for x in [name, set_name, num, f"PSA {g}"] if x))
+        if med is None and set_name:                         # retry without set if over-narrowed to zero
+            med, _ = _ebay_median(" ".join(x for x in [name, num, f"PSA {g}"] if x))
+        if med:
+            out[f"psa{g}"] = round(med, 2)
+    return out or None
+
+
 def lookup(identity):
-    """identity dict -> {prices:{raw,psa8,psa9,psa10}, basis, source, matched, estimated}.
-    basis is 'none' when no price is found, else 'raw+estimated' (raw observed, grades modeled)."""
+    """identity dict -> {prices:{raw,psa8,psa9,psa10}, basis, source, matched, estimated, asking}.
+    Prefers real eBay graded ASKS (basis 'active') for PSA 9/10; else pokemontcg raw + modeled grades
+    (basis 'raw+estimated'); else 'none'."""
     res = pokemontcg_lookup(identity.get("name"), identity.get("set"),
                             identity.get("number"), identity.get("variant"))
-    if not res:
-        return {"prices": {"raw": None, "psa8": None, "psa9": None, "psa10": None},
-                "basis": "none", "source": "none", "matched": None, "estimated": False}
-    raw = res["raw"]
-    prices = {"raw": raw,
-              "psa8": round(raw * GRADE_MULT["psa8"], 2),
-              "psa9": round(raw * GRADE_MULT["psa9"], 2),
-              "psa10": round(raw * GRADE_MULT["psa10"], 2)}
-    return {"prices": prices, "basis": "raw+estimated", "source": res["source"],
-            "matched": res["matched"], "estimated": True}
+    raw = res["raw"] if res else None
+    matched = res["matched"] if res else None
+    eb = ebay_graded_asks(identity.get("name"), identity.get("set"), identity.get("number"))
+
+    if eb:                                                   # real (asking) graded prices from eBay
+        def _g(key):
+            return eb.get(key) or (round(raw * GRADE_MULT[key], 2) if raw else None)
+        prices = {"raw": raw,
+                  "psa8": round(raw * GRADE_MULT["psa8"], 2) if raw else None,
+                  "psa9": _g("psa9"), "psa10": _g("psa10")}
+        src = "ebay-browse(asks)" + ("+pokemontcg" if raw else "")
+        return {"prices": prices, "basis": "active", "source": src,
+                "matched": matched, "estimated": False, "asking": True}
+
+    if raw:                                                  # pokemontcg raw + modeled grades
+        prices = {"raw": raw,
+                  "psa8": round(raw * GRADE_MULT["psa8"], 2),
+                  "psa9": round(raw * GRADE_MULT["psa9"], 2),
+                  "psa10": round(raw * GRADE_MULT["psa10"], 2)}
+        return {"prices": prices, "basis": "raw+estimated", "source": res["source"],
+                "matched": matched, "estimated": True, "asking": False}
+
+    return {"prices": {"raw": None, "psa8": None, "psa9": None, "psa10": None},
+            "basis": "none", "source": "none", "matched": None, "estimated": False, "asking": False}

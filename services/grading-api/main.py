@@ -411,18 +411,18 @@ async def scout_card(
     # Real raw market price; PSA 8/9/10 are estimated from raw × multipliers (flagged "estimated").
     # A paid graded API later returns real psa8/9/10 with no change here. NO DATA if no price match.
     economics = decision = comps_source = comps_basis = price_matched = None
-    estimated = False
+    estimated = asking = False
     if identity.get("name"):
         try:
             import price_sources
             pr = price_sources.lookup(identity)
             dist = grade_comps.distribution_from_overall(overall)
             economics = grade_comps.compute_roi((ask or 0) + (shipping or 0), dist, pr["prices"])
+            db = "active" if pr.get("asking") else ("estimated" if pr["estimated"] else "none")
             decision = grade_comps.compute_decision(
-                economics, confidence, has_prices=(pr["basis"] != "none"),
-                basis="estimated" if pr["estimated"] else "none")
+                economics, confidence, has_prices=(pr["basis"] != "none"), basis=db)
             comps_source, comps_basis = pr["source"], pr["basis"]
-            price_matched, estimated = pr["matched"], pr["estimated"]
+            price_matched, estimated, asking = pr["matched"], pr["estimated"], pr.get("asking", False)
         except Exception as e:
             traceback.print_exc()
             comps_source = f"error: {type(e).__name__}"
@@ -439,10 +439,25 @@ async def scout_card(
         "issues": result.get("issues"),
         "economics": economics, "decision": decision,
         "comps_source": comps_source, "comps_basis": comps_basis,
-        "estimated": estimated, "price_matched": price_matched,
+        "estimated": estimated, "asking": asking, "price_matched": price_matched,
         "ask": ask, "shipping": shipping,
         "thumb_b64": result.get("_warped_jpeg_b64"),
     })
+
+
+@app.get("/price-lookup")
+async def price_lookup_endpoint(name: str, card_set: str = "", number: str = "", variant: str = ""):
+    """Diagnostic: run the price feed for an identity (no image/grade) so the eBay/pokemontcg integration
+    can be verified directly. Read-only public price data; reports whether the eBay token resolved."""
+    import price_sources
+    ident = {"name": name, "set": card_set or None, "number": number or None, "variant": variant or None}
+    loop = asyncio.get_event_loop()
+    try:
+        res = await loop.run_in_executor(None, price_sources.lookup, ident)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+    res["ebay_token_ok"] = bool(price_sources._ebay_token())
+    return res
 
 
 @app.post("/feedback")
