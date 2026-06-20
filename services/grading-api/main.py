@@ -465,6 +465,7 @@ async def price_lookup_endpoint(name: str, card_set: str = "", number: str = "",
         res["ebay_asks_raw"] = asks
         res["ebay_asks_sane"] = price_sources._ebay_asks_sane(asks, res["prices"].get("raw")) if asks else None
     res["ppt_token_ok"] = bool(price_sources._ppt_token())   # lookup() above already used PPT if available
+    res["ppt_last"] = dict(price_sources._PPT_LAST)           # why PPT did/didn't return data (status/count)
     return res
 
 

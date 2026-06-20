@@ -292,6 +292,7 @@ PPT_LIMIT = 3                       # cards returned per search; cost = 2 credit
 _PPT_CACHE = {}                     # card_key -> (result|None, expiry_ts)
 _PPT_TTL = 24 * 3600
 _PPT_MISS_TTL = 3600
+_PPT_LAST = {}                      # diagnostic: why the most recent ppt_lookup did/didn't return data
 
 
 def _ppt_grade_price(cell):
@@ -321,10 +322,17 @@ def ppt_lookup(identity):
     try:
         r = requests.get(PPT_CARDS_URL, params={"search": q, "includeEbay": "true", "limit": str(PPT_LIMIT)},
                          headers={"Authorization": f"Bearer {tok}", "Accept": "application/json"}, timeout=12)
+        _PPT_LAST.clear(); _PPT_LAST.update({"q": q, "status": r.status_code})
         if r.status_code != 200:                            # 429 = credits/rate exhausted -> graceful fallback
+            try:
+                _PPT_LAST["body"] = {k: (r.json() or {}).get(k) for k in ("error", "message", "hint")}
+            except Exception:
+                _PPT_LAST["body"] = (r.text or "")[:160]
             return None
         cards = (r.json() or {}).get("data") or []
-    except Exception:
+        _PPT_LAST["count"] = len(cards)
+    except Exception as e:
+        _PPT_LAST.clear(); _PPT_LAST.update({"q": q, "error": type(e).__name__})
         return None
     if not cards:
         _PPT_CACHE[key] = (None, now + _PPT_MISS_TTL)
