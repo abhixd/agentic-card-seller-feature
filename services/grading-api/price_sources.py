@@ -45,7 +45,13 @@ def _raw_from_card(card, variant=None):
     return None, None
 
 
-def pokemontcg_lookup(name, set_name=None, number=None, variant=None, timeout=8.0):
+def _num(s):
+    """'003/127' -> '3' (pokemontcg.io stores numbers unpadded). Returns None if no digits."""
+    m = re.search(r"\d+", str(s or ""))
+    return str(int(m.group())) if m else None
+
+
+def pokemontcg_lookup(name, set_name=None, number=None, variant=None, timeout=10.0):
     """Best-effort RAW market price for an identified card. Returns {raw, source, matched} or None."""
     if not name:
         return None
@@ -53,31 +59,39 @@ def pokemontcg_lookup(name, set_name=None, number=None, variant=None, timeout=8.
     key = os.environ.get("POKEMONTCG_API_KEY")
     if key:
         headers["X-Api-Key"] = key
-    q = [f'name:"{name}"']
-    if number:
-        num = re.split(r"[/ ]", str(number))[0].strip()       # "4/102" -> "4"
-        if num:
-            q.append(f'number:"{num}"')
-    try:
-        r = requests.get(POKETCG_URL,
-                         params={"q": " ".join(q), "pageSize": 20, "orderBy": "-set.releaseDate"},
-                         headers=headers, timeout=timeout)
-        cards = (r.json() or {}).get("data") or []
-    except Exception:
-        return None
+    num = _num(number)
+
+    def _query(q):
+        try:
+            r = requests.get(POKETCG_URL, params={"q": q, "pageSize": 30, "orderBy": "-set.releaseDate"},
+                             headers=headers, timeout=timeout)
+            return (r.json() or {}).get("data") or []
+        except Exception:
+            return []
+
+    cards = _query(f'name:"{name}" number:"{num}"') if num else []
+    if not cards:
+        cards = _query(f'name:"{name}"')                      # fallback: name only (number format varies)
     if not cards:
         return None
 
-    chosen = None
-    if set_name:                                              # prefer a card whose set matches the ID
-        sl = set_name.lower()
-        chosen = next((c for c in cards
-                       if sl in (c.get("set", {}).get("name", "").lower())
-                       or (c.get("set", {}).get("name", "").lower()) in sl), None)
-    chosen = chosen or cards[0]
+    sl = (set_name or "").lower()
+
+    def rank(c):                                              # prefer set match, then number match, then priced
+        cs = (c.get("set", {}).get("name", "") or "").lower()
+        score = 0
+        if sl and (sl in cs or cs in sl):
+            score += 4
+        if num and _num(c.get("number")) == num:
+            score += 2
+        if _raw_from_card(c, variant)[0] is not None:
+            score += 1
+        return score
+
+    chosen = max(cards, key=rank)
     raw, src = _raw_from_card(chosen, variant)
-    if raw is None:                                           # fall back to any priced result
-        for c in cards:
+    if raw is None:                                           # chosen had no price → take any priced result
+        for c in sorted(cards, key=rank, reverse=True):
             raw, src = _raw_from_card(c, variant)
             if raw is not None:
                 chosen = c
