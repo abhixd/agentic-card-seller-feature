@@ -319,32 +319,48 @@ def ppt_lookup(identity):
     if hit and hit[1] > now:
         return hit[0]
 
-    q = " ".join(x for x in [name, st, num] if x)           # include set so the right card surfaces
-    try:
-        r = requests.get(PPT_CARDS_URL, params={"search": q, "includeEbay": "true", "limit": str(PPT_LIMIT)},
-                         headers={"Authorization": f"Bearer {tok}", "Accept": "application/json"}, timeout=12)
-        _PPT_LAST.clear(); _PPT_LAST.update({"q": q, "status": r.status_code})
-        if r.status_code != 200:                            # 429 = credits/rate exhausted -> graceful fallback
-            try:
-                _PPT_LAST["body"] = {k: (r.json() or {}).get(k) for k in ("error", "message", "hint")}
-            except Exception:
-                _PPT_LAST["body"] = (r.text or "")[:160]
-            return None
-        cards = (r.json() or {}).get("data") or []
-        _PPT_LAST["count"] = len(cards)
-    except Exception as e:
-        _PPT_LAST.clear(); _PPT_LAST.update({"q": q, "error": type(e).__name__})
-        return None
-    if not cards:
+    # Multi-tier search: too many ANDed terms can return 0 (e.g. "Charizard VSTAR Brilliant Stars 174"),
+    # while a bare name floods with promos. Try specific→broad, accumulating candidates, until a card whose
+    # number matches appears. Then a number match is REQUIRED to trust PPT (else fall back, never misprice).
+    queries = []
+    for cand in (f"{name} {num}" if num else None, f"{name} {st} {num}" if (st and num) else None,
+                 f"{name} {st}" if st else None, name):
+        cand = (cand or "").strip()
+        if cand and cand not in queries:
+            queries.append(cand)
+
+    sl = (st or "").lower()
+    headers = {"Authorization": f"Bearer {tok}", "Accept": "application/json"}
+    pool, seen, status = [], set(), None
+    for q in queries:
+        try:
+            r = requests.get(PPT_CARDS_URL, params={"search": q, "includeEbay": "true", "limit": str(PPT_LIMIT)},
+                             headers=headers, timeout=12)
+            status = r.status_code
+            _PPT_LAST.clear(); _PPT_LAST.update({"q": q, "status": status, "pool": len(pool)})
+            if status != 200:                               # 429 = credits/rate exhausted -> stop, fall back
+                try:
+                    _PPT_LAST["body"] = {k: (r.json() or {}).get(k) for k in ("error", "message")}
+                except Exception:
+                    pass
+                break
+            for c in ((r.json() or {}).get("data") or []):
+                if c.get("id") not in seen:
+                    seen.add(c.get("id")); pool.append(c)
+            if num and any(_num(c.get("cardNumber")) == num for c in pool):   # confident match -> stop
+                break
+        except Exception as e:
+            _PPT_LAST.clear(); _PPT_LAST.update({"q": q, "error": type(e).__name__})
+            break
+    _PPT_LAST["pool"] = len(pool)
+
+    matches = [c for c in pool if _num(c.get("cardNumber")) == num] if num else pool
+    if not matches:                                          # no confident card -> fall back to eBay/modeled
         _PPT_CACHE[key] = (None, now + _PPT_MISS_TTL)
         return None
 
-    sl = (st or "").lower()
-
-    def rank(c):                                            # number match > set match > has-PSA-data
+    def rank(c):                                            # number already gated; prefer set match + prices
         sc = 0
-        if num and _num(c.get("cardNumber")) == num:
-            sc += 4
         cs = (c.get("setName") or "").lower()
         if sl and (sl in cs or cs in sl):
             sc += 2
@@ -353,7 +369,7 @@ def ppt_lookup(identity):
             sc += 1
         return sc
 
-    chosen = max(cards, key=rank)
+    chosen = max(matches, key=rank)
     sg = (chosen.get("ebay") or {}).get("salesByGrade") or {}
     prices = {"raw": (chosen.get("prices") or {}).get("market"),
               "psa8": _ppt_grade_price(sg.get("psa8")),
