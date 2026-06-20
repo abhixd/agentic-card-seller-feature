@@ -38,10 +38,47 @@ TAU = 0.012          # "tight" threshold: |edge - GT| / card_dim
 CENTER = 0.034       # expected inner-border inset (fraction of card dim) — a soft prior, a FEATURE not a rule
 SIDES = "LRTB"
 
-# coherence+well and variance+well configs (the two detectors we validated). Kept here so a future
-# detector tweak is a one-line change.
-COH_KW = dict(band_w=6.0, band_center=0.035, band_tol=0.018, band_fall=0.012)
-VAR_KW = dict(band_w=0.4, band_center=0.05, band_width=0.015, max_tilt_px=14)
+# coherence+well and variance+well configs (the two detectors we validated). These are the DEFAULTS;
+# the live values sit in _ACTIVE and are OVERRIDABLE at runtime (Phase 1 tunes them; a deploy/startup
+# applies the tuned set from the checkpoint config). band_center = "where we expect the inner edge",
+# the strongest prior — the main lever Phase 1 moves.
+DEFAULT_COH_KW = dict(band_w=6.0, band_center=0.035, band_tol=0.018, band_fall=0.012)
+DEFAULT_VAR_KW = dict(band_w=0.4, band_center=0.05, band_width=0.015, max_tilt_px=14)
+DEFAULT_PEAK   = dict(k=5, lo=0.006, dmax=0.12)
+_ACTIVE = {"coh": dict(DEFAULT_COH_KW), "var": dict(DEFAULT_VAR_KW), "peak": dict(DEFAULT_PEAK)}
+
+
+def get_detector_params():
+    """A deep copy of the live detector settings (for snapshotting / Phase-1 trials)."""
+    return {k: dict(v) for k, v in _ACTIVE.items()}
+
+
+def set_detector_params(params):
+    """Atomically swap the LIVE detector settings (the grading-api calls this on deploy/startup so
+    production candidate generation uses the checkpointed settings). Rebinds _ACTIVE as a whole so a
+    concurrent grade reading it sees either the old or the new dict — never a half-updated one. The
+    trainer does NOT call this during its search; it passes trial settings explicitly to candidates()."""
+    global _ACTIVE
+    if not params:
+        return
+    nxt = {k: dict(v) for k, v in _ACTIVE.items()}
+    for k in ("coh", "var", "peak"):
+        sub = params.get(k)
+        if isinstance(sub, dict):
+            nxt[k].update({kk: vv for kk, vv in sub.items() if vv is not None})
+    _ACTIVE = nxt
+
+
+def reset_detector_params():
+    global _ACTIVE
+    _ACTIVE = {"coh": dict(DEFAULT_COH_KW), "var": dict(DEFAULT_VAR_KW), "peak": dict(DEFAULT_PEAK)}
+
+
+def apply_config(config):
+    """Apply a checkpoint config_snapshot()'s detector settings to the live detectors (used by the
+    grading-api when it loads the newest stored model so production matches the deployed config)."""
+    if isinstance(config, dict):
+        set_detector_params({"coh": config.get("coh_kw"), "var": config.get("var_kw"), "peak": config.get("peak")})
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -115,23 +152,23 @@ def generator(name):
     return deco
 
 @detector("coh")
-def _det_coh(ctx):
+def _det_coh(ctx, params=None):
     try:
-        L, T, R, B = IF.find_inner_frame(ctx["masked"], ctx["cb_frac"], **COH_KW)["frame_px"]
+        L, T, R, B = IF.find_inner_frame(ctx["masked"], ctx["cb_frac"], **(params or _ACTIVE)["coh"])["frame_px"]
         return {"L": L, "T": T, "R": R, "B": B}
     except Exception:
         return None
 
 @detector("var")
-def _det_var(ctx):
+def _det_var(ctx, params=None):
     try:
-        c = np.asarray(VAR.find_inner_frame_var(ctx["masked"], ctx["cb_frac"], **VAR_KW)["corners"], float)
+        c = np.asarray(VAR.find_inner_frame_var(ctx["masked"], ctx["cb_frac"], **(params or _ACTIVE)["var"])["corners"], float)
         return {"L": (c[0,0]+c[3,0])/2, "R": (c[1,0]+c[2,0])/2, "T": (c[0,1]+c[1,1])/2, "B": (c[3,1]+c[2,1])/2}
     except Exception:
         return None
 
 @detector("dp")
-def _det_dp(ctx):
+def _det_dp(ctx, params=None):
     try:
         L, T, R, B = DP.find_inner_frame_dp(ctx["warped"], ctx["cb_frac"])["frame_px"]
         return {"L": L, "T": T, "R": R, "B": B}
@@ -262,9 +299,14 @@ def _f_content_asym(ctx, side, pos):
 
 
 @generator("peak")
-def _gen_peaks(ctx, k=5, lo=0.006, dmax=0.12):
+def _gen_peaks(ctx, params=None, k=None, lo=None, dmax=None):
     """Top-K perpendicular-gradient peaks per side, over the inset search range — extra candidate lines
-    so the true edge is more likely PRESENT (especially the bottom, the weakest-recall side)."""
+    so the true edge is more likely PRESENT (especially the bottom, the weakest-recall side).
+    k/lo/dmax default to the passed settings (Phase-1 trials) or the live _ACTIVE['peak']."""
+    p = (params or _ACTIVE)["peak"]
+    k = p["k"] if k is None else k
+    lo = p["lo"] if lo is None else lo
+    dmax = p["dmax"] if dmax is None else dmax
     out = {s: [] for s in SIDES}
     x1, y1, x2, y2 = [int(v) for v in ctx["cb"]]; cw, ch = x2 - x1, y2 - y1
     for s in SIDES:
@@ -289,32 +331,57 @@ SOURCES = list(DETECTORS.keys()) + list(GENERATORS.keys())            # coh, var
 FEATURE_NAMES = BASE_NAMES + [f"is_{s}" for s in SOURCES] + ["consensus_dist", "n_agree", "out_rank", "grad_rank"]
 
 
-def config_snapshot():
-    """Revertible snapshot of the params that define the selector's behaviour — stored alongside each
-    deployed model so a checkpoint records exactly how it was produced. `n_features` lets a revert
-    detect an incompatible model (feature set changed in code) before swapping it in."""
+def config_snapshot(params=None):
+    """Revertible snapshot of the settings that define the selector's behaviour — stored alongside each
+    deployed model so a checkpoint records exactly how it was produced. Pass `params` to snapshot a
+    specific detector-settings dict (Phase-1 result) without touching the live ones; defaults to live.
+    `n_features` lets a revert detect an incompatible model (feature set changed in code) before swap."""
+    a = params or _ACTIVE
     return {
         "model": "logreg", "tau": TAU, "center": CENTER,
         "sources": list(SOURCES), "n_features": len(FEATURE_NAMES), "features": list(FEATURE_NAMES),
-        "coh_kw": COH_KW, "var_kw": VAR_KW, "peak": {"k": 5, "lo": 0.006, "dmax": 0.12},
+        "coh_kw": dict(a["coh"]), "var_kw": dict(a["var"]), "peak": dict(a["peak"]),
     }
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # CANDIDATES + DATASET
 # ────────────────────────────────────────────────────────────────────────────
-def candidates(ctx):
-    """{side: [(source, pos_px, feature_vector)]} — one line per DETECTOR + K lines per GENERATOR."""
-    raw = {s: [] for s in SIDES}                              # (source, pos)
+def candidate_positions(ctx, params=None):
+    """{side: [(source, pos_px)]} — detectors + generators only, NO feature extraction. Cheap enough to
+    sweep across detector settings in the Phase-1 search (which only needs candidate positions vs GT).
+    `params` overrides the live detector settings WITHOUT mutating them (safe under concurrent grading)."""
+    raw = {s: [] for s in SIDES}
     for dname, dfn in DETECTORS.items():
-        edges = dfn(ctx)
+        edges = dfn(ctx, params)
         if edges is None:
             continue
         for s in SIDES:
             raw[s].append((dname, edges[s]))
     for gname, gfn in GENERATORS.items():
         try:
-            gen = gfn(ctx)
+            gen = gfn(ctx, params)
+        except Exception:
+            gen = {}
+        for s in SIDES:
+            for pos in gen.get(s, []):
+                raw[s].append((gname, pos))
+    return raw
+
+
+def candidates(ctx, params=None):
+    """{side: [(source, pos_px, feature_vector)]} — one line per DETECTOR + K lines per GENERATOR.
+    `params` overrides the live detector settings without mutating them (Phase-1 / Phase-2 recompute)."""
+    raw = {s: [] for s in SIDES}                              # (source, pos)
+    for dname, dfn in DETECTORS.items():
+        edges = dfn(ctx, params)
+        if edges is None:
+            continue
+        for s in SIDES:
+            raw[s].append((dname, edges[s]))
+    for gname, gfn in GENERATORS.items():
+        try:
+            gen = gfn(ctx, params)
         except Exception:
             gen = {}
         for s in SIDES:

@@ -78,6 +78,11 @@ async def lifespan(app: FastAPI):
             print(f"[startup] WARNING: MLP engine init failed ({type(e).__name__}: {e}); "
                   "/analyze-listing disabled, /grade still works.")
             engine = None
+    try:                                  # warm the per-side selector → applies the deployed detector settings at boot
+        import cv_grader
+        cv_grader._perside_selector()
+    except Exception as e:
+        print(f"[startup] per-side warm skipped: {type(e).__name__}: {e}")
     yield
     engine = None
 
@@ -127,8 +132,9 @@ async def admin_train(req: Request):
     corrections = body.get("corrections") or []
     deploy = bool(body.get("deploy"))
     from trainer import retrain
-    try:
-        r = retrain(corrections)
+    import asyncio
+    try:                                   # offload to a worker thread — the Phase-1 search must not block
+        r = await asyncio.get_event_loop().run_in_executor(None, retrain, corrections)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"train failed: {type(e).__name__}: {e}")
     sel = r.pop("selector", None)  # the fitted model isn't JSON-serialisable
@@ -136,7 +142,7 @@ async def admin_train(req: Request):
     if deploy and sel is not None:
         try:
             import cv_grader
-            cv_grader.swap_perside_selector(sel)   # hot-swap — live for subsequent grades (in-memory)
+            cv_grader.swap_perside_selector(sel, r.get("config"))   # model + Phase-1 detector settings go live together
             deployed = True
             import joblib, io, base64
             buf = io.BytesIO(); joblib.dump({"model": sel.model}, buf)
@@ -144,9 +150,7 @@ async def admin_train(req: Request):
         except Exception as e:
             r["deploy_error"] = f"{type(e).__name__}: {e}"
     r["deployed"] = deployed
-    import per_side_selector as _PS
-    r["config"] = _PS.config_snapshot()   # checkpoint the config alongside the model
-    return r
+    return r   # r["config"] already carries the chosen detector settings (from retrain)
 
 
 @app.post("/admin/reload-model")
@@ -158,12 +162,12 @@ async def admin_reload_model(req: Request):
         raise HTTPException(status_code=401, detail="bad admin token")
     try:
         import model_store, joblib, io, per_side_selector as PS, cv_grader
-        raw = model_store.latest_model_bytes()
-        if not raw:
+        art = model_store.latest_artifact()
+        if not art or not art.get("model"):
             raise HTTPException(status_code=404, detail="no stored model to reload")
-        blob = joblib.load(io.BytesIO(raw))
+        blob = joblib.load(io.BytesIO(art["model"]))
         sel = PS.PerSideSelector(); sel.model = blob["model"]
-        cv_grader.swap_perside_selector(sel)
+        cv_grader.swap_perside_selector(sel, art.get("config"))   # restore that checkpoint's detector settings too
         return {"reloaded": True}
     except HTTPException:
         raise
@@ -182,6 +186,7 @@ async def admin_reset_baseline(req: Request):
         import joblib, io, base64, cv_grader, per_side_selector as PS
         blob = cv_grader.baked_in_model_blob()
         sel = PS.PerSideSelector(); sel.model = blob["model"]
+        PS.reset_detector_params()                          # baked-in baseline → default detector settings
         cv_grader.swap_perside_selector(sel)
         buf = io.BytesIO(); joblib.dump(blob, buf)
         return {"reset": True, "model_b64": base64.b64encode(buf.getvalue()).decode(), "config": PS.config_snapshot()}

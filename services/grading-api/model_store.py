@@ -15,13 +15,14 @@ def _conf():
     return (url, key) if (url and key) else (None, None)
 
 
-def latest_model_bytes(kind: str = "perside_centering"):
-    """Newest stored model as raw joblib bytes (a dict {"model": pipeline}), or None."""
+def latest_artifact(kind: str = "perside_centering"):
+    """Newest stored artifact as {"model": joblib_bytes ({"model": pipeline}), "config": dict|None}, or
+    None. The config carries the deployed detector settings so the grader can match them on load."""
     url, key = _conf()
     if not url:
         return None
     q = (f"{url.rstrip('/')}/rest/v1/model_artifacts"
-         f"?kind=eq.{kind}&select=model_b64&order=created_at.desc&limit=1")
+         f"?kind=eq.{kind}&select=model_b64,config&order=created_at.desc&limit=1")
     req = urllib.request.Request(q, headers={"apikey": key, "Authorization": f"Bearer {key}"})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
@@ -31,6 +32,13 @@ def latest_model_bytes(kind: str = "perside_centering"):
     if not rows or not rows[0].get("model_b64"):
         return None
     try:
-        return base64.b64decode(rows[0]["model_b64"])
+        model = base64.b64decode(rows[0]["model_b64"])
     except Exception:
         return None
+    return {"model": model, "config": rows[0].get("config")}
+
+
+def latest_model_bytes(kind: str = "perside_centering"):
+    """Newest stored model as raw joblib bytes, or None. (Thin wrapper over latest_artifact.)"""
+    a = latest_artifact(kind)
+    return a["model"] if a else None

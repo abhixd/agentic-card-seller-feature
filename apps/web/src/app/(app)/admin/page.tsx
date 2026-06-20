@@ -4,6 +4,17 @@ import { useCallback, useEffect, useState } from 'react'
 
 type Probe = { key: string; name: string; host: string | null; ok: boolean; status: string; ms: number | null }
 type SideMap = Record<string, number | null>
+type Phase1 = {
+  adopted: boolean
+  saturated: boolean
+  coverage_before: number | null
+  coverage_after: number | null
+  coverage_delta: number | null
+  per_side_before?: SideMap
+  per_side_after?: SideMap
+  changed?: Record<string, Record<string, number>>
+  note?: string | null
+}
 type TrainResult = {
   n_corrections: number
   loo_before: number | null
@@ -11,6 +22,7 @@ type TrainResult = {
   delta: number | null
   per_side?: SideMap
   per_class?: SideMap
+  phase1?: Phase1
   deployed?: boolean
   persisted?: boolean
 }
@@ -217,6 +229,35 @@ export default function AdminPage() {
                     ))}
                   </>
                 )}
+              </div>
+            )}
+            {trainResult.phase1 && (
+              <div className="mt-2 rounded-md border border-border/60 bg-muted/30 p-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-medium">Phase 1 · candidate coverage</span>
+                  <span className={`rounded px-1.5 py-0.5 text-[10px] ${
+                    trainResult.phase1.adopted ? 'bg-emerald-100 text-emerald-700'
+                      : trainResult.phase1.saturated ? 'bg-muted text-muted-foreground'
+                      : 'bg-amber-100 text-amber-700'}`}>
+                    {trainResult.phase1.adopted ? 'detectors tuned' : trainResult.phase1.saturated ? 'saturated' : 'no change'}
+                  </span>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <span className="text-muted-foreground">coverage</span>
+                  <span className="rounded bg-muted/50 px-1.5 py-0.5 tabular-nums">
+                    {pct(trainResult.phase1.coverage_before)} → {pct(trainResult.phase1.coverage_after)}
+                  </span>
+                  {trainResult.phase1.per_side_after && ['L', 'R', 'T', 'B'].map((s) => (
+                    <span key={s} className="rounded bg-muted/50 px-1.5 py-0.5 tabular-nums">{s} {pct(trainResult.phase1!.per_side_after![s])}</span>
+                  ))}
+                </div>
+                {trainResult.phase1.adopted && trainResult.phase1.changed && (
+                  <div className="mt-1 text-[11px] text-emerald-700">
+                    tuned: {Object.entries(trainResult.phase1.changed).flatMap(([d, kv]) =>
+                      Object.entries(kv).map(([k, v]) => `${d}.${k}=${v}`)).join(', ')}
+                  </div>
+                )}
+                {trainResult.phase1.note && <div className="mt-1 text-[11px] text-muted-foreground">{trainResult.phase1.note}</div>}
               </div>
             )}
           </>

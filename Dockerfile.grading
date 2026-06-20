@@ -33,7 +33,7 @@ COPY services/grading-api/main.py services/grading-api/inference.py services/gra
      services/grading-api/card_segmenter.py \
      services/grading-api/cv_grader.py services/grading-api/nonvlm_cv.py services/grading-api/inner_frame.py \
      services/grading-api/per_side_selector.py services/grading-api/inner_frame_var.py services/grading-api/inner_frame_dp.py \
-     services/grading-api/trainer.py \
+     services/grading-api/trainer.py services/grading-api/model_store.py \
      services/grading-api/config.py services/grading-api/centering_config.yaml \
      services/grading-api/grade_model.json services/grading-api/feedback_to_yolo.py ./
 

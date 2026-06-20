@@ -3,7 +3,8 @@ import { requireAdmin } from '@/lib/auth/admin'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
-export const maxDuration = 60 // the server-side LOO retrain takes ~15–30s
+export const maxDuration = 60 // retrain is offloaded on the grading-api; Phase-1 early-exits, so ~15s.
+// NOTE: if coverage gaps ever make a real Phase-1 search run (~90s), this should become an async job.
 
 /**
  * POST /api/admin/train — launch a server-side retrain of the per-side centering selector.

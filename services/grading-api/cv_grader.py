@@ -33,16 +33,19 @@ def _perside_selector():
         _perside_cache["sel"] = None
         try:
             import per_side_selector as PS, io
-            blob = None
-            try:                                              # durable model from Supabase model_artifacts
+            blob = None; config = None
+            try:                                              # durable model + config from Supabase model_artifacts
                 import model_store
-                raw = model_store.latest_model_bytes()
-                if raw:
-                    blob = joblib.load(io.BytesIO(raw))
+                art = model_store.latest_artifact()
+                if art and art.get("model"):
+                    blob = joblib.load(io.BytesIO(art["model"])); config = art.get("config")
             except Exception:
                 blob = None
-            if blob is None:                                  # fallback: baked-in model
+            if blob is None:                                  # fallback: baked-in model → default detector settings
                 blob = joblib.load(os.path.join(_HERE, "perside_lr.joblib"))
+                PS.reset_detector_params()
+            else:                                             # match the deployed model's detector settings
+                PS.apply_config(config)
             sel = PS.PerSideSelector(); sel.model = blob["model"]
             _perside_cache["sel"] = sel
         except Exception:
@@ -50,10 +53,16 @@ def _perside_selector():
     return _perside_cache["sel"]
 
 
-def swap_perside_selector(sel):
-    """P2b hot-swap — replace the live per-side selector in memory. The grading-api runs a single
-    uvicorn worker, so this takes effect for every subsequent grade immediately. NOT durable: a
-    restart/redeploy reverts to the baked-in perside_lr.joblib (durable persistence is the next step)."""
+def swap_perside_selector(sel, config=None):
+    """Hot-swap the live per-side selector in memory (single uvicorn worker → effective for every
+    subsequent grade immediately). Pass `config` to also apply that checkpoint's detector settings so
+    Phase-1-tuned settings go live with the model. Durable across restarts via model_artifacts."""
+    if config is not None:
+        try:
+            import per_side_selector as PS
+            PS.apply_config(config)
+        except Exception:
+            pass
     _perside_cache["sel"] = sel
 
 
