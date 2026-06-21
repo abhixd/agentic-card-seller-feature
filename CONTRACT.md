@@ -3,6 +3,9 @@
 This repo is developed as **two independent streams** that meet only at one boundary — the grading
 service's HTTP contract. Either can move on its own machine without waiting on the other.
 
+> **Starting the product stream on machine A?** Follow the step-by-step runbook in
+> [`docs/parallel-workstreams.md`](docs/parallel-workstreams.md). This file is the reference for the rules.
+
 | Stream | Owns | Machine | Branches | Deploys to |
 |---|---|---|---|---|
 | **product** | `apps/web`, `apps/extension`, `packages/*` (except the contract source) | A | `product/*` | Vercel |
