@@ -1,0 +1,21 @@
+{
+  "name": "@acs/grading-contract",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Stable contract (TypeScript types + client) for the grading service /grade endpoint — the boundary between the product (apps/web) and grading (services/grading-api) work streams.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./schema/grade-response.schema.json"
+  },
+  "files": ["src", "schema"],
+  "scripts": {
+    "generate": "json-schema-to-typescript schema/grade-response.schema.json -o src/types.generated.ts || echo 'optional: npm i -D json-schema-to-typescript to regenerate, then diff vs src/types.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  }
+}

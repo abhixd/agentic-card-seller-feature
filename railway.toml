@@ -2,6 +2,13 @@
 # Dockerfile.grading COPYs from services/grading-api/ — mirrors the proven pre-monorepo setup.
 [build]
 dockerfilePath = "Dockerfile.grading"
+# Path-scoped deploys: only rebuild grading when GRADING files change, so a product-only merge to main
+# never redeploys this service (and turbo-ignore does the same for the Vercel side). See /CONTRACT.md.
+watchPatterns = [
+  "services/grading-api/**",
+  "Dockerfile.grading",
+  "railway.toml",
+]
 
 [deploy]
 healthcheckPath    = "/health"

@@ -1,0 +1,266 @@
+{
+  "$defs": {
+    "Centering": {
+      "additionalProperties": true,
+      "properties": {
+        "score": {
+          "title": "Score",
+          "type": "number"
+        },
+        "left_right": {
+          "examples": [
+            "49/51"
+          ],
+          "title": "Left Right",
+          "type": "string"
+        },
+        "top_bottom": {
+          "examples": [
+            "60/40"
+          ],
+          "title": "Top Bottom",
+          "type": "string"
+        },
+        "reliable": {
+          "title": "Reliable",
+          "type": "boolean"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
+        },
+        "content_region": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContentRegion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        }
+      },
+      "required": [
+        "score",
+        "left_right",
+        "top_bottom",
+        "reliable"
+      ],
+      "title": "Centering",
+      "type": "object"
+    },
+    "ContentRegion": {
+      "description": "Inner-content bounds as fractions of the warped card (0..1).",
+      "properties": {
+        "x1": {
+          "title": "X1",
+          "type": "number"
+        },
+        "y1": {
+          "title": "Y1",
+          "type": "number"
+        },
+        "x2": {
+          "title": "X2",
+          "type": "number"
+        },
+        "y2": {
+          "title": "Y2",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x1",
+        "y1",
+        "x2",
+        "y2"
+      ],
+      "title": "ContentRegion",
+      "type": "object"
+    },
+    "Issues": {
+      "properties": {
+        "corners": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Corners",
+          "type": "array"
+        },
+        "edges": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Edges",
+          "type": "array"
+        },
+        "surface": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Surface",
+          "type": "array"
+        },
+        "centering": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Centering",
+          "type": "array"
+        }
+      },
+      "title": "Issues",
+      "type": "object"
+    },
+    "Pillar": {
+      "description": "Corners / edges / surface.",
+      "properties": {
+        "score": {
+          "title": "Score",
+          "type": "number"
+        },
+        "worst_severity": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Worst Severity"
+        }
+      },
+      "required": [
+        "score"
+      ],
+      "title": "Pillar",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "properties": {
+    "overall_score": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Overall Score"
+    },
+    "psa_equivalent": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Psa Equivalent"
+    },
+    "summary": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Summary"
+    },
+    "centering": {
+      "$ref": "#/$defs/Centering"
+    },
+    "corners": {
+      "$ref": "#/$defs/Pillar"
+    },
+    "edges": {
+      "$ref": "#/$defs/Pillar"
+    },
+    "surface": {
+      "$ref": "#/$defs/Pillar"
+    },
+    "issues": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Issues"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "confidence": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Confidence"
+    },
+    "economics": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Economics"
+    },
+    "decision": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Decision"
+    }
+  },
+  "required": [
+    "centering",
+    "corners",
+    "edges",
+    "surface"
+  ],
+  "title": "GradeResponse",
+  "type": "object",
+  "$id": "https://acs/grading-contract/grade-response.schema.json",
+  "x-contract-version": "1.0.0"
+}
