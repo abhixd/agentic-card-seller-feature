@@ -330,6 +330,15 @@ SOURCES = list(DETECTORS.keys()) + list(GENERATORS.keys())            # coh, var
 # feature vector = per-candidate base features + source one-hot + cross-candidate (consensus/rank) features.
 FEATURE_NAMES = BASE_NAMES + [f"is_{s}" for s in SOURCES] + ["consensus_dist", "n_agree", "out_rank", "grad_rank"]
 
+# GRADIENT-OVERRIDE SAFETY NET — see PerSideSelector.select(). If some candidate's perpendicular gradient
+# is >= this multiple of the classifier's pick, take it: a candidate that sharp is almost certainly the real
+# edge, even when the classifier vetoed it on atypical priors (border_asym/inset). Tuned CONSERVATIVELY:
+# at x5 it fired on exactly 1 of 204 per-side picks (the scraped_004 bottom veto, an 8.3x edge) and lifted
+# LOO tight-rate ALL 92.2->94.1%, HARD 88.5->92.3% with no collateral. Lower factors over-fire and regress
+# (x3 -> 82%, x1.5 -> 33%). Set GRAD_OVERRIDE_FACTOR = None to disable.
+GRAD_OVERRIDE_FACTOR = 5.0
+_GRAD_IDX = BASE_NAMES.index("grad_strength")
+
 
 def config_snapshot(params=None):
     """Revertible snapshot of the settings that define the selector's behaviour — stored alongside each
@@ -493,11 +502,16 @@ class PerSideSelector:
         X = np.array(feat_vectors, float)
         return self.model.predict_proba(X)[:, 1]
 
-    def select(self, cand, default_det=None, margin=0.0):
+    def select(self, cand, default_det=None, margin=0.0, grad_override=GRAD_OVERRIDE_FACTOR):
         """cand = candidates(ctx); returns {side: (det, pos, p_good)}.
         Picks argmax P(good) per side. SAFETY GATE: if default_det is set, only override the default
         when the best candidate's P exceeds the default's P by >= margin — otherwise keep the default.
-        With default_det='var' this guarantees the result is never worse than the variance baseline."""
+        With default_det='var' this guarantees the result is never worse than the variance baseline.
+        GRADIENT OVERRIDE (grad_override, default GRAD_OVERRIDE_FACTOR): after the pick, if some candidate's
+        perpendicular gradient is >= grad_override x the picked candidate's, take it instead — insurance for
+        the rare case where the classifier vetoes an overwhelmingly sharp true edge (see GRAD_OVERRIDE_FACTOR).
+        The returned p_good stays the classifier's score for the chosen line, so a fired override reads as
+        lower confidence (an honest classifier-vs-gradient disagreement). Pass None to disable."""
         chosen = {}
         for s in SIDES:
             if not cand[s]:
@@ -508,6 +522,11 @@ class PerSideSelector:
                 di = next((k for k, (dn, _, _) in enumerate(cand[s]) if dn == default_det), None)
                 if di is not None and cand[s][i][0] != default_det and ps[i] - ps[di] < margin:
                     i = di
+            if grad_override:
+                grads = [fv[_GRAD_IDX] for _, _, fv in cand[s]]
+                ig = int(np.argmax(grads))
+                if ig != i and grads[ig] > grad_override * grads[i]:
+                    i = ig
             dname, pos, _ = cand[s][i]
             chosen[s] = (dname, pos, float(ps[i]))
         return chosen
