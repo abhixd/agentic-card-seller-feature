@@ -92,10 +92,15 @@ def _perside_inner_frame(warped_cen, cb_center):
         if min(iL, iR, iT, iB) <= 0:                           # geometric sanity -> fall back
             return None
         lr = iL / (iL + iR) * 100.0; tb = iT / (iT + iB) * 100.0
-        conf = float(np.mean([chosen[s][2] for s in "LRTB"]))
+        ps = [chosen[s][2] for s in "LRTB"]
+        conf = float(np.mean(ps))
+        # centering CONFIDENCE: the MIN per-side P (the weakest side gates trust). Validated as the only
+        # signal that tracks centering error (Spearman -0.67 vs |detected-GT|); image contrast / border-
+        # thinness do NOT predict error. Graded 0..1; the confidently-wrong full-art tail is the residual.
+        confidence = float(min(ps))
         return {"left_right": f"{int(round(lr))}/{100 - int(round(lr))}",
                 "top_bottom": f"{int(round(tb))}/{100 - int(round(tb))}",
-                "reliable": bool(conf >= 0.5),
+                "reliable": bool(conf >= 0.5), "confidence": round(confidence, 3),
                 "frame_px": (int(L), int(T), int(R), int(B)),
                 "cb_px": (x1, y1, x2, y2), "_source": "perside"}
     except Exception:
@@ -265,6 +270,7 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, **_ign
     result = {
         "centering": {"score": cen_score, "left_right": lr, "top_bottom": tb,
                       "content_region": content_region, "reliable": bool(inn["reliable"]),
+                      "confidence": inn.get("confidence"),   # graded 0..1 (perside only; None on coherentframe fallback)
                       "notes": cen_note, "_source": inn.get("_source", "coherentframe")},
         "corners": {"score": corners_s, "worst_severity": corners_w},
         "edges":   {"score": edges_s,   "worst_severity": edges_w},
