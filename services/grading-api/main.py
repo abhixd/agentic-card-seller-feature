@@ -448,6 +448,7 @@ async def scout_card(
         "price_confidence": price_confidence, "comps_detail": price_detail,
         "ask": ask, "shipping": shipping,
         "thumb_b64": result.get("_warped_jpeg_b64"),
+        "pillar_visuals": result.get("pillar_visuals"),   # per-pillar overlays for click-to-inspect
     })
 
 

@@ -20,8 +20,25 @@ export interface CenteringResult {
   left_right: string      // e.g. "55/45"
   top_bottom: string
   reliable?: boolean
+  confidence?: number     // 0..1 graded reliability (min per-side P)
   content_region?: CenteringBox   // inner printed-border rect, normalized to the warped image
   notes?: string
+}
+
+/** Per-pillar overlay images (base64 jpeg) for click-to-inspect popups (contract v1.1.0). */
+export interface PillarVisuals {
+  centering?: string | null
+  edges?: string | null
+  surface?: string | null
+  corners?: Partial<Record<'TL' | 'TR' | 'BR' | 'BL', string>> | null
+}
+
+/** High-res zoomed defect close-ups (contract v1.2.0) — present only when /grade is called with ?zoom=1.
+ * Clean crops (no overlay) so the buyer judges the actual pixels; `flagged` is an advisory hint. */
+export interface PillarZooms {
+  edges?: Record<string, { crop_b64: string; flagged?: string[] }>   // keyed by side: top|right|bottom|left
+  surface?: { scratches?: { crop_b64: string; count?: number } }
+  corners?: Partial<Record<'TL' | 'TR' | 'BR' | 'BL', string>> | null
 }
 
 export interface GradeResult {
@@ -40,5 +57,43 @@ export interface GradeResult {
   _warped_jpeg_b64?: string
   _card_boundary?: number[]      // outer card-edge rect [x1,y1,x2,y2], normalized to the warped image
   _border_type?: string          // detected printed-border style (e.g. "dragon", "yellow")
+  pillar_visuals?: PillarVisuals  // per-pillar overlay images for click-to-inspect popups
+  pillar_zooms?: PillarZooms      // high-res defect close-ups (present only with ?zoom=1)
   [key: string]: unknown
+}
+
+/**
+ * Card identity from vision-ID (grading service identify.py, surfaced via /scout).
+ * `name/set/number/year/variant/language/title/confidence` come straight from the vision read;
+ * `rarity` is enriched from comps (pokemontcg/PPT). All fields nullable — the card may be unreadable.
+ */
+export interface CardIdentity {
+  name?: string | null
+  set?: string | null
+  number?: string | null
+  year?: number | null
+  variant?: string | null
+  language?: string | null
+  title?: string | null
+  rarity?: string | null
+  confidence?: number | null     // 0..1 identification confidence
+  estimated?: boolean
+}
+
+/** Market/comps detail for the card profile (from the /scout `comps_detail` field). */
+export interface CardComps {
+  card?: { name?: string; setName?: string; cardNumber?: string; rarity?: string; tcgPlayerUrl?: string; imageCdnUrl?: string }
+  raw?: { market?: number; low?: number; sellers?: number; lastUpdated?: string }
+  grades?: Record<string, {
+    count?: number; medianPrice?: number; marketPrice7Day?: number
+    minPrice?: number; maxPrice?: number; marketTrend?: string
+    smartPrice?: number; smartConfidence?: string
+  }>
+}
+
+/** Everything the clickable card profile popup shows — identity + comps + a card thumbnail. */
+export interface CardProfile {
+  identity: CardIdentity
+  comps?: CardComps | null
+  thumb_b64?: string | null      // warped-card thumbnail (raw base64, no `data:` prefix)
 }
