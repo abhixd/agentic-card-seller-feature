@@ -294,6 +294,7 @@ async def grade_card_endpoint(
     title:    str   = Form(""),
     price:    float = Form(0.0),
     shipping: float = Form(0.0),
+    zoom:     int   = 0,          # query param: ?zoom=1 → attach high-res per-defect close-ups (pillar_zooms)
 ):
     """
     Detailed PSA grading via YOLO OBB detection + Claude vision.
@@ -316,7 +317,7 @@ async def grade_card_endpoint(
     aggregator, grade_comps = _get_grade_mods()
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, grader.detect_and_grade, img_bgr, api_key)
+        result = await loop.run_in_executor(None, grader.detect_and_grade, img_bgr, api_key, bool(zoom))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:

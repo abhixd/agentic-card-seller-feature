@@ -1195,11 +1195,12 @@ def _detect_seg(img_bgr: np.ndarray, api_key: str = None):
     }
 
 
-def detect_and_grade(img_bgr: np.ndarray, api_key: str = None) -> dict:
+def detect_and_grade(img_bgr: np.ndarray, api_key: str = None, zoom: bool = False) -> dict:
     """
     Full pipeline: detect card -> warp -> Claude grading.
 
     Detector chosen by CARD_DETECTOR env ("yolo" | "seg" | "seg_then_yolo").
+    `zoom` (CV backend only) adds high-res per-defect close-ups under `pillar_zooms`.
     Returns grade dict. Raises ValueError if no card detected.
     """
     if CARD_DETECTOR == "seg":
@@ -1226,7 +1227,7 @@ def detect_and_grade(img_bgr: np.ndarray, api_key: str = None) -> dict:
     else:
         import cv_grader   # lazy (cv_grader imports grader); CV is the default backend
         result = cv_grader.grade_card_cv(img_bgr, quad_raw=quad_raw,
-                                         quad_padded=quad_padded, contour=contour)
+                                         quad_padded=quad_padded, contour=contour, zoom=zoom)
     result.update(meta)
     result["_quad_raw"]    = quad_raw.tolist()
     result["_quad_padded"] = quad_padded.tolist()

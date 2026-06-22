@@ -241,7 +241,83 @@ def _viz_edges(warped, raw_edges):
     return grader.encode_image(np.vstack(strips))["data"] if strips else None
 
 
-def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, **_ignore) -> dict:
+ZOOM_WARP_SIZE = (1260, 1760)   # 2x the feature warp (630x880) → crisp defect close-ups for the buyer
+
+
+def _edge_defects_flagged(v, min_frac=0.004):
+    """Edge defects (whitening/nick/chip/fraying) the detector flagged over MORE than min_frac of the
+    strip — a speckle filter so a clean edge isn't labelled with all four. Advisory only; the buyer
+    judges from the clean high-res crop."""
+    out = []
+    for key in _EDGE_OVL:
+        m = v.get(key)
+        if m is not None and m.size and int(np.count_nonzero(m)) / float(m.size) > min_frac:
+            out.append(key.replace("_mask", ""))
+    return out
+
+
+def extract_pillar_zooms(img_bgr, quad_padded, raw, corner_crops_b64):
+    """High-resolution zoomed close-ups of detected problem areas, so a buyer can verify defects
+    before purchase. Crops from a 2x warp (ZOOM_WARP_SIZE) using the SAME defect locations the CV
+    detectors already produce — it mirrors the shipped _viz_edges / _viz_surface decoding (no
+    inverse-perspective, so no new coordinate risk). Returns:
+        {edges:{side:{crop_b64,defects[]}}, surface:{scratches:{crop_b64,count}}, corners:{TL..BL:b64}}
+    Every section is independent + best-effort; a failure in one never drops the others."""
+    out = {}
+    if corner_crops_b64:                          # the 800px source corner crops are already high-res zooms
+        out["corners"] = corner_crops_b64
+    if quad_padded is None:
+        return out
+    ZW, ZH = ZOOM_WARP_SIZE
+    try:
+        hw = grader._warp_card(img_bgr, quad_padded, out_w=ZW, out_h=ZH)
+    except Exception:
+        return out
+    sx, sy = ZW / N.LEGACY_WARP_SIZE[0], ZH / N.LEGACY_WARP_SIZE[1]   # 630x880 → 1260x1760 (=2x)
+
+    # EDGES — a clean, crisp high-res strip per side. All 4 are "potential problem areas" the buyer
+    # should inspect, so we always emit them; the crop is UN-annotated so the buyer judges the actual
+    # pixels (whitening is what they came to verify). `flagged` is an advisory list of what our scan
+    # thinks it saw. Geometry mirrors _viz_edges (rotate by k, corner-exclude ce), scaled to the 2x warp.
+    edges = {}
+    for side in ("top", "right", "bottom", "left"):
+        v = (raw.get("edges", {}).get(side, {}) or {}).get("_viz")
+        if not v:
+            continue
+        try:
+            x1, y1 = int(round(v["x1"] * sx)), int(round(v["y1"] * sy))
+            x2, y2 = int(round(v["x2"] * sx)), int(round(v["y2"] * sy))
+            k, band, ce = v["k"], v["band"], int(round(v["ce"] * sx))
+            sub = np.rot90(hw[y1:y2, x1:x2], k)
+            sub = np.ascontiguousarray(sub[:, ce:max(ce + 1, sub.shape[1] - ce)])
+            crop_h = int(min(max(band * sy * 3, 60), sub.shape[0]))   # band + a little context
+            sub = sub[:crop_h]
+            if sub.size:
+                edges[side] = {"crop_b64": grader.encode_image(sub)["data"], "flagged": _edge_defects_flagged(v)}
+        except Exception:
+            continue
+    if edges:
+        out["edges"] = edges
+
+    # SURFACE — zoom on the scratch cluster (segments are in 630x880 warp coords, like _viz_surface)
+    try:
+        segs = ((raw.get("surface", {}).get("_viz") or {}).get("scratch_segments")) or []
+        if segs:
+            xs = [p for s in segs for p in (s[0], s[2])]
+            ys = [p for s in segs for p in (s[1], s[3])]
+            bx1, by1, bx2, by2 = min(xs) * sx, min(ys) * sy, max(xs) * sx, max(ys) * sy
+            mx, my = (bx2 - bx1) * 0.4 + 40, (by2 - by1) * 0.4 + 40        # margin around the cluster
+            cx1, cy1 = int(max(0, bx1 - mx)), int(max(0, by1 - my))
+            cx2, cy2 = int(min(ZW, bx2 + mx)), int(min(ZH, by2 + my))
+            sc = hw[cy1:cy2, cx1:cx2]
+            if sc.size:                                # clean zoom on the scratch cluster — buyer judges
+                out["surface"] = {"scratches": {"crop_b64": grader.encode_image(sc)["data"], "count": len(segs)}}
+    except Exception:
+        pass
+    return out
+
+
+def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=False, **_ignore) -> dict:
     """Grade a card with the classical-CV pipeline. Same signature/return shape as
     grader.grade_card() (minus the api_key — no VLM call)."""
     if quad_padded is None and quad_raw is not None:
@@ -368,4 +444,12 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, **_ign
         }
     except Exception:
         pass
+
+    # ── high-res zoomed defect close-ups (gated; the buyer-verification view) ──
+    if zoom:
+        try:
+            result["pillar_zooms"] = extract_pillar_zooms(
+                img_bgr, quad_padded, raw, result.get("_corner_crops_b64"))
+        except Exception:
+            pass
     return result
