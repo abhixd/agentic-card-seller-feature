@@ -2,6 +2,8 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { Target, Upload, Loader2, X } from 'lucide-react'
+import { PillarVisualDialog } from '@/components/grading/PillarVisualDialog'
+import type { PillarVisuals } from '@/lib/grading/types'
 
 type Identity = {
   name?: string; set?: string; number?: string; year?: number
@@ -44,6 +46,7 @@ type ScoutResult = {
   grade: Grade
   pillars?: Pillars
   card_boundary?: number[] | null
+  pillar_visuals?: PillarVisuals
   issues?: Record<string, string[]>
   economics: Economics
   decision: Decision
@@ -374,22 +377,27 @@ function PriceLadder({ res }: { res: ScoutResult }) {
   )
 }
 
-function PillarBar({ label, p }: { label: string; p?: Pillar }) {
+function PillarBar({ label, p, onClick }: { label: string; p?: Pillar; onClick?: () => void }) {
   const s = p?.score
   const color = s == null ? 'bg-white/10' : s >= 9 ? 'bg-emerald-500' : s >= 7 ? 'bg-amber-500' : 'bg-rose-500'
-  return (
-    <div className="flex items-center gap-2 text-xs">
+  const body = (
+    <>
       <span className="w-20 capitalize text-white/50">{label}</span>
       <div className="h-1.5 flex-1 rounded bg-white/5">
         <div className={`h-full rounded ${color}`} style={{ width: `${Math.max(0, Math.min(10, s ?? 0)) * 10}%` }} />
       </div>
       <span className="w-8 text-right tabular-nums">{s != null ? s.toFixed(1) : '—'}</span>
-    </div>
+      {onClick && <span className="text-white/30" aria-hidden>⤢</span>}
+    </>
   )
+  return onClick
+    ? <button type="button" onClick={onClick} title="See what we measured" className="flex w-full items-center gap-2 text-left text-xs hover:opacity-80">{body}</button>
+    : <div className="flex items-center gap-2 text-xs">{body}</div>
 }
 
 function ScoutDetail({ row, onClose }: { row: Row; onClose: () => void }) {
   const res = row.result!
+  const [openPillar, setOpenPillar] = useState<string | null>(null)
   const id = res.identity
   const g = res.grade
   const p = res.pillars
@@ -397,6 +405,8 @@ function ScoutDetail({ row, onClose }: { row: Row; onClose: () => void }) {
   const dist = g.tier_distribution || {}
   const cr = p?.centering?.content_region
   const cb = res.card_boundary && res.card_boundary.length === 4 ? res.card_boundary : null
+  const pv = res.pillar_visuals
+  const hasVisual = (k: string) => !!pv && !!pv[k as keyof PillarVisuals]
   return (
     // scrollable overlay so a tall modal never clips at the top
     <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 p-4" onClick={onClose}>
@@ -460,10 +470,12 @@ function ScoutDetail({ row, onClose }: { row: Row; onClose: () => void }) {
 
         <div className="mt-4 space-y-1.5">
           <div className="text-[11px] uppercase tracking-wide text-white/40">Pillar scores</div>
-          <PillarBar label="centering" p={p?.centering} />
-          <PillarBar label="corners" p={p?.corners} />
-          <PillarBar label="edges" p={p?.edges} />
-          <PillarBar label="surface" p={p?.surface} />
+          <PillarBar label="centering" p={p?.centering} onClick={hasVisual('centering') ? () => setOpenPillar('centering') : undefined} />
+          <PillarBar label="corners" p={p?.corners} onClick={hasVisual('corners') ? () => setOpenPillar('corners') : undefined} />
+          <PillarBar label="edges" p={p?.edges} onClick={hasVisual('edges') ? () => setOpenPillar('edges') : undefined} />
+          <PillarBar label="surface" p={p?.surface} onClick={hasVisual('surface') ? () => setOpenPillar('surface') : undefined} />
+          <PillarVisualDialog pillar={openPillar} visuals={pv} onClose={() => setOpenPillar(null)} />
+          {pv && <p className="pt-0.5 text-[11px] text-white/30">tap a pillar to see what we measured</p>}
           {p?.centering && (p.centering.left_right || p.centering.top_bottom) && (
             <p className="pt-1 text-[11px] text-white/40">
               centering: {p.centering.left_right} L/R · {p.centering.top_bottom} T/B
