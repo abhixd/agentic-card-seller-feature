@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = "1.0.0"
+CONTRACT_VERSION = "1.1.0"   # 1.1.0: + centering.confidence, + pillar_visuals (both optional, additive)
 
 
 class ContentRegion(BaseModel):
@@ -65,5 +65,8 @@ class GradeResponse(BaseModel):
     surface: Pillar
     issues: Optional[Issues] = None
     confidence: Optional[str] = None                   # overall grade confidence: low | medium | high
+    # per-pillar visual overlays (base64) for the product's click-to-inspect popups:
+    #   {centering, edges, surface: <base64 jpeg>, corners: {TL,TR,BR,BL: <base64 jpeg>}}
+    pillar_visuals: Optional[Dict[str, Any]] = None
     economics: Optional[Dict[str, Any]] = None         # present when title/identity supplied (shape evolving)
     decision: Optional[Dict[str, Any]] = None

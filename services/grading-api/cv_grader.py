@@ -14,6 +14,7 @@ GRADER_BACKEND env var in grader.detect_and_grade ("cv" default, "vlm" to revert
 from __future__ import annotations
 import os, json
 import numpy as np
+import cv2                          # used by the per-pillar visual overlays
 import joblib
 
 import grader                      # co-located: shared detection/warp helpers
@@ -189,6 +190,57 @@ def _centering_score(lr, tb):
     return 1.0
 
 
+# ── per-pillar VISUAL overlays (base64) — so the product UI can pop a "why" image per pillar ──
+_EDGE_OVL = {"white_mask": (255, 255, 0), "nick_mask": (0, 0, 255), "chip_mask": (0, 165, 255), "fraying_mask": (0, 255, 255)}
+
+
+def _viz_centering(warped, cb, frame_px):
+    ov = warped.copy(); H, W = ov.shape[:2]
+    cv2.rectangle(ov, (int(cb[0]*W), int(cb[1]*H)), (int(cb[2]*W), int(cb[3]*H)), (0, 255, 0), 2)   # outer cb
+    if frame_px:
+        try:
+            L, T, R, B = [int(c) for c in frame_px]
+            cv2.rectangle(ov, (L, T), (R, B), (0, 200, 255), 2)                                     # inner frame
+        except Exception:
+            pass
+    return grader.encode_image(ov)["data"]
+
+
+def _viz_surface(warped, raw_surface):
+    ov = warped.copy()
+    for seg in ((raw_surface.get("_viz") or {}).get("scratch_segments", []) or []):
+        try:
+            cv2.line(ov, (int(seg[0]), int(seg[1])), (int(seg[2]), int(seg[3])), (0, 0, 255), 2, cv2.LINE_AA)
+        except Exception:
+            continue
+    return grader.encode_image(ov)["data"]
+
+
+def _viz_edges(warped, raw_edges):
+    """Composite of the 4 edge strips with the detector's defect masks overlaid + labelled."""
+    strips = []
+    for side in ("top", "right", "bottom", "left"):
+        v = (raw_edges.get(side, {}) or {}).get("_viz")
+        if not v:
+            continue
+        x1, y1, x2, y2, k, ce, band = v["x1"], v["y1"], v["x2"], v["y2"], v["k"], v["ce"], v["band"]
+        sub = np.rot90(warped[y1:y2, x1:x2], k)
+        sub = np.ascontiguousarray(sub[:, ce:sub.shape[1] - ce])
+        ov = sub.copy()
+        for key, col in _EDGE_OVL.items():
+            m = v.get(key)
+            if m is not None and m.shape[:2] == sub.shape[:2]:
+                ov[m > 0] = (0.5 * np.array(col) + 0.5 * ov[m > 0]).astype(np.uint8)
+        crop = int(min(max(band * 3, 30), ov.shape[0]))
+        ov = ov[:crop]
+        if ov.shape[1] != 760:
+            ov = cv2.resize(ov, (760, max(1, int(ov.shape[0] * 760 / ov.shape[1]))))
+        cv2.rectangle(ov, (0, 0), (90, 22), (25, 25, 25), -1)
+        cv2.putText(ov, side, (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+        strips.append(cv2.copyMakeBorder(ov, 0, 3, 0, 0, cv2.BORDER_CONSTANT, value=(20, 20, 20)))
+    return grader.encode_image(np.vstack(strips))["data"] if strips else None
+
+
 def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, **_ignore) -> dict:
     """Grade a card with the classical-CV pipeline. Same signature/return shape as
     grader.grade_card() (minus the api_key — no VLM call)."""
@@ -305,4 +357,15 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, **_ign
         if wc is not None:
             result["_card_contour_warped"] = np.asarray(wc, float).round(5).tolist()
             result["_card_contour_orig"]   = np.asarray(contour, float).round(2).tolist()
+
+    # ── per-pillar visual overlays (base64) for the product's click-to-inspect popups ──
+    try:
+        result["pillar_visuals"] = {
+            "centering": _viz_centering(warped, cb_center, inn.get("frame_px")),
+            "edges":     _viz_edges(warped, raw.get("edges", {})),
+            "surface":   _viz_surface(warped, raw.get("surface", {})),
+            "corners":   result.get("_corner_crops_b64"),   # the 4 corner crops
+        }
+    except Exception:
+        pass
     return result

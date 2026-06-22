@@ -5,7 +5,7 @@ export * from "./types";
 import type { GradeResponse } from "./types";
 
 /** Bump in lockstep with services/grading-api/contract.py CONTRACT_VERSION. */
-export const CONTRACT_VERSION = "1.0.0";
+export const CONTRACT_VERSION = "1.1.0";
 
 export interface GradeInput {
   image: Blob | File;

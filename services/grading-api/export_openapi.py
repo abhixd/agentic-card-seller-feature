@@ -31,6 +31,8 @@ sample = {
     "surface": {"score": 10.0, "worst_severity": 0},
     "issues": {"corners": [], "edges": [], "surface": [], "centering": []},
     "confidence": "high", "economics": {"ev": 42.0}, "decision": {"action": "buy"},
+    "pillar_visuals": {"centering": "<b64>", "edges": "<b64>", "surface": "<b64>",
+                       "corners": {"TL": "<b64>", "TR": "<b64>", "BR": "<b64>", "BL": "<b64>"}},
     "_warped_jpeg_b64": "…", "_tier": 2,                    # internal extras must pass through, not fail
 }
 GradeResponse.model_validate(sample)
