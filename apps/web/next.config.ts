@@ -9,6 +9,8 @@ const nextConfig: NextConfig = {
   //                          opencv.js.  Bundling corrupts the URI and silently breaks
   //                          WASM initialization, causing every cropCard() call to hang.
   serverExternalPackages: ['sharp', '@techstark/opencv-js'],
+  // @acs/grading-contract ships raw TypeScript — Next must transpile it.
+  transpilePackages: ['@acs/grading-contract'],
 };
 
 export default nextConfig;

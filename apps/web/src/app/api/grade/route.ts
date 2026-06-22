@@ -1,13 +1,18 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { proxyGrade } from '@/lib/grading/client'
+import { gradeCard, type GradeResponse } from '@acs/grading-contract'
+import { mockGrade } from '@/lib/grading/mock'
 
 export const runtime = 'nodejs'
 
 /**
  * POST /api/grade — PSA grade a card image via the grading microservice.
- * Body: multipart/form-data with `image` (File) and optional `title`.
+ * Body: multipart/form-data with `image` (File) and optional `title`/`price`.
  * Returns the grade payload (overall_score, psa_equivalent, pillars, centering, summary).
+ *
+ * The backend is selected by GRADING_API_URL: "mock" (default — local dev, no dependency
+ * on the grading service) or a grading-service base URL (e.g. the Railway deploy). All
+ * grading goes through `gradeCard()` from @acs/grading-contract — the single boundary.
  */
 export async function POST(req: Request) {
   const supabase = await createClient()
@@ -29,6 +34,18 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Image must be under 10MB.' }, { status: 400 })
   }
 
-  const title = formData.get('title')
-  return proxyGrade(file, typeof title === 'string' && title ? { title } : undefined)
+  const titleRaw = formData.get('title')
+  const priceRaw = formData.get('price')
+  const title = typeof titleRaw === 'string' && titleRaw ? titleRaw : undefined
+  const price = typeof priceRaw === 'string' && priceRaw ? Number(priceRaw) : undefined
+
+  const url = process.env.GRADING_API_URL ?? 'mock'
+  try {
+    const grade: GradeResponse =
+      url === 'mock' ? mockGrade() : await gradeCard(url, { image: file, title, price })
+    return NextResponse.json(grade)
+  } catch (err) {
+    console.error('[grade] grading failed:', err)
+    return NextResponse.json({ error: 'Grading service error.' }, { status: 502 })
+  }
 }
