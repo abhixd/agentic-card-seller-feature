@@ -47,9 +47,12 @@ export async function GET(request: NextRequest) {
   const q     = searchParams.get('q') ?? ''
   const limit = Number(searchParams.get('limit') ?? '2000')
 
-  // anon client for reads, service client for writes (bypasses RLS)
+  // anon client for reads, service client for writes (bypasses RLS).
+  // The service client (and the catalog-sync feature it powers) is optional:
+  // without SUPABASE_SERVICE_ROLE_KEY we degrade to read-only search over the
+  // cards already in the catalog rather than 500-ing the whole request.
   const supabase      = await createClient()
-  const writeSupabase = createServiceClient()
+  const writeSupabase = process.env.SUPABASE_SERVICE_ROLE_KEY ? createServiceClient() : null
 
   const term = q.trim()
 
@@ -59,7 +62,7 @@ export async function GET(request: NextRequest) {
   let logEntry: { api_total: number; local_count: number; synced_at: string } | null = null
   let needsSync = false
 
-  if (term.length >= 2) {
+  if (writeSupabase && term.length >= 2) {
     const { data } = await writeSupabase
       .from('catalog_sync_log')
       .select('api_total, local_count, synced_at')
@@ -91,7 +94,7 @@ export async function GET(request: NextRequest) {
 
   // 3. Optimistically stamp the log NOW so concurrent requests skip duplicate syncs,
   //    then schedule the actual work to run after the response is sent.
-  if (needsSync) {
+  if (writeSupabase && needsSync) {
     await writeSupabase
       .from('catalog_sync_log')
       .upsert(
