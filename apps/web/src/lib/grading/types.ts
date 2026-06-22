@@ -52,3 +52,39 @@ export interface GradeResult {
   pillar_visuals?: PillarVisuals  // per-pillar overlay images for click-to-inspect popups
   [key: string]: unknown
 }
+
+/**
+ * Card identity from vision-ID (grading service identify.py, surfaced via /scout).
+ * `name/set/number/year/variant/language/title/confidence` come straight from the vision read;
+ * `rarity` is enriched from comps (pokemontcg/PPT). All fields nullable — the card may be unreadable.
+ */
+export interface CardIdentity {
+  name?: string | null
+  set?: string | null
+  number?: string | null
+  year?: number | null
+  variant?: string | null
+  language?: string | null
+  title?: string | null
+  rarity?: string | null
+  confidence?: number | null     // 0..1 identification confidence
+  estimated?: boolean
+}
+
+/** Market/comps detail for the card profile (from the /scout `comps_detail` field). */
+export interface CardComps {
+  card?: { name?: string; setName?: string; cardNumber?: string; rarity?: string; tcgPlayerUrl?: string; imageCdnUrl?: string }
+  raw?: { market?: number; low?: number; sellers?: number; lastUpdated?: string }
+  grades?: Record<string, {
+    count?: number; medianPrice?: number; marketPrice7Day?: number
+    minPrice?: number; maxPrice?: number; marketTrend?: string
+    smartPrice?: number; smartConfidence?: string
+  }>
+}
+
+/** Everything the clickable card profile popup shows — identity + comps + a card thumbnail. */
+export interface CardProfile {
+  identity: CardIdentity
+  comps?: CardComps | null
+  thumb_b64?: string | null      // warped-card thumbnail (raw base64, no `data:` prefix)
+}

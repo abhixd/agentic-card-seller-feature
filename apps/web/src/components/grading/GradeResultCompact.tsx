@@ -10,15 +10,16 @@
  * behind them later (pricing is keyed by PSA grade so it tracks a correction that changes the grade).
  */
 import { useRef, useState } from 'react'
-import type { GradeResult } from '@/lib/grading/types'
+import type { GradeResult, CardIdentity, CardProfile } from '@/lib/grading/types'
 import { type Box, ratiosFromBox, centeringScore, overallScore, psaLabel } from '@/lib/grading/score'
 import { PillarVisualDialog } from './PillarVisualDialog'
+import { CardProfileModal } from './CardProfileModal'
 
 const EDGE = '#3b82f6'   // card edge (outer)
 const BORDER = '#10b981' // print border (inner)
 type Side = 'top' | 'bottom' | 'left' | 'right'
 
-export type CardIdentity = { name: string; set?: string; number?: string; rarity?: string; estimated?: boolean }
+export type { CardIdentity }
 export type GradePricing = Record<number, { market: number; list: number }>  // by PSA grade
 
 function parseRatio(s?: string): [number, number] {
@@ -46,11 +47,13 @@ function PillarRow({ label, score, highlight, onClick }: { label: string; score:
 
 export function GradeResultCompact({
   result,
-  identity,
+  profile,
+  profileLoading,
   pricing,
 }: {
   result: GradeResult
-  identity?: CardIdentity
+  profile?: CardProfile | null
+  profileLoading?: boolean
   pricing?: GradePricing
 }) {
   const cb = result._card_boundary && result._card_boundary.length === 4 ? result._card_boundary : null
@@ -64,10 +67,12 @@ export function GradeResultCompact({
   const [saved, setSaved] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [openPillar, setOpenPillar] = useState<string | null>(null)
+  const [showProfile, setShowProfile] = useState(false)
   const wrap = useRef<HTMLDivElement>(null)
   const drag = useRef<Side | null>(null)
   const pv = result.pillar_visuals
   const hasVisual = (p: string) => !!pv && !!pv[p as keyof typeof pv]
+  const identity = profile?.identity
 
   // Live scores: server values until the user edits, then recompute from the dragged box.
   const liveRatios = box && cb && dirty ? ratiosFromBox(box, cb) : null
@@ -146,17 +151,32 @@ export function GradeResultCompact({
 
   return (
     <div className="rounded-lg border p-4">
-      {/* identity (placeholder until vision-ID is wired) */}
-      <div className="mb-3 flex items-start justify-between border-b pb-3">
-        <div>
-          <div className="text-[15px] font-medium">{identity?.name ?? <span className="text-muted-foreground">Card details</span>}</div>
-          <div className="mt-0.5 text-xs text-muted-foreground">
-            {identity
-              ? [identity.set, identity.number && `#${identity.number}`, identity.rarity].filter(Boolean).join(' · ')
-              : 'identification coming soon'}
-            {identity?.estimated && <span className="text-foreground/40"> · est. — confirm</span>}
+      {/* identity — vision-ID hydrated from /scout; click to open the card profile */}
+      <div className="mb-3 border-b pb-3">
+        {identity?.name ? (
+          <button
+            type="button"
+            onClick={() => profile && setShowProfile(true)}
+            className="flex w-full items-start justify-between gap-2 rounded-md px-1 py-0.5 text-left hover:bg-muted/60"
+            title="View card profile"
+          >
+            <span className="min-w-0">
+              <span className="block truncate text-[15px] font-medium">{identity.name}</span>
+              <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                {[identity.set, identity.number && `#${identity.number}`, identity.rarity].filter(Boolean).join(' · ') || 'tap for details'}
+                {identity.confidence != null && <span className="text-foreground/40"> · ID {Math.round(identity.confidence * 100)}%</span>}
+              </span>
+            </span>
+            <span className="shrink-0 self-center text-[11px] text-blue-600 dark:text-blue-400">profile ↗</span>
+          </button>
+        ) : (
+          <div className="px-1">
+            <div className="text-[15px] font-medium">{profileLoading ? 'Identifying…' : <span className="text-muted-foreground">Card details</span>}</div>
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              {profileLoading ? 'reading the card from your photo' : 'card not identified — try a clearer, straight-on photo'}
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       <div className="grid gap-4 sm:grid-cols-[240px_1fr]">
@@ -233,6 +253,7 @@ export function GradeResultCompact({
         </div>
       </div>
       <PillarVisualDialog pillar={openPillar} visuals={result.pillar_visuals} onClose={() => setOpenPillar(null)} />
+      <CardProfileModal profile={showProfile ? profile ?? null : null} onClose={() => setShowProfile(false)} />
     </div>
   )
 }

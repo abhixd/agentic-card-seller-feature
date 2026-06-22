@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import type { GradeResult } from '@/lib/grading/types'
+import type { GradeResult, CardProfile } from '@/lib/grading/types'
 import { GradeResultCompact } from '@/components/grading/GradeResultCompact'
 import { GradeFeedback } from '@/components/grading/GradeFeedback'
 
@@ -9,6 +9,8 @@ export default function GradePage() {
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
   const [result, setResult] = useState<GradeResult | null>(null)
+  const [profile, setProfile] = useState<CardProfile | null>(null)
+  const [profileLoading, setProfileLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showOriginal, setShowOriginal] = useState(false)
@@ -17,6 +19,7 @@ export default function GradePage() {
     const f = e.target.files?.[0] ?? null
     setFile(f)
     setResult(null)
+    setProfile(null)
     setError(null)
     setShowOriginal(false)
     setPreview(f ? URL.createObjectURL(f) : null)
@@ -27,6 +30,7 @@ export default function GradePage() {
     setLoading(true)
     setError(null)
     setResult(null)
+    setProfile(null)
     try {
       const fd = new FormData()
       fd.append('image', file)
@@ -34,10 +38,34 @@ export default function GradePage() {
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error ?? 'Grading failed')
       setResult(data as GradeResult)
+      void identifyCard(file)   // hydrate identity + profile from /scout (same photo); non-blocking
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Grading failed')
     } finally {
       setLoading(false)
+    }
+  }
+
+  // /grade returns the grade fast (CV); identity needs a Claude vision read, so fetch it from /scout
+  // separately and let the profile fill in once it resolves — the grade card paints immediately.
+  async function identifyCard(f: File) {
+    setProfileLoading(true)
+    try {
+      const fd = new FormData()
+      fd.append('image', f)
+      const res = await fetch('/api/scout', { method: 'POST', body: fd })
+      const data = await res.json()
+      if (res.ok && data?.identity) {
+        setProfile({
+          identity: { ...data.identity, rarity: data.comps_detail?.card?.rarity ?? null },
+          comps: data.comps_detail ?? null,
+          thumb_b64: data.thumb_b64 ?? null,
+        })
+      }
+    } catch {
+      /* identity is best-effort — a failed read just leaves "card not identified" */
+    } finally {
+      setProfileLoading(false)
     }
   }
 
@@ -68,7 +96,7 @@ export default function GradePage() {
 
       {result && (
         <>
-          <GradeResultCompact result={result} />
+          <GradeResultCompact result={result} profile={profile} profileLoading={profileLoading} />
 
           {/* (4) the original upload is hidden after grading — let the user pull it back up to double-check */}
           {preview && (
