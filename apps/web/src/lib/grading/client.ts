@@ -51,9 +51,10 @@ async function proxyImageTo(
   return NextResponse.json(data)
 }
 
-/** Forward a card image (+ optional listing fields) to the grading service /grade endpoint. */
-export function proxyGrade(image: File, fields?: Record<string, string>): Promise<NextResponse> {
-  return proxyImageTo('/grade', image, fields, 'grade')
+/** Forward a card image (+ optional listing fields) to the grading service /grade endpoint.
+ *  `zoom` requests high-res per-defect close-ups (pillar_zooms) via /grade?zoom=1. */
+export function proxyGrade(image: File, fields?: Record<string, string>, zoom = false): Promise<NextResponse> {
+  return proxyImageTo(zoom ? '/grade?zoom=1' : '/grade', image, fields, 'grade')
 }
 
 /** Forward one card photo (+ ask/shipping/title) to the Sourcing-scout /scout endpoint. */

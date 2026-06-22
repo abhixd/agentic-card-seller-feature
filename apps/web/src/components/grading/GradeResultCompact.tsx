@@ -14,6 +14,7 @@ import type { GradeResult, CardIdentity, CardProfile } from '@/lib/grading/types
 import { type Box, ratiosFromBox, centeringScore, overallScore, psaLabel } from '@/lib/grading/score'
 import { PillarVisualDialog } from './PillarVisualDialog'
 import { CardProfileModal } from './CardProfileModal'
+import { DefectZoomGallery } from './DefectZoomGallery'
 
 const EDGE = '#3b82f6'   // card edge (outer)
 const BORDER = '#10b981' // print border (inner)
@@ -68,6 +69,7 @@ export function GradeResultCompact({
   const [err, setErr] = useState<string | null>(null)
   const [openPillar, setOpenPillar] = useState<string | null>(null)
   const [showProfile, setShowProfile] = useState(false)
+  const [showZooms, setShowZooms] = useState(false)
   const wrap = useRef<HTMLDivElement>(null)
   const drag = useRef<Side | null>(null)
   const pv = result.pillar_visuals
@@ -252,8 +254,18 @@ export function GradeResultCompact({
           </div>
         </div>
       </div>
+      {result.pillar_zooms && (
+        <button
+          type="button"
+          onClick={() => setShowZooms(true)}
+          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed py-2 text-[13px] text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+        >
+          🔍 Inspect defect close-ups <span className="text-muted-foreground/60">— high-res edges, corners &amp; surface</span>
+        </button>
+      )}
       <PillarVisualDialog pillar={openPillar} visuals={result.pillar_visuals} onClose={() => setOpenPillar(null)} />
       <CardProfileModal profile={showProfile ? profile ?? null : null} onClose={() => setShowProfile(false)} />
+      <DefectZoomGallery zooms={showZooms ? result.pillar_zooms ?? null : null} onClose={() => setShowZooms(false)} />
     </div>
   )
 }

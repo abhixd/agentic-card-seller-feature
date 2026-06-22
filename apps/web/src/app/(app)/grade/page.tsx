@@ -34,7 +34,7 @@ export default function GradePage() {
     try {
       const fd = new FormData()
       fd.append('image', file)
-      const res = await fetch('/api/grade', { method: 'POST', body: fd })
+      const res = await fetch('/api/grade?zoom=1', { method: 'POST', body: fd })   // include high-res defect close-ups
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error ?? 'Grading failed')
       setResult(data as GradeResult)

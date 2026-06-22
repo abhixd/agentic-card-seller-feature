@@ -33,6 +33,14 @@ export interface PillarVisuals {
   corners?: Partial<Record<'TL' | 'TR' | 'BR' | 'BL', string>> | null
 }
 
+/** High-res zoomed defect close-ups (contract v1.2.0) — present only when /grade is called with ?zoom=1.
+ * Clean crops (no overlay) so the buyer judges the actual pixels; `flagged` is an advisory hint. */
+export interface PillarZooms {
+  edges?: Record<string, { crop_b64: string; flagged?: string[] }>   // keyed by side: top|right|bottom|left
+  surface?: { scratches?: { crop_b64: string; count?: number } }
+  corners?: Partial<Record<'TL' | 'TR' | 'BR' | 'BL', string>> | null
+}
+
 export interface GradeResult {
   overall_score: number          // 1–10
   psa_equivalent: string         // e.g. "PSA 9 MINT"
@@ -50,6 +58,7 @@ export interface GradeResult {
   _card_boundary?: number[]      // outer card-edge rect [x1,y1,x2,y2], normalized to the warped image
   _border_type?: string          // detected printed-border style (e.g. "dragon", "yellow")
   pillar_visuals?: PillarVisuals  // per-pillar overlay images for click-to-inspect popups
+  pillar_zooms?: PillarZooms      // high-res defect close-ups (present only with ?zoom=1)
   [key: string]: unknown
 }
 

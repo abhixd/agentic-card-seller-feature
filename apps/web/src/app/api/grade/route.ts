@@ -30,5 +30,6 @@ export async function POST(req: Request) {
   }
 
   const title = formData.get('title')
-  return proxyGrade(file, typeof title === 'string' && title ? { title } : undefined)
+  const zoom = new URL(req.url).searchParams.get('zoom') === '1'   // high-res defect close-ups
+  return proxyGrade(file, typeof title === 'string' && title ? { title } : undefined, zoom)
 }
