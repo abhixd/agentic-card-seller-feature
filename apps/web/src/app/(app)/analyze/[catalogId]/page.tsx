@@ -5,6 +5,7 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import Image from 'next/image'
 import { PriceIntelligenceHub } from '@/components/catalog/PriceIntelligenceHub'
+import { MarketIntelligencePanel } from '@/components/catalog/MarketIntelligencePanel'
 import { GradingAdvisor } from '@/components/catalog/GradingAdvisor'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -462,6 +463,9 @@ export default function CardDetailPage() {
 
         {/* ── Right: Price intelligence + analysis ── */}
         <div className="space-y-6">
+
+          {/* ── Market Consensus Price + Investment Intelligence (PRD pillars 1 & 2) ── */}
+          <MarketIntelligencePanel catalogId={catalogId} />
 
           {/* ── NEXUS AI Market Insight ── */}
           <NEXUSCardInsight catalogId={catalogId} />
