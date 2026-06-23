@@ -6,11 +6,12 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { PriceIntelligenceHub } from '@/components/catalog/PriceIntelligenceHub'
 import { MarketIntelligencePanel } from '@/components/catalog/MarketIntelligencePanel'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { GradingAdvisor } from '@/components/catalog/GradingAdvisor'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { ConditionForm } from '@/components/analysis/ConditionForm'
-import { ArrowLeft, Loader2, ChevronDown, ChevronUp, ChevronRight } from 'lucide-react'
+import { ArrowLeft, Loader2, ChevronDown, ChevronUp } from 'lucide-react'
 import type { CardCatalogItem } from '@/types/catalog'
 import type { ConditionRatings } from '@/types/analysis'
 import { AddToInventoryButton } from '@/components/inventory/AddToInventoryButton'
@@ -379,7 +380,7 @@ export default function CardDetailPage() {
   }, [catalogId])
 
   const meta = (card?.metadata_json ?? {}) as Record<string, any>
-  const [showCardDetails, setShowCardDetails] = useState(false)
+  const hasCardDetails = !!(meta.attacks?.length || meta.abilities?.length || meta.weaknesses?.length || meta.flavor_text || meta.artist)
   const types: string[] = meta?.types ?? []
   const imageUrl = meta?.images?.large ?? meta?.images?.small ?? card?.canonical_image_url
 
@@ -461,47 +462,57 @@ export default function CardDetailPage() {
           )}
         </div>
 
-        {/* ── Right: Price intelligence + analysis ── */}
-        <div className="space-y-6">
+        {/* ── Right: decision-first layout ── */}
+        <div className="space-y-5">
 
-          {/* ── Market Consensus Price + Investment Intelligence (PRD pillars 1 & 2) ── */}
+          {/* HERO — the answer up top: consensus price + Opportunity/Risk + valuation */}
           <MarketIntelligencePanel catalogId={catalogId} />
 
-          {/* ── NEXUS AI Market Insight ── */}
-          <NEXUSCardInsight catalogId={catalogId} />
+          {/* PRIMARY ACTION — full sell / grade / hold analysis */}
+          <AnalysisForm catalogId={catalogId} selectedEdition={selectedEdition} />
 
-          {/* ── Price Intelligence Hub — unified multi-platform price view ── */}
-          <PriceIntelligenceHub
-            catalogId={catalogId}
-            meta={meta}
-            onEditionChange={setSelectedEdition}
-          />
+          {/* DETAIL — everything else, one tab at a time (no more endless scroll) */}
+          <Tabs defaultValue="prices">
+            <TabsList variant="line" className="w-full justify-start gap-1 border-b border-border/20 pb-px">
+              <TabsTrigger value="prices" className="flex-none px-3">Prices</TabsTrigger>
+              <TabsTrigger value="grading" className="flex-none px-3">Grading</TabsTrigger>
+              <TabsTrigger value="insight" className="flex-none px-3">AI Insight</TabsTrigger>
+              {hasCardDetails && <TabsTrigger value="card" className="flex-none px-3">Card Info</TabsTrigger>}
+            </TabsList>
 
-          {/* Grading Intelligence */}
-          <GradingAdvisor catalogId={catalogId} />
+            {/* Prices */}
+            <TabsContent value="prices" className="pt-5 space-y-6">
+              <PriceIntelligenceHub
+                catalogId={catalogId}
+                meta={meta}
+                onEditionChange={setSelectedEdition}
+              />
+            </TabsContent>
 
-          {/* PSA Cert Lookup + Population Report */}
-          <div
-            className="rounded-2xl border p-5 space-y-4"
-            style={{
-              background:  'linear-gradient(135deg, rgba(5,150,105,0.07) 0%, rgba(16,185,129,0.03) 100%)',
-              borderColor: 'rgba(16,185,129,0.20)',
-              boxShadow:   '0 0 0 1px rgba(16,185,129,0.08), 0 4px 24px rgba(16,185,129,0.04)',
-            }}
-          >
-            <PsaCertPanel />
-          </div>
+            {/* Grading + PSA */}
+            <TabsContent value="grading" className="pt-5 space-y-6">
+              <GradingAdvisor catalogId={catalogId} />
+              <div
+                className="rounded-2xl border p-5 space-y-4"
+                style={{
+                  background:  'linear-gradient(135deg, rgba(5,150,105,0.07) 0%, rgba(16,185,129,0.03) 100%)',
+                  borderColor: 'rgba(16,185,129,0.20)',
+                  boxShadow:   '0 0 0 1px rgba(16,185,129,0.08), 0 4px 24px rgba(16,185,129,0.04)',
+                }}
+              >
+                <PsaCertPanel />
+              </div>
+            </TabsContent>
 
-          {/* Card Details collapsible */}
-          {(meta.attacks?.length > 0 || meta.abilities?.length > 0 || meta.weaknesses?.length > 0 || meta.flavor_text || meta.artist) && (
-            <div>
-              <button onClick={() => setShowCardDetails(v => !v)}
-                className="flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-muted-foreground font-medium hover:text-foreground transition-colors">
-                <ChevronRight className={['h-3 w-3 transition-transform', showCardDetails ? 'rotate-90' : ''].join(' ')} />
-                Card Details
-              </button>
-              {showCardDetails && (
-                <div className="mt-4 space-y-4">
+            {/* AI insight */}
+            <TabsContent value="insight" className="pt-5">
+              <NEXUSCardInsight catalogId={catalogId} />
+            </TabsContent>
+
+            {/* Card info */}
+            {hasCardDetails && (
+              <TabsContent value="card" className="pt-5">
+                <div className="space-y-4">
                   {(meta.attacks?.length > 0 || meta.abilities?.length > 0) && (
                     <div className="space-y-3">
                       {(meta.abilities ?? []).map((a: any) => (
@@ -548,12 +559,9 @@ export default function CardDetailPage() {
                   {meta.flavor_text && <p className="text-xs text-muted-foreground italic leading-relaxed border-l-2 border-primary/20 pl-3">{meta.flavor_text}</p>}
                   {meta.artist && <p className="text-[10px] text-muted-foreground/50">Illustrated by {meta.artist}</p>}
                 </div>
-              )}
-            </div>
-          )}
-
-          {/* Analysis form */}
-          <AnalysisForm catalogId={catalogId} selectedEdition={selectedEdition} />
+              </TabsContent>
+            )}
+          </Tabs>
         </div>
       </div>
     </div>
