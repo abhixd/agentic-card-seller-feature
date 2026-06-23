@@ -47,6 +47,10 @@ except Exception:
 SEG_WORKSPACE  = os.environ.get("SEG_WORKSPACE", "srinivas-doddi")
 SEG_WORKFLOW   = os.environ.get("SEG_WORKFLOW",  "general-segmentation-api-6")
 SEG_CLASSES    = os.environ.get("SEG_CLASSES",   "card")
+# Warp-quad source. "edges" = fit a line to each detected SIDE (RANSAC) and intersect adjacent lines for
+# the corner → axis-aligned crop that traces the boundary even through rounded corners (no inscription/clip).
+# "corners" = legacy approxPolyDP corner approximation. Set SEG_QUAD_MODE=corners on Railway to revert instantly.
+SEG_QUAD_MODE  = os.environ.get("SEG_QUAD_MODE",  "edges")
 SEG_SIGMA      = float(os.environ.get("SEG_SIGMA", str(cfg("segmentation", "sigma", 2.5))))
 SEG_RESAMPLE_N = int(os.environ.get("SEG_RESAMPLE_N", str(cfg("segmentation", "resample_n", 400))))
 SEG_BASE_URL   = os.environ.get("SEG_BASE_URL", "https://serverless.roboflow.com")
@@ -144,6 +148,68 @@ def quad_from_contour(poly: np.ndarray) -> np.ndarray:
     return cv2.boxPoints(cv2.minAreaRect(poly)).astype(np.float32)
 
 
+def _extreme_corners(pts):
+    """4 approximate corners via sum/diff extremes — used only to split the contour into 4 sides."""
+    s = pts[:, 0] + pts[:, 1]; d = pts[:, 0] - pts[:, 1]
+    return np.array([pts[np.argmin(s)], pts[np.argmax(d)], pts[np.argmax(s)], pts[np.argmin(d)]], np.float32)
+
+
+def _ransac_side_line(arc):
+    """Robust line (point, unit dir) through a card SIDE's points: RANSAC rejects occlusion / stand-leg
+    outliers (a systematic cluster a least-squares fit would chase), then L2-refits on the inliers."""
+    arc = np.asarray(arc, np.float32); n = len(arc)
+    if n < 4:
+        vx, vy, x0, y0 = cv2.fitLine(arc, cv2.DIST_L2, 0, 0.01, 0.01).ravel()
+        return np.array([x0, y0], np.float32), np.array([vx, vy], np.float32)
+    span = float(np.linalg.norm(arc.max(0) - arc.min(0))); thr = max(2.5, 0.004 * span)
+    rng = np.random.default_rng(0)                        # seeded → deterministic for a given contour
+    best_inl, best_p, best_n = -1, arc[0], np.array([0, 1], np.float32)
+    for _ in range(150):
+        i, j = rng.choice(n, 2, replace=False); seg = arc[j] - arc[i]; L = float(np.linalg.norm(seg))
+        if L < 1e-3:
+            continue
+        u = seg / L; nrm = np.array([-u[1], u[0]], np.float32); inl = int((np.abs((arc - arc[i]) @ nrm) < thr).sum())
+        if inl > best_inl:
+            best_inl, best_p, best_n = inl, arc[i], nrm
+    keep = arc[np.abs((arc - best_p) @ best_n) < thr]; keep = keep if len(keep) >= 2 else arc
+    vx, vy, x0, y0 = cv2.fitLine(keep, cv2.DIST_L2, 0, 0.01, 0.01).ravel()
+    return np.array([x0, y0], np.float32), np.array([vx, vy], np.float32)
+
+
+def edge_intersection_quad(contour_raw, drop=0.18):
+    """Card corners from the SIDE LINES, not the corner tips. Split the raw contour into its 4 sides
+    (between approximate corners), RANSAC-fit a line to each side's middle points (dropping `drop` of each
+    end so rounded corners are excluded), then intersect adjacent lines. The straight edges extend through
+    the rounding to the true geometric corner — an axis-aligned crop that traces the boundary without the
+    approxPolyDP inscription that clips foreshortened/rounded corners. Returns (4,2) float32 (unordered).
+    Falls back to the extreme corners on any degeneracy."""
+    pts = np.asarray(contour_raw, np.float32).reshape(-1, 2)
+    if len(pts) < 16:
+        return _extreme_corners(pts)
+    idx = sorted(int(np.argmin(((pts - c) ** 2).sum(1))) for c in _extreme_corners(pts))
+    if len(set(idx)) != 4:
+        return _extreme_corners(pts)
+    lines = []
+    for k in range(4):
+        a, b = idx[k], idx[(k + 1) % 4]
+        arc = pts[a:b + 1] if a <= b else np.vstack([pts[a:], pts[:b + 1]])
+        m = int(len(arc) * drop); core = arc[m:len(arc) - m] if len(arc) > 2 * m + 4 else arc
+        if len(core) < 2:
+            return _extreme_corners(pts)
+        lines.append(_ransac_side_line(core))
+
+    def _intersect(L1, L2):
+        (p1, d1), (p2, d2) = L1, L2
+        det = d1[0] * (-d2[1]) - (-d2[0]) * d1[1]
+        if abs(det) < 1e-6:
+            return None
+        t = ((p2[0] - p1[0]) * (-d2[1]) - (-d2[0]) * (p2[1] - p1[1])) / det
+        return p1 + t * d1
+
+    out = [_intersect(lines[(k - 1) % 4], lines[k]) for k in range(4)]
+    return np.asarray([o if o is not None else pts[idx[k]] for k, o in enumerate(out)], np.float32)
+
+
 # ── Hosted segmentation inference ─────────────────────────────────────────────
 def _post_workflow(b64: str, api_key: str, classes: str) -> dict:
     url = f"{SEG_BASE_URL}/infer/workflows/{SEG_WORKSPACE}/{SEG_WORKFLOW}"
@@ -223,7 +289,9 @@ def segment_card(img_bgr: np.ndarray,
 
     contour_raw = np.array([[p["x"] * sx, p["y"] * sy] for p in pts], dtype=np.float32)
     contour     = smooth_contour(contour_raw, n=SEG_RESAMPLE_N, sigma=sigma).astype(np.float32)
-    quad        = quad_from_contour(contour)
+    # quad drives the perspective warp. "edges" fits the detected sides and intersects them (axis-aligned,
+    # no corner clip); "corners" is the legacy approxPolyDP. Smoothed `contour` stays the display outline (cw).
+    quad        = edge_intersection_quad(contour_raw) if SEG_QUAD_MODE == "edges" else quad_from_contour(contour)
 
     return {
         "contour_raw": contour_raw,
