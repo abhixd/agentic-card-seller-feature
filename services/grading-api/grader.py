@@ -43,7 +43,11 @@ YOLO_WEIGHTS  = os.environ.get(
 )
 YOLO_CONF   = float(os.environ.get("YOLO_CONF", "0.25"))
 YOLO_IMGSZ  = int(os.environ.get("YOLO_IMGSZ", "640"))
-PADDING_FRAC   = cfg("segmentation", "padding_frac", 0.03)
+# Warp margin as a fraction of the card's longer side. Default 0.03 — load-bearing: the edge-band
+# thresholds (CV_THRESHOLDS) are calibrated to this margin, and dropping it shifts the edge pillar (a
+# pillar-sweep showed 0.01 moves ~24% of grades). Env-overridable so 0.01 can be A/B'd later without a
+# code change — set PADDING_FRAC on the Railway service, but re-validate the edge pillar before adopting.
+PADDING_FRAC   = float(os.environ.get("PADDING_FRAC", cfg("segmentation", "padding_frac", 0.03)))
 CB_SEARCH_FRAC = cfg("cb_refine", "search_frac", 0.10)      # refine_cb_in_warped inward search
 CB_BALANCE_MARGIN = cfg("cb_refine", "balance_margin", 0.006)  # _balance_cb_padding tolerance
 CB_CONTOUR_CAP    = cfg("cb_refine", "contour_cap", 0.05)      # _expand_cb_to_contour: max outward expand (frac of card)
