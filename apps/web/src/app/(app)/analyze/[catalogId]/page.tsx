@@ -3,9 +3,8 @@
 import { useState, useEffect } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
-import Image from 'next/image'
 import { PriceIntelligenceHub } from '@/components/catalog/PriceIntelligenceHub'
-import { MarketIntelligencePanel } from '@/components/catalog/MarketIntelligencePanel'
+import { CardDecisionHero } from '@/components/catalog/CardDecisionHero'
 import { GradingAdvisor } from '@/components/catalog/GradingAdvisor'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -13,7 +12,6 @@ import { ConditionForm } from '@/components/analysis/ConditionForm'
 import { ArrowLeft, Loader2, ChevronDown, ChevronUp } from 'lucide-react'
 import type { CardCatalogItem } from '@/types/catalog'
 import type { ConditionRatings } from '@/types/analysis'
-import { AddToInventoryButton } from '@/components/inventory/AddToInventoryButton'
 import { TournamentMetaBadge } from '@/components/catalog/TournamentMetaBadge'
 
 // ── Edition mapping (same as SearchResults) ───────────────────────────────
@@ -410,75 +408,33 @@ export default function CardDetailPage() {
         {backQuery ? `Back to "${backQuery}" results` : 'Back to search'}
       </Link>
 
-      {/* Two-column layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-6 lg:gap-10 items-start">
+      {/* ── HERO: 3-column decision layout (metrics · image · trajectory) ── */}
+      <CardDecisionHero
+        catalogId={catalogId}
+        cardName={card.card_name}
+        setName={card.set_name}
+        year={card.year}
+        cardNumber={card.card_number}
+        imageUrl={imageUrl ?? null}
+        types={types}
+      />
 
-        {/* ── Left: Image + card identity (sticky on desktop) ── */}
-        <div className="lg:sticky lg:top-6 space-y-4">
-          {/* Card image */}
-          <div className="relative rounded-2xl overflow-hidden bg-muted/20 shadow-2xl shadow-black/30 border border-border/20"
-            style={{ aspectRatio: '2/3' }}>
-            {imageUrl ? (
-              <Image src={imageUrl} alt={card.card_name} fill className="object-contain p-2" sizes="300px" unoptimized />
-            ) : (
-              <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-sm">No image</div>
-            )}
-          </div>
-
-          {/* Card identity */}
-          <div className="space-y-2">
-            <h1 className="text-2xl font-bold tracking-tight leading-tight">{card.card_name}</h1>
-            <p className="text-sm text-muted-foreground">
-              {card.set_name}
-              {card.year ? ` · ${card.year}` : ''}
-              {card.card_number ? ` · #${card.card_number}` : ''}
-            </p>
-            <div className="flex items-center gap-1.5 flex-wrap">
-              {types.map((t) => (
-                <span key={t} className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${typeColor(t)}`}>{t}</span>
-              ))}
-              {meta?.hp && <span className="text-[10px] text-muted-foreground border border-border/30 px-2 py-0.5 rounded-full">HP {meta.hp}</span>}
-              {meta?.rarity && <span className="text-[10px] text-muted-foreground">{meta.rarity}</span>}
-              <TournamentMetaBadge catalogId={catalogId} />
-            </div>
-          </div>
-
-          {/* Add to Inventory */}
-          {card && (
-            <AddToInventoryButton
-              catalogId={catalogId}
-              tcgPrice={(() => {
-                const prices = meta?.tcgplayer?.prices as Record<string, any> | undefined
-                if (!prices) return null
-                // Use bestMarket so expensive cards (1st ed, delta stars, etc.)
-                // aren't underpriced by a cheaper band appearing first.
-                return bestMarket(prices)
-              })()}
-            />
-          )}
-        </div>
-
-        {/* ── Right: one clean decision-first scroll ── */}
-        <div className="space-y-6">
-
-          {/* 1. THE ANSWER — consensus price + Opportunity/Risk + valuation */}
-          <MarketIntelligencePanel catalogId={catalogId} />
-
-          {/* 2. THE PRICES — multi-platform price view.
-               (The sell/grade/hold recommendation form lives in Portfolio →
-               Sell Intelligence, where you own the card — not on the buy page.) */}
-          <PriceIntelligenceHub
-            catalogId={catalogId}
-            meta={meta}
-            onEditionChange={setSelectedEdition}
-          />
-
-          {/* 3. GRADING — left exactly as-is.
-               (PSA cert lookup removed from this page — it's a standalone
-               verify-a-slab utility, unrelated to evaluating this card's price.) */}
-          <GradingAdvisor catalogId={catalogId} />
-        </div>
+      {/* tiny meta strip */}
+      <div className="flex items-center justify-center gap-2.5 flex-wrap -mt-1">
+        {meta?.rarity && <span className="text-[11px] text-muted-foreground">{meta.rarity}</span>}
+        {meta?.hp && <span className="text-[11px] text-muted-foreground border border-border/30 px-2 py-0.5 rounded-full">HP {meta.hp}</span>}
+        <TournamentMetaBadge catalogId={catalogId} />
       </div>
+
+      {/* ── BELOW THE FOLD: full price chart + grading ── */}
+      <PriceIntelligenceHub
+        catalogId={catalogId}
+        meta={meta}
+        onEditionChange={setSelectedEdition}
+      />
+
+      {/* GRADING — left exactly as-is. (PSA cert lookup removed — standalone utility.) */}
+      <GradingAdvisor catalogId={catalogId} />
     </div>
   )
 }

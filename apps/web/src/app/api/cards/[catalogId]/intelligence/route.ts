@@ -141,6 +141,11 @@ export async function GET(
     gradingUpsideRoiPercent,
   })
 
+  const changePct =
+    history.length >= 2 && history[0].price > 0
+      ? ((history[history.length - 1].price - history[0].price) / history[0].price) * 100
+      : null
+
   return NextResponse.json({
     catalog_id: catalogId,
     card: {
@@ -149,6 +154,9 @@ export async function GET(
     },
     consensus: { raw: consensusRaw, graded: consensusGraded },
     scores,
+    trend: { points: history, changePct },
+    gradingUpsidePct: gradingUpsideRoiPercent,
+    liquidityPerMonth: liquidity?.salesPerMonth ?? null,
     dataSources,
   })
 }
