@@ -75,23 +75,14 @@ export async function GET(
     if (added) dataSources.push('tcgplayer')
   }
 
-  // ── CardMarket prices (guide prices + recent averages) ─────────────────────
-  const cm = meta?.cardmarket?.prices as Record<string, number> | undefined
-  if (cm) {
-    let added = false
-    for (const [key, val] of Object.entries({
-      averageSellPrice: cm.averageSellPrice, trendPrice: cm.trendPrice, avg7: cm.avg7, avg30: cm.avg30,
-    })) {
-      if (typeof val === 'number' && val > 0) {
-        observations.push({ source: 'cardmarket', kind: 'guide', price: val, version: 'raw', volume: key === 'avg7' ? 6 : 4 })
-        added = true
-      }
-    }
-    if (added) dataSources.push('cardmarket')
-  }
+  // ── CardMarket is intentionally NOT blended into the consensus: its prices
+  //    are in EUR while TCGplayer/eBay are USD. Mixing currencies corrupts the
+  //    consensus and fabricates volatility/valuation. (Re-add once we convert
+  //    via a real FX rate.) ───────────────────────────────────────────────────
 
-  // ── eBay sold comps (real transactions) — best-effort ──────────────────────
+  // ── eBay sold comps (real USD transactions) — best-effort ──────────────────
   let liquidity: { salesPerMonth?: number } | undefined
+  let hasEbay = false
   try {
     const keyword = buildKeyword(card, 'en')
     const { comps: rawComps } = await fetchEbayComps(keyword)
@@ -99,33 +90,32 @@ export async function GET(
       const comps = normalizeComps(rawComps)
       observations.push(...observationsFromComps(comps))
       dataSources.push('ebay')
+      hasEbay = true
       if (comps.daysOfData > 0) {
         liquidity = { salesPerMonth: (comps.compCount / Math.max(1, comps.daysOfData)) * 30 }
       }
     }
   } catch {
-    // eBay not configured locally — consensus still works from guide sources
+    // eBay not configured — consensus still works from the TCGplayer guide price
   }
 
-  // ── Consensus (raw + graded) ───────────────────────────────────────────────
+  // ── Consensus (raw + graded), USD-consistent ───────────────────────────────
   const byVersion = groupByVersion(observations)
   const consensusRaw = computeConsensus(byVersion.raw, { version: 'raw' })
   const consensusGraded = byVersion.graded.length > 0
     ? computeConsensus(byVersion.graded, { version: 'graded' })
     : null
 
-  // ── Recent price trajectory for momentum/volatility (from CardMarket averages) ─
-  const history: PricePoint[] = []
-  const now = Date.now()
-  const pushPt = (daysAgo: number, price: number | undefined) => {
-    if (typeof price === 'number' && price > 0) {
-      history.push({ date: new Date(now - daysAgo * 86400000).toISOString().slice(0, 10), price })
-    }
-  }
-  pushPt(30, cm?.avg30)
-  pushPt(7, cm?.avg7)
-  pushPt(1, cm?.avg1)
-  pushPt(0, tcgMarket ?? cm?.trendPrice)
+  // ── Price history for momentum/volatility — ONLY a real, single-source,
+  //    currency-consistent series (stored TCGplayer history). Never stitch one
+  //    together from different sources/currencies (that was the bug that maxed
+  //    out volatility/risk on cards like Blaine's Charizard). ─────────────────
+  const rawHistory = (meta?.tcg_history?.points ?? []) as { date?: unknown; price?: unknown }[]
+  const history: PricePoint[] = Array.isArray(rawHistory)
+    ? rawHistory
+        .filter((p) => typeof p?.date === 'string' && typeof p?.price === 'number' && (p.price as number) > 0)
+        .map((p) => ({ date: p.date as string, price: p.price as number }))
+    : []
 
   // ── Raw → graded upside (grading ROI engine) ───────────────────────────────
   let gradingUpsideRoiPercent: number | null = null
@@ -139,12 +129,15 @@ export async function GET(
   }
 
   // ── Investment scores ──────────────────────────────────────────────────────
+  // The fair-value gap is only meaningful when the consensus carries an
+  // INDEPENDENT real-sold signal (eBay) to compare the TCGplayer market price
+  // against — otherwise we'd be comparing TCGplayer to itself. So pass
+  // marketPrice ONLY when eBay sold comps are present.
   const scores = computeInvestmentScores({
     consensus: consensusRaw,
-    gradedConsensus: consensusGraded,
-    history: history.length >= 2 ? history : undefined,
+    history: history.length >= 3 ? history : undefined,
     liquidity,
-    marketPrice: tcgMarket,
+    marketPrice: hasEbay ? tcgMarket : null,
     gradingUpsideRoiPercent,
   })
 

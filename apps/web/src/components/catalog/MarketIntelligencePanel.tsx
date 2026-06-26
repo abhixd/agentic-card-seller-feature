@@ -20,7 +20,7 @@ interface Consensus {
   sampleSize: number
 }
 interface Factor { key: string; label: string; score: number; weight: number; detail: string }
-interface ScoreBlock { score: number; label: string; factors: Factor[] }
+interface ScoreBlock { score: number; label: string; factors: Factor[]; insufficient: boolean }
 interface Intelligence {
   card: { card_name: string; set_name: string }
   consensus: { raw: Consensus; graded: Consensus | null }
@@ -40,6 +40,7 @@ const VALUATION_STYLE: Record<string, string> = {
   Undervalued:    'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
   'Fairly Valued':'bg-zinc-500/15 text-zinc-300 border-zinc-500/30',
   Overheated:     'bg-red-500/15 text-red-300 border-red-500/30',
+  Unknown:        'bg-zinc-500/10 text-zinc-400 border-zinc-500/20',
 }
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -93,20 +94,32 @@ function MetricCard({ kind, block }: { kind: 'opportunity' | 'risk'; block: Scor
   return (
     <div className="rounded-xl border border-border/25 bg-card/60 px-3.5 py-3">
       <div className="flex items-center gap-1.5">
-        <Icon className="h-3.5 w-3.5 shrink-0" style={{ color }} />
+        <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: block.insufficient ? undefined : color }} />
         <span className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium">
           {kind === 'opportunity' ? 'Opportunity' : 'Risk'}
         </span>
         <InfoDot text={METRIC_INFO[kind]} />
       </div>
-      <div className="mt-1 flex items-baseline gap-1">
-        <span className="text-3xl font-bold tabular-nums leading-none" style={{ color }}>{block.score}</span>
-        <span className="text-[10px] text-muted-foreground/60">/100</span>
-      </div>
-      <p className="mt-0.5 text-[11px] font-semibold" style={{ color }}>{block.label}</p>
-      <div className="mt-2 h-1 bg-muted/40 rounded-full overflow-hidden">
-        <div className="h-full rounded-full transition-all" style={{ width: `${block.score}%`, background: color }} />
-      </div>
+      {block.insufficient ? (
+        <>
+          <div className="mt-1 flex items-baseline gap-1">
+            <span className="text-3xl font-bold tabular-nums leading-none text-muted-foreground/40">—</span>
+          </div>
+          <p className="mt-0.5 text-[11px] text-muted-foreground/60">Not enough data yet</p>
+          <div className="mt-2 h-1 bg-muted/30 rounded-full" />
+        </>
+      ) : (
+        <>
+          <div className="mt-1 flex items-baseline gap-1">
+            <span className="text-3xl font-bold tabular-nums leading-none" style={{ color }}>{block.score}</span>
+            <span className="text-[10px] text-muted-foreground/60">/100</span>
+          </div>
+          <p className="mt-0.5 text-[11px] font-semibold" style={{ color }}>{block.label}</p>
+          <div className="mt-2 h-1 bg-muted/40 rounded-full overflow-hidden">
+            <div className="h-full rounded-full transition-all" style={{ width: `${block.score}%`, background: color }} />
+          </div>
+        </>
+      )}
     </div>
   )
 }
