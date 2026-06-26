@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { StatusBadge } from '@/components/inventory/StatusBadge'
+import { AnimatedNumber } from '@/components/ui/AnimatedNumber'
 import {
   TrendingUp, TrendingDown, ChevronRight, ArrowRight,
   ChevronDown, Layers, DollarSign, BarChart3,
@@ -323,7 +324,7 @@ function HeroStatsBanner({ stats }: { stats: HeroStats }) {
               background: 'linear-gradient(135deg, #818cf8 0%, #a78bfa 100%)',
               WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
             }}>
-              {stats.portfolioValue != null ? fmtCompact(stats.portfolioValue) : '—'}
+              {stats.portfolioValue != null ? <AnimatedNumber value={stats.portfolioValue} formatter={fmtCompact} /> : '—'}
             </p>
             <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', marginTop: 4 }}>
               Est. market value
@@ -340,7 +341,7 @@ function HeroStatsBanner({ stats }: { stats: HeroStats }) {
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
                 <Layers size={13} style={{ color: 'rgba(129,140,248,0.7)' }} />
                 <p style={{ fontSize: 22, fontWeight: 700, color: 'rgba(255,255,255,0.85)', lineHeight: 1 }}>
-                  {stats.totalCards}
+                  <AnimatedNumber value={stats.totalCards} formatter={(n) => String(Math.round(n))} />
                 </p>
               </div>
             </div>
@@ -355,7 +356,7 @@ function HeroStatsBanner({ stats }: { stats: HeroStats }) {
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
                 <DollarSign size={13} style={{ color: 'rgba(129,140,248,0.7)' }} />
                 <p style={{ fontSize: 22, fontWeight: 700, color: 'rgba(255,255,255,0.85)', lineHeight: 1 }}>
-                  {stats.totalCost != null ? fmtCompact(stats.totalCost) : '—'}
+                  {stats.totalCost != null ? <AnimatedNumber value={stats.totalCost} formatter={fmtCompact} /> : '—'}
                 </p>
               </div>
             </div>
@@ -385,10 +386,18 @@ function HeroStatsBanner({ stats }: { stats: HeroStats }) {
                 }}>
                   {stats.pnl == null
                     ? '—'
-                    : (stats.pnl >= 0 ? '+' : '') + fmtCompact(stats.pnl)
+                    : <AnimatedNumber value={stats.pnl} formatter={(n) => (n >= 0 ? '+' : '') + fmtCompact(n)} />
                   }
                 </p>
               </div>
+              {stats.pnl != null && stats.totalCost != null && stats.totalCost > 0 && (
+                <p style={{
+                  fontSize: 11, fontWeight: 600, marginTop: 3,
+                  color: pnlPositive ? '#34d399' : pnlNegative ? '#f87171' : 'rgba(255,255,255,0.4)',
+                }}>
+                  {stats.pnl >= 0 ? '+' : ''}{((stats.pnl / stats.totalCost) * 100).toFixed(1)}% return
+                </p>
+              )}
             </div>
           </div>
         </div>
