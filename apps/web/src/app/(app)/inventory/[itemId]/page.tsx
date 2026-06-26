@@ -161,16 +161,21 @@ export default function InventoryDetailPage() {
         </div>
       </div>
 
-      {/* View full card stats shortcut */}
-      <Link href={`/analyze/${item.catalog_id}`}>
-        <Card className="border-primary/20 bg-primary/5 hover:bg-primary/8 transition-colors cursor-pointer">
-          <CardContent className="py-3 px-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-sm">
-                <BarChart2 className="h-4 w-4 text-primary/70 shrink-0" />
-                <span className="font-medium">View prices, chart & full card details</span>
+      {/* Full price breakdown — the primary jump to the market-analysis page */}
+      <Link href={`/analyze/${item.catalog_id}`} data-testid="view-breakdown-link">
+        <Card className="border-primary/30 bg-primary/10 hover:bg-primary/15 transition-colors cursor-pointer">
+          <CardContent className="py-4 px-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/20 border border-primary/30 shrink-0">
+                  <BarChart2 className="h-4 w-4 text-primary" />
+                </span>
+                <div className="min-w-0">
+                  <p className="font-semibold text-sm">View full price breakdown</p>
+                  <p className="text-xs text-muted-foreground truncate">Consensus price · history · buy / sell / hold</p>
+                </div>
               </div>
-              <ArrowLeft className="h-4 w-4 text-muted-foreground rotate-180 shrink-0" />
+              <ArrowLeft className="h-4 w-4 text-primary rotate-180 shrink-0" />
             </div>
           </CardContent>
         </Card>
