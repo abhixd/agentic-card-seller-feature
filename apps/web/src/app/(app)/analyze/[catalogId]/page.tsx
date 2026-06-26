@@ -465,17 +465,16 @@ export default function CardDetailPage() {
           {/* 1. THE ANSWER — consensus price + Opportunity/Risk + valuation */}
           <MarketIntelligencePanel catalogId={catalogId} />
 
-          {/* 2. THE ACTION — full sell / grade / hold analysis */}
-          <AnalysisForm catalogId={catalogId} selectedEdition={selectedEdition} />
-
-          {/* 3. THE PRICES — multi-platform price view */}
+          {/* 2. THE PRICES — multi-platform price view.
+               (The sell/grade/hold recommendation form lives in Portfolio →
+               Sell Intelligence, where you own the card — not on the buy page.) */}
           <PriceIntelligenceHub
             catalogId={catalogId}
             meta={meta}
             onEditionChange={setSelectedEdition}
           />
 
-          {/* 4. GRADING — left exactly as-is */}
+          {/* 3. GRADING — left exactly as-is */}
           <GradingAdvisor catalogId={catalogId} />
           <div
             className="rounded-2xl border p-5 space-y-4"
