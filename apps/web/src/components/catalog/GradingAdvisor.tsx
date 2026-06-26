@@ -184,51 +184,10 @@ export function GradingAdvisor({ catalogId }: { catalogId: string }) {
           </div>
         </div>
 
-        {/* PSA Fee Reference */}
-        <div className="space-y-2">
-          <p className="text-[10px] uppercase tracking-widest text-white/30 font-medium flex items-center gap-1.5">
-            <Calculator className="h-3 w-3" />
-            PSA Submission Fees
-          </p>
-          <div className="rounded-xl overflow-hidden border border-white/8">
-            {PSA_TIERS.map((t, i) => (
-              <div key={t.name}
-                className={`flex items-center justify-between px-3 py-2.5 text-sm ${i < PSA_TIERS.length - 1 ? 'border-b border-white/5' : ''}`}
-                style={{ background: '#080c10' }}
-              >
-                <div>
-                  <p className="text-xs font-medium text-white/70">{t.name}</p>
-                  <p className="text-[10px] text-white/25">{t.turnaround}</p>
-                </div>
-                <span className="text-sm font-bold text-white/60 tabular-nums">${t.cost}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* General grading rules */}
-        <div className="space-y-2">
-          <p className="text-[10px] uppercase tracking-widest text-white/30 font-medium flex items-center gap-1.5">
-            <Info className="h-3 w-3" />
-            When Grading Makes Sense
-          </p>
-          <div className="rounded-xl overflow-hidden border border-white/8 divide-y divide-white/[0.04]">
-            {GRADING_RULES.map(r => (
-              <div key={r.label} className="flex items-start justify-between gap-3 px-3 py-2.5"
-                style={{ background: '#080c10' }}>
-                <div className="min-w-0">
-                  <p className="text-xs font-medium text-white/65">{r.label}</p>
-                  <p className="text-[10px] text-white/30 leading-snug mt-0.5">{r.why}</p>
-                </div>
-                <span className="text-[11px] font-semibold text-indigo-300/80 shrink-0 tabular-nums mt-0.5">{r.threshold}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <p className="text-[10px] text-white/20 leading-relaxed">
-          Live grading intelligence (gem rate, grade premium, ROI scenarios) will appear automatically
-          once eBay sold history loads for this card.
+        <p className="text-[10px] text-white/25 leading-relaxed">
+          Live grading intelligence (gem rate, grade premium, ROI scenarios) appears here automatically
+          once eBay sold history loads for this card. For when grading is worth it and PSA fee tiers, see the{' '}
+          <a href="/grade" className="text-indigo-300/80 underline underline-offset-2">Grade tool</a>.
         </p>
       </div>
     )

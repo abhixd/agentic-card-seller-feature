@@ -156,7 +156,15 @@ export function CardDecisionHero({
   const [ready, setReady] = useState(false)        // gates the entrance/count-up
   const [showMath, setShowMath] = useState(false)
   const [tilt, setTilt] = useState({ rx: 0, ry: 0, on: false })
+  const [zoomed, setZoomed] = useState(false)
   const tiltRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!zoomed) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setZoomed(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [zoomed])
 
   useEffect(() => {
     let cancelled = false
@@ -244,7 +252,9 @@ export function CardDecisionHero({
             style={{ animationDelay: '0ms', perspective: '900px' }}
           >
             <div
-              className="relative rounded-2xl overflow-hidden border border-white/10 bg-black/30"
+              onClick={() => { if (imageUrl) setZoomed(true) }}
+              title="Click to enlarge"
+              className="relative rounded-2xl overflow-hidden border border-white/10 bg-black/30 cursor-zoom-in"
               style={{
                 aspectRatio: '2/3',
                 transform: `rotateX(${tilt.rx}deg) rotateY(${tilt.ry}deg) scale(${tilt.on ? 1.03 : 1})`,
@@ -358,6 +368,29 @@ export function CardDecisionHero({
         <Sparkles className="h-3 w-3 text-indigo-300/60" />
         <p className="text-[10px] text-white/30">Consensus blends recency, volume &amp; source reliability. Not financial advice.</p>
       </div>
+
+      {/* ── Lightbox: click image to enlarge, click anywhere / Esc to close ── */}
+      {zoomed && imageUrl && (
+        <div
+          onClick={() => setZoomed(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${cardName} enlarged`}
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 backdrop-blur-sm cursor-zoom-out p-6"
+          style={{ animation: 'heroRise .18s ease' }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={imageUrl}
+            alt={cardName}
+            className="max-h-[92vh] max-w-[92vw] object-contain rounded-2xl"
+            style={{ boxShadow: '0 30px 90px rgba(0,0,0,0.7)', animation: 'heroRise .28s cubic-bezier(.22,1,.36,1)' }}
+          />
+          <span className="absolute bottom-5 left-1/2 -translate-x-1/2 text-[11px] text-white/40">
+            Click anywhere or press Esc to close
+          </span>
+        </div>
+      )}
     </div>
   )
 }

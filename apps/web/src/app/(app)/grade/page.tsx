@@ -111,6 +111,49 @@ export default function GradePage() {
           )}
         </>
       )}
+
+      {/* ── Grading reference: when it's worth it + PSA fee tiers ── */}
+      <div className="space-y-4 pt-4 border-t border-border/30">
+        <div className="space-y-2">
+          <p className="text-[11px] uppercase tracking-widest text-muted-foreground font-medium">When grading makes sense</p>
+          <div className="rounded-xl overflow-hidden border border-border/30 divide-y divide-border/20">
+            {[
+              { label: 'Raw card value', threshold: '≥ $20', why: 'Fixed PSA fees eat into margins below this' },
+              { label: 'Condition', threshold: 'NM or better', why: 'Anything below NM rarely grades PSA 9+' },
+              { label: 'Demand', threshold: 'Active comps', why: 'Graded cards need buyers — niche cards may sit' },
+              { label: 'Gem premium', threshold: '2× raw or more', why: 'PSA 10 should be worth ≥ 2× raw to justify the risk' },
+            ].map((r) => (
+              <div key={r.label} className="flex items-start justify-between gap-3 px-3 py-2.5">
+                <div className="min-w-0">
+                  <p className="text-xs font-medium">{r.label}</p>
+                  <p className="text-[10px] text-muted-foreground leading-snug mt-0.5">{r.why}</p>
+                </div>
+                <span className="text-[11px] font-semibold text-indigo-400 shrink-0 tabular-nums mt-0.5">{r.threshold}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="space-y-2">
+          <p className="text-[11px] uppercase tracking-widest text-muted-foreground font-medium">PSA submission fees</p>
+          <div className="rounded-xl overflow-hidden border border-border/30 divide-y divide-border/20">
+            {[
+              { name: 'Value', cost: 18, turnaround: '~100 days' },
+              { name: 'Economy', cost: 25, turnaround: '~65 days' },
+              { name: 'Regular', cost: 50, turnaround: '~20 days' },
+              { name: 'Express', cost: 150, turnaround: '~10 days' },
+            ].map((t) => (
+              <div key={t.name} className="flex items-center justify-between px-3 py-2.5">
+                <div>
+                  <p className="text-xs font-medium">{t.name}</p>
+                  <p className="text-[10px] text-muted-foreground">{t.turnaround}</p>
+                </div>
+                <span className="text-sm font-bold tabular-nums">${t.cost}</span>
+              </div>
+            ))}
+          </div>
+          <p className="text-[10px] text-muted-foreground/60">Approximate PSA pricing — tiers and turnaround change periodically.</p>
+        </div>
+      </div>
     </div>
   )
 }
