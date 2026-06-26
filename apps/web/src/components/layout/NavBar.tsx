@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, ScanLine, Archive, LogOut, Layers,
-  TrendingUp, Settings, Award, Target,
+  TrendingUp, Settings, Award, Target, Newspaper,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button'
 const navItems = [
   {
     href:  '/dashboard',
-    label: 'Today',
+    label: 'Dashboard',
     icon:  LayoutDashboard,
     grad:  ['#6366f1', '#4338ca'],   // indigo
     glow:  'rgba(99,102,241,0.7)',
@@ -62,6 +62,14 @@ const navItems = [
     grad:  ['#f59e0b', '#b45309'],   // amber
     glow:  'rgba(245,158,11,0.7)',
     text:  'text-amber-300',
+  },
+  {
+    href:  '/news',
+    label: 'News',
+    icon:  Newspaper,
+    grad:  ['#ef4444', '#b91c1c'],   // red
+    glow:  'rgba(239,68,68,0.7)',
+    text:  'text-red-300',
   },
   {
     href:  '/settings',

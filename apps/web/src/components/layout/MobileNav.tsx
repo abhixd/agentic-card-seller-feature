@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 // ── Mobile shows the same core destinations as the desktop sidebar ────────────
 // Secondary tools live at their routes but are off the primary nav.
 const navItems = [
-  { href: '/dashboard',       label: 'Today',     icon: LayoutDashboard, grad: ['#6366f1','#4338ca'], glow: 'rgba(99,102,241,0.75)',  text: 'text-indigo-300'  },
+  { href: '/dashboard',       label: 'Dashboard', icon: LayoutDashboard, grad: ['#6366f1','#4338ca'], glow: 'rgba(99,102,241,0.75)',  text: 'text-indigo-300'  },
   { href: '/analyze',         label: 'Analyze',   icon: ScanLine,        grad: ['#8b5cf6','#6d28d9'], glow: 'rgba(139,92,246,0.75)', text: 'text-violet-300'  },
   { href: '/grade',           label: 'Grade',     icon: Award,           grad: ['#f43f5e','#be123c'], glow: 'rgba(244,63,94,0.75)',  text: 'text-rose-300'    },
   { href: '/scout',           label: 'Scout',     icon: Target,          grad: ['#06b6d4','#0e7490'], glow: 'rgba(6,182,212,0.75)',  text: 'text-cyan-300'    },
