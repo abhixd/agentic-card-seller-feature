@@ -6,7 +6,6 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { PriceIntelligenceHub } from '@/components/catalog/PriceIntelligenceHub'
 import { MarketIntelligencePanel } from '@/components/catalog/MarketIntelligencePanel'
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { GradingAdvisor } from '@/components/catalog/GradingAdvisor'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -15,7 +14,6 @@ import { ArrowLeft, Loader2, ChevronDown, ChevronUp } from 'lucide-react'
 import type { CardCatalogItem } from '@/types/catalog'
 import type { ConditionRatings } from '@/types/analysis'
 import { AddToInventoryButton } from '@/components/inventory/AddToInventoryButton'
-import { NEXUSCardInsight } from '@/components/catalog/NEXUSCardInsight'
 import { TournamentMetaBadge } from '@/components/catalog/TournamentMetaBadge'
 import { PsaCertPanel } from '@/components/catalog/PsaCertPanel'
 
@@ -380,7 +378,6 @@ export default function CardDetailPage() {
   }, [catalogId])
 
   const meta = (card?.metadata_json ?? {}) as Record<string, any>
-  const hasCardDetails = !!(meta.attacks?.length || meta.abilities?.length || meta.weaknesses?.length || meta.flavor_text || meta.artist)
   const types: string[] = meta?.types ?? []
   const imageUrl = meta?.images?.large ?? meta?.images?.small ?? card?.canonical_image_url
 
@@ -462,106 +459,34 @@ export default function CardDetailPage() {
           )}
         </div>
 
-        {/* ── Right: decision-first layout ── */}
-        <div className="space-y-5">
+        {/* ── Right: one clean decision-first scroll ── */}
+        <div className="space-y-6">
 
-          {/* HERO — the answer up top: consensus price + Opportunity/Risk + valuation */}
+          {/* 1. THE ANSWER — consensus price + Opportunity/Risk + valuation */}
           <MarketIntelligencePanel catalogId={catalogId} />
 
-          {/* PRIMARY ACTION — full sell / grade / hold analysis */}
+          {/* 2. THE ACTION — full sell / grade / hold analysis */}
           <AnalysisForm catalogId={catalogId} selectedEdition={selectedEdition} />
 
-          {/* DETAIL — everything else, one tab at a time (no more endless scroll) */}
-          <Tabs defaultValue="prices">
-            <TabsList variant="line" className="w-full justify-start gap-1 border-b border-border/20 pb-px">
-              <TabsTrigger value="prices" className="flex-none px-3">Prices</TabsTrigger>
-              <TabsTrigger value="grading" className="flex-none px-3">Grading</TabsTrigger>
-              <TabsTrigger value="insight" className="flex-none px-3">AI Insight</TabsTrigger>
-              {hasCardDetails && <TabsTrigger value="card" className="flex-none px-3">Card Info</TabsTrigger>}
-            </TabsList>
+          {/* 3. THE PRICES — multi-platform price view */}
+          <PriceIntelligenceHub
+            catalogId={catalogId}
+            meta={meta}
+            onEditionChange={setSelectedEdition}
+          />
 
-            {/* Prices */}
-            <TabsContent value="prices" className="pt-5 space-y-6">
-              <PriceIntelligenceHub
-                catalogId={catalogId}
-                meta={meta}
-                onEditionChange={setSelectedEdition}
-              />
-            </TabsContent>
-
-            {/* Grading + PSA */}
-            <TabsContent value="grading" className="pt-5 space-y-6">
-              <GradingAdvisor catalogId={catalogId} />
-              <div
-                className="rounded-2xl border p-5 space-y-4"
-                style={{
-                  background:  'linear-gradient(135deg, rgba(5,150,105,0.07) 0%, rgba(16,185,129,0.03) 100%)',
-                  borderColor: 'rgba(16,185,129,0.20)',
-                  boxShadow:   '0 0 0 1px rgba(16,185,129,0.08), 0 4px 24px rgba(16,185,129,0.04)',
-                }}
-              >
-                <PsaCertPanel />
-              </div>
-            </TabsContent>
-
-            {/* AI insight */}
-            <TabsContent value="insight" className="pt-5">
-              <NEXUSCardInsight catalogId={catalogId} />
-            </TabsContent>
-
-            {/* Card info */}
-            {hasCardDetails && (
-              <TabsContent value="card" className="pt-5">
-                <div className="space-y-4">
-                  {(meta.attacks?.length > 0 || meta.abilities?.length > 0) && (
-                    <div className="space-y-3">
-                      {(meta.abilities ?? []).map((a: any) => (
-                        <div key={a.name} className="text-sm">
-                          <div className="flex items-center gap-2">
-                            <span className="font-semibold text-purple-400">{a.name}</span>
-                            <span className="text-[10px] text-muted-foreground bg-muted/40 px-1.5 py-0.5 rounded-full">{a.type}</span>
-                          </div>
-                          {a.text && <p className="text-muted-foreground text-xs leading-relaxed mt-1">{a.text}</p>}
-                        </div>
-                      ))}
-                      {(meta.attacks ?? []).map((a: any) => (
-                        <div key={a.name} className="text-sm">
-                          <div className="flex items-center gap-2">
-                            <span className="font-semibold">{a.name}</span>
-                            {a.damage && <span className="text-primary font-bold">{a.damage}</span>}
-                            {a.cost?.length > 0 && <span className="text-xs text-muted-foreground">[{a.cost.join(', ')}]</span>}
-                          </div>
-                          {a.text && <p className="text-muted-foreground text-xs leading-relaxed mt-1">{a.text}</p>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {(meta.weaknesses?.length > 0 || meta.resistances?.length > 0) && (
-                    <div className="flex gap-8 text-sm">
-                      {meta.weaknesses?.length > 0 && (
-                        <div>
-                          <p className="text-[10px] text-muted-foreground mb-1.5 uppercase tracking-widest">Weakness</p>
-                          <div className="flex gap-1.5">{meta.weaknesses.map((w: any) => (
-                            <span key={w.type} className="text-red-400 font-semibold bg-red-500/10 px-2.5 py-1 rounded-full text-xs">{w.type} {w.value}</span>
-                          ))}</div>
-                        </div>
-                      )}
-                      {meta.resistances?.length > 0 && (
-                        <div>
-                          <p className="text-[10px] text-muted-foreground mb-1.5 uppercase tracking-widest">Resistance</p>
-                          <div className="flex gap-1.5">{meta.resistances.map((r: any) => (
-                            <span key={r.type} className="text-emerald-400 font-semibold bg-emerald-500/10 px-2.5 py-1 rounded-full text-xs">{r.type} {r.value}</span>
-                          ))}</div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {meta.flavor_text && <p className="text-xs text-muted-foreground italic leading-relaxed border-l-2 border-primary/20 pl-3">{meta.flavor_text}</p>}
-                  {meta.artist && <p className="text-[10px] text-muted-foreground/50">Illustrated by {meta.artist}</p>}
-                </div>
-              </TabsContent>
-            )}
-          </Tabs>
+          {/* 4. GRADING — left exactly as-is */}
+          <GradingAdvisor catalogId={catalogId} />
+          <div
+            className="rounded-2xl border p-5 space-y-4"
+            style={{
+              background:  'linear-gradient(135deg, rgba(5,150,105,0.07) 0%, rgba(16,185,129,0.03) 100%)',
+              borderColor: 'rgba(16,185,129,0.20)',
+              boxShadow:   '0 0 0 1px rgba(16,185,129,0.08), 0 4px 24px rgba(16,185,129,0.04)',
+            }}
+          >
+            <PsaCertPanel />
+          </div>
         </div>
       </div>
     </div>
