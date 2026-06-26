@@ -2,21 +2,34 @@
 
 import { useEffect, useRef, useState } from 'react'
 
+// Serializable formatting presets — use `format` (a string) from SERVER
+// components, since functions cannot be passed across the server→client boundary.
+const FORMATTERS: Record<string, (n: number) => string> = {
+  usdCompact: (n) => (n >= 1000 ? `$${(n / 1000).toFixed(1)}k` : `$${n.toFixed(2)}`),
+  usd:        (n) => `$${n.toLocaleString('en-US', { maximumFractionDigits: 0 })}`,
+  int:        (n) => Math.round(n).toLocaleString('en-US'),
+  compact:    (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n))),
+}
+
 interface AnimatedNumberProps {
   value:      number
   duration?:  number                // ms, default 900
+  /** client-only: a custom formatter function (can't be passed from a server component) */
   formatter?: (n: number) => string
+  /** server-safe: a named formatting preset (string) */
+  format?:    keyof typeof FORMATTERS
   className?: string
 }
 
 /**
  * Counts from 0 (or its previous value) to `value` using easeOutExpo.
- * Safe to use in server-component pages — just wrap in a client component.
+ * From a SERVER component, pass `format="usdCompact"` (string) — NOT `formatter`.
  */
 export function AnimatedNumber({
   value,
   duration = 900,
   formatter,
+  format,
   className,
 }: AnimatedNumberProps) {
   const [display, setDisplay] = useState(0)
@@ -41,9 +54,11 @@ export function AnimatedNumber({
     return () => cancelAnimationFrame(rafRef.current)
   }, [value, duration])
 
-  return (
-    <span className={className}>
-      {formatter ? formatter(display) : display.toFixed(0)}
-    </span>
-  )
+  const text = formatter
+    ? formatter(display)
+    : format
+      ? FORMATTERS[format](display)
+      : display.toFixed(0)
+
+  return <span className={className}>{text}</span>
 }

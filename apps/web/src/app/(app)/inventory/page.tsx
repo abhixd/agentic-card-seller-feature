@@ -94,6 +94,22 @@ function CardBack({ initial }: { initial: string }) {
   )
 }
 
+// Real card thumbnail, falling back to the card-back illustration.
+function CardThumb({ imageUrl, initial, cardName }: { imageUrl?: string | null; initial: string; cardName: string }) {
+  if (!imageUrl) return <CardBack initial={initial} />
+  return (
+    <div style={{
+      width: 36, height: 50, borderRadius: 6, flexShrink: 0, overflow: 'hidden',
+      border: '1px solid rgba(255,255,255,0.14)', background: '#0a0e16',
+      boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+    }}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={imageUrl} alt={cardName} loading="lazy"
+        style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'top center' }} />
+    </div>
+  )
+}
+
 // ── Shimmer loading skeleton ───────────────────────────────────────────────────
 
 function ShimmerBlock({ width = '100%', height = 16, radius = 8 }: { width?: string | number; height?: number; radius?: number }) {
@@ -588,8 +604,8 @@ function InventoryCard({ item }: { item: InventoryListItem }) {
           el.style.borderLeftColor = accentColor
         }}
       >
-        {/* Card back */}
-        <CardBack initial={initial} />
+        {/* Card thumbnail (real image, falls back to card-back) */}
+        <CardThumb imageUrl={item.card.image_url} initial={initial} cardName={item.card.card_name} />
 
         {/* Card info */}
         <div style={{ flex: 1, minWidth: 0 }}>

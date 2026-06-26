@@ -130,6 +130,8 @@ export interface CardSummary {
   card_number: string | null
   variant: string | null
   category: string
+  /** small/thumbnail image for list rows (optional) */
+  image_url?: string | null
 }
 
 export interface FullAnalysisResponse {

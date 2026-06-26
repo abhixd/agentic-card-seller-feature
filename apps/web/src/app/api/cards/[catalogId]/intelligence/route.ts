@@ -83,6 +83,7 @@ export async function GET(
   // ── eBay sold comps (real USD transactions) — best-effort ──────────────────
   let liquidity: { salesPerMonth?: number } | undefined
   let hasEbay = false
+  let ebaySold: number | null = null
   try {
     const keyword = buildKeyword(card, 'en')
     const { comps: rawComps } = await fetchEbayComps(keyword)
@@ -91,6 +92,7 @@ export async function GET(
       observations.push(...observationsFromComps(comps))
       dataSources.push('ebay')
       hasEbay = true
+      ebaySold = comps.rawEstimate > 0 ? comps.rawEstimate : null
       if (comps.daysOfData > 0) {
         liquidity = { salesPerMonth: (comps.compCount / Math.max(1, comps.daysOfData)) * 30 }
       }
@@ -146,6 +148,14 @@ export async function GET(
       ? ((history[history.length - 1].price - history[0].price) / history[0].price) * 100
       : null
 
+  // ── Per-site prices for the "compare across sites" dropdown ────────────────
+  const cmPrices = meta?.cardmarket?.prices as Record<string, number> | undefined
+  const cmRef = cmPrices?.trendPrice ?? cmPrices?.averageSellPrice ?? null
+  const prices: { site: string; price: number; note?: string }[] = []
+  if (tcgMarket && tcgMarket > 0) prices.push({ site: 'TCGplayer', price: tcgMarket, note: 'market' })
+  if (ebaySold != null) prices.push({ site: 'eBay', price: ebaySold, note: 'sold median' })
+  if (typeof cmRef === 'number' && cmRef > 0) prices.push({ site: 'CardMarket', price: cmRef, note: 'EUR · EU market' })
+
   return NextResponse.json({
     catalog_id: catalogId,
     card: {
@@ -157,6 +167,7 @@ export async function GET(
     trend: { points: history, changePct },
     gradingUpsidePct: gradingUpsideRoiPercent,
     liquidityPerMonth: liquidity?.salesPerMonth ?? null,
+    prices,
     dataSources,
   })
 }

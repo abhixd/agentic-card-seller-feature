@@ -26,6 +26,7 @@ interface Intelligence {
   trend: { points: TrendPoint[]; changePct: number | null }
   gradingUpsidePct: number | null
   liquidityPerMonth: number | null
+  prices: { site: string; price: number; note?: string }[]
   dataSources: string[]
 }
 
@@ -155,6 +156,7 @@ export function CardDecisionHero({
   const [error, setError] = useState<string | null>(null)
   const [ready, setReady] = useState(false)        // gates the entrance/count-up
   const [showMath, setShowMath] = useState(false)
+  const [showPrices, setShowPrices] = useState(false)
   const [tilt, setTilt] = useState({ rx: 0, ry: 0, on: false })
   const [zoomed, setZoomed] = useState(false)
   const tiltRef = useRef<HTMLDivElement>(null)
@@ -226,6 +228,34 @@ export function CardDecisionHero({
                     <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-md uppercase tracking-wide border ${VALUATION_STYLE[data.scores.valuation] ?? VALUATION_STYLE.Unknown}`}>
                       {data.scores.valuation}
                     </span>
+                  </div>
+                )}
+
+                {/* Compare across sites */}
+                {data && data.prices.length > 0 && (
+                  <div className="mt-2.5">
+                    <button onClick={() => setShowPrices((v) => !v)}
+                      className="inline-flex items-center gap-1 text-[11px] text-white/45 hover:text-white/80 transition-colors">
+                      {showPrices ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                      Compare {data.prices.length} {data.prices.length === 1 ? 'source' : 'sources'}
+                    </button>
+                    {showPrices && (
+                      <div className="hero-rise mt-1.5 rounded-lg border border-white/10 bg-black/30 divide-y divide-white/[0.06] overflow-hidden">
+                        {data.prices.map((p) => (
+                          <div key={p.site} className="flex items-center justify-between gap-3 px-2.5 py-1.5">
+                            <span className="text-[11px] text-white/65">
+                              {p.site}{p.note && <span className="text-white/30"> · {p.note}</span>}
+                            </span>
+                            <span className="text-[12px] font-semibold tabular-nums text-white/90">
+                              {p.note?.includes('EUR') ? '€' : '$'}{p.price.toFixed(2)}
+                            </span>
+                          </div>
+                        ))}
+                        <div className="px-2.5 py-1.5 text-[10px] text-white/30 leading-snug">
+                          Blended into the consensus above. Collectr has no public price API.
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </>

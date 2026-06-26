@@ -59,7 +59,9 @@ export async function listInventory(
         year,
         card_number,
         variant,
-        category
+        category,
+        canonical_image_url,
+        metadata_json
       ),
       card_analyses (
         recommendation_type,
@@ -90,6 +92,11 @@ export async function listInventory(
       card_number:        row.card_catalog_items?.card_number        ?? null,
       variant:            row.card_catalog_items?.variant            ?? null,
       category:           row.card_catalog_items?.category           ?? '',
+      image_url:
+        row.card_catalog_items?.metadata_json?.images?.small ??
+        row.card_catalog_items?.metadata_json?.images?.large ??
+        row.card_catalog_items?.canonical_image_url ??
+        null,
     },
     recommendation_type:    row.card_analyses?.recommendation_type    ?? null,
     estimated_market_value: row.card_analyses?.estimated_market_value ?? null,

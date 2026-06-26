@@ -244,7 +244,7 @@ export default async function MarketPage() {
                     background: 'linear-gradient(90deg, #e2e8f0 0%, #94a3b8 60%, #f59e0b 100%)',
                     WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
                   }}>
-                  <AnimatedNumber value={indexValue} formatter={fmtUsd} duration={1100} />
+                  <AnimatedNumber value={indexValue} format="usdCompact" duration={1100} />
                 </p>
                 <p className="text-[10px] text-white/25 mt-1">Composite market value of top 100 cards</p>
               </div>
