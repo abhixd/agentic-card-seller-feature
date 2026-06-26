@@ -9,6 +9,7 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { KpiTiles } from '@/components/dashboard/KpiTiles'
 import { PortfolioChart } from '@/components/dashboard/PortfolioChart'
+import { HomeSearchHero } from '@/components/dashboard/HomeSearchHero'
 
 // ── TCGPlayer price extractor ─────────────────────────────────────────────────
 
@@ -260,6 +261,9 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-4 pb-12 max-w-[1400px]">
+
+      {/* ══ Search-first hero — the front door ══════════════════════════════ */}
+      <HomeSearchHero />
 
       {/* ══ Terminal header ══════════════════════════════════════════════════ */}
       <div
