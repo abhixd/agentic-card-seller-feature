@@ -4,20 +4,20 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
   LayoutDashboard, ScanLine, Archive, LogOut, Layers,
-  BookOpen, Newspaper, Users, ArrowLeftRight, TrendingUp, Heart, ShoppingBag, CalendarDays,
-  ShoppingCart, Settings, Wrench, Award, Target,
+  TrendingUp, Settings, Award, Target,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 import { signOut } from '@/lib/auth/authService'
 import { Button } from '@/components/ui/button'
 
-// Each item has its own icon gradient pair so the sidebar looks like a high-quality
-// mobile app launcher — every destination has a distinct visual identity.
+// Cleaned to the core decision surfaces only. Secondary tools (trade, wantlist,
+// marketplace, community, sets, news, releases, eBay listings, optimize) still
+// exist at their routes but are no longer top-level nav clutter.
 const navItems = [
   {
     href:  '/dashboard',
-    label: 'Dashboard',
+    label: 'Today',
     icon:  LayoutDashboard,
     grad:  ['#6366f1', '#4338ca'],   // indigo
     glow:  'rgba(99,102,241,0.7)',
@@ -25,7 +25,7 @@ const navItems = [
   },
   {
     href:  '/analyze',
-    label: 'Analyze Card',
+    label: 'Analyze',
     icon:  ScanLine,
     grad:  ['#8b5cf6', '#6d28d9'],   // violet
     glow:  'rgba(139,92,246,0.7)',
@@ -33,7 +33,7 @@ const navItems = [
   },
   {
     href:  '/grade',
-    label: 'Grade Card',
+    label: 'Grade',
     icon:  Award,
     grad:  ['#f43f5e', '#be123c'],   // rose
     glow:  'rgba(244,63,94,0.7)',
@@ -41,7 +41,7 @@ const navItems = [
   },
   {
     href:  '/scout',
-    label: 'Sourcing Scout',
+    label: 'Scout',
     icon:  Target,
     grad:  ['#06b6d4', '#0e7490'],   // cyan
     glow:  'rgba(6,182,212,0.7)',
@@ -49,7 +49,7 @@ const navItems = [
   },
   {
     href:  '/inventory',
-    label: 'Inventory',
+    label: 'Portfolio',
     icon:  Archive,
     grad:  ['#10b981', '#047857'],   // emerald
     glow:  'rgba(16,185,129,0.7)',
@@ -57,83 +57,11 @@ const navItems = [
   },
   {
     href:  '/market',
-    label: 'Market Index',
+    label: 'Market',
     icon:  TrendingUp,
     grad:  ['#f59e0b', '#b45309'],   // amber
     glow:  'rgba(245,158,11,0.7)',
     text:  'text-amber-300',
-  },
-  {
-    href:  '/tools',
-    label: 'Optimize',
-    icon:  Wrench,
-    grad:  ['#06b6d4', '#6366f1'],   // cyan → indigo
-    glow:  'rgba(99,102,241,0.7)',
-    text:  'text-indigo-300',
-  },
-  {
-    href:  '/trade',
-    label: 'Trade Analyzer',
-    icon:  ArrowLeftRight,
-    grad:  ['#f97316', '#c2410c'],   // orange
-    glow:  'rgba(249,115,22,0.7)',
-    text:  'text-orange-300',
-  },
-  {
-    href:  '/wantlist',
-    label: 'Wantlist',
-    icon:  Heart,
-    grad:  ['#ec4899', '#be185d'],   // pink
-    glow:  'rgba(236,72,153,0.7)',
-    text:  'text-pink-300',
-  },
-  {
-    href:  '/marketplace',
-    label: 'Marketplace',
-    icon:  ShoppingBag,
-    grad:  ['#6366f1', '#4338ca'],   // indigo
-    glow:  'rgba(99,102,241,0.7)',
-    text:  'text-indigo-300',
-  },
-  {
-    href:  '/community',
-    label: 'Community',
-    icon:  Users,
-    grad:  ['#a855f7', '#7e22ce'],   // purple
-    glow:  'rgba(168,85,247,0.7)',
-    text:  'text-purple-300',
-  },
-  {
-    href:  '/sets',
-    label: 'Browse Sets',
-    icon:  BookOpen,
-    grad:  ['#eab308', '#a16207'],   // yellow
-    glow:  'rgba(234,179,8,0.7)',
-    text:  'text-yellow-300',
-  },
-  {
-    href:  '/news',
-    label: 'News',
-    icon:  Newspaper,
-    grad:  ['#ef4444', '#b91c1c'],   // red
-    glow:  'rgba(239,68,68,0.7)',
-    text:  'text-red-300',
-  },
-  {
-    href:  '/releases',
-    label: 'Releases',
-    icon:  CalendarDays,
-    grad:  ['#06b6d4', '#0891b2'],   // cyan
-    glow:  'rgba(6,182,212,0.7)',
-    text:  'text-cyan-300',
-  },
-  {
-    href:  '/listings',
-    label: 'eBay Listings',
-    icon:  ShoppingCart,
-    grad:  ['#10b981', '#047857'],   // emerald
-    glow:  'rgba(16,185,129,0.7)',
-    text:  'text-emerald-300',
   },
   {
     href:  '/settings',
