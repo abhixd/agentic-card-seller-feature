@@ -61,6 +61,13 @@ SEG_RETRIES    = int(os.environ.get("SEG_RETRIES", "3"))
 # that speck to a black image (card_06/08). We select by AREA and reject anything below this floor.
 SEG_MIN_AREA_FRAC = float(os.environ.get("SEG_MIN_AREA_FRAC", str(cfg("segmentation", "min_area_frac", 0.05))))
 
+# Segmentation source: "roboflow" (hosted Model-C SAM workflow, default) | "remote_sam3" (a self-hosted SAM3
+# server, e.g. the M4 box, reached over HTTP). Both return the same raw polygon → identical downstream warp.
+# Temporary bridge while Roboflow credits are out; the grader's seg_then_yolo fallback still wraps this.
+SEG_BACKEND      = os.environ.get("SEG_BACKEND", "roboflow").lower()
+SEG_REMOTE_URL   = os.environ.get("SEG_REMOTE_URL", "")        # e.g. https://<tunnel>/segment
+SEG_REMOTE_TOKEN = os.environ.get("SEG_REMOTE_TOKEN", "")
+
 
 def _poly_area(pts, sx=1.0, sy=1.0) -> float:
     """Shoelace area of a Roboflow points polygon (in original-image px after sx/sy scaling)."""
@@ -232,40 +239,18 @@ def _post_workflow(b64: str, api_key: str, classes: str) -> dict:
     raise RuntimeError(f"segmentation workflow call failed after {SEG_RETRIES} tries: {last_err}")
 
 
-def segment_card(img_bgr: np.ndarray,
-                 api_key: str | None = None,
-                 classes: str | None = None,
-                 sigma: float | None = None) -> dict:
-    """
-    Detect the card via the Roboflow segmentation workflow.
-
-    Returns dict:
-        contour_raw      : (M,2) float32 — raw segmentation polygon (source px)
-        contour          : (N,2) float32 — corner-preserving SMOOTHED outline
-        quad             : (4,2) float32 — corners derived from the smoothed contour
-        conf             : float
-        n_segments       : int
-
-    Raises ValueError if no card is segmented, RuntimeError on API failure.
-    """
-    api_key = api_key or os.environ.get("ROBOFLOW_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("ROBOFLOW_API_KEY not set (required for segmentation detector)")
-    classes = classes if classes is not None else SEG_CLASSES
-    sigma   = SEG_SIGMA if sigma is None else sigma
-
+def _roboflow_polygon(img_bgr, api_key, classes):
+    """Roboflow segmentation workflow → (contour_raw source-px float32, conf, n_segments). Raises on miss / API failure."""
     oh, ow = img_bgr.shape[:2]
     ok, buf = cv2.imencode(".jpg", img_bgr)
     if not ok:
         raise RuntimeError("JPEG encode failed")
     b64 = base64.b64encode(buf.tobytes()).decode("ascii")
-
     data = _post_workflow(b64, api_key, classes)
     try:
         out = data["outputs"][0]
     except (KeyError, IndexError):
         raise ValueError("segmentation workflow returned no outputs")
-
     pred_block = out.get("predictions", {}) or {}
     img_block = pred_block.get("image") or {}
     iw = img_block.get("width")  or ow          # Roboflow occasionally returns width/height = None;
@@ -274,7 +259,6 @@ def segment_card(img_bgr: np.ndarray,
     preds = pred_block.get("predictions", []) or []
     if not preds:
         raise ValueError("no card segmented in image")
-
     # Select the LARGEST region (the card), NOT the highest-confidence one — Roboflow can emit a tiny
     # high-confidence speck that, picked by confidence, warps to black (card_06/08). The card is by far
     # the biggest object, so area is the reliable selector.
@@ -286,17 +270,73 @@ def segment_card(img_bgr: np.ndarray,
     if area_frac < SEG_MIN_AREA_FRAC:                       # even the largest region is a speck → genuine miss
         raise ValueError(f"segmentation found no card: largest region is {area_frac*100:.2f}% of the image "
                          f"(< {SEG_MIN_AREA_FRAC*100:.0f}% floor)")
-
     contour_raw = np.array([[p["x"] * sx, p["y"] * sy] for p in pts], dtype=np.float32)
-    contour     = smooth_contour(contour_raw, n=SEG_RESAMPLE_N, sigma=sigma).astype(np.float32)
+    return contour_raw, float(best.get("confidence", 0.0)), len(preds)
+
+
+def _remote_sam3_polygon(img_bgr):
+    """Self-hosted SAM3 server (SEG_REMOTE_URL) → (contour_raw source-px float32, conf, n). Raises on miss/unreachable."""
+    if not SEG_REMOTE_URL:
+        raise RuntimeError("SEG_REMOTE_URL not set (required for SEG_BACKEND=remote_sam3)")
+    oh, ow = img_bgr.shape[:2]
+    ok, buf = cv2.imencode(".jpg", img_bgr)
+    if not ok:
+        raise RuntimeError("JPEG encode failed")
+    b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+    headers = {"Authorization": f"Bearer {SEG_REMOTE_TOKEN}"} if SEG_REMOTE_TOKEN else {}
+    resp = requests.post(SEG_REMOTE_URL, json={"image": b64, "classes": SEG_CLASSES}, headers=headers, timeout=SEG_TIMEOUT)
+    resp.raise_for_status()
+    d = resp.json()
+    pts = d.get("points") or []
+    if len(pts) < 3:
+        raise ValueError("remote SAM3: segmentation polygon has too few points")
+    contour_raw = np.array(pts, dtype=np.float32)
+    area_frac = d.get("area_frac")
+    if area_frac is None:
+        area_frac = abs(cv2.contourArea(contour_raw.reshape(-1, 1, 2))) / max(ow * oh, 1)
+    if area_frac < SEG_MIN_AREA_FRAC:
+        raise ValueError(f"remote SAM3 found no card: largest region is {area_frac*100:.2f}% "
+                         f"(< {SEG_MIN_AREA_FRAC*100:.0f}% floor)")
+    return contour_raw, float(d.get("conf", 0.99)), int(d.get("n", 1))
+
+
+def segment_card(img_bgr: np.ndarray,
+                 api_key: str | None = None,
+                 classes: str | None = None,
+                 sigma: float | None = None) -> dict:
+    """
+    Detect the card and return its outline. Source = SEG_BACKEND:
+      "roboflow"    — hosted Model-C SAM workflow (default).
+      "remote_sam3" — self-hosted SAM3 server (SEG_REMOTE_URL), e.g. the M4 box.
+    Both return the same raw polygon; the smoothing → contour → quad below is IDENTICAL, so the downstream
+    warp / centering is unchanged regardless of source.
+
+    Returns dict:
+        contour_raw : (M,2) float32 — raw segmentation polygon (source px)
+        contour     : (N,2) float32 — corner-preserving SMOOTHED outline
+        quad        : (4,2) float32 — corners derived from the smoothed contour
+        conf        : float
+        n_segments  : int
+
+    Raises ValueError if no card is segmented, RuntimeError on API/transport failure.
+    """
+    classes = classes if classes is not None else SEG_CLASSES
+    sigma   = SEG_SIGMA if sigma is None else sigma
+    if SEG_BACKEND == "remote_sam3":
+        contour_raw, conf, n = _remote_sam3_polygon(img_bgr)
+    else:
+        api_key = api_key or os.environ.get("ROBOFLOW_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("ROBOFLOW_API_KEY not set (required for segmentation detector)")
+        contour_raw, conf, n = _roboflow_polygon(img_bgr, api_key, classes)
+    contour = smooth_contour(contour_raw, n=SEG_RESAMPLE_N, sigma=sigma).astype(np.float32)
     # quad drives the perspective warp. "edges" fits the detected sides and intersects them (axis-aligned,
     # no corner clip); "corners" is the legacy approxPolyDP. Smoothed `contour` stays the display outline (cw).
-    quad        = edge_intersection_quad(contour_raw) if SEG_QUAD_MODE == "edges" else quad_from_contour(contour)
-
+    quad    = edge_intersection_quad(contour_raw) if SEG_QUAD_MODE == "edges" else quad_from_contour(contour)
     return {
         "contour_raw": contour_raw,
         "contour":     contour,
         "quad":        quad,
-        "conf":        float(best.get("confidence", 0.0)),
-        "n_segments":  len(preds),
+        "conf":        float(conf),
+        "n_segments":  int(n),
     }
