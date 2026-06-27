@@ -20,6 +20,23 @@ export const maxDuration = 300
 const BATCH_LIMIT   = 60    // max cards per run
 const DELAY_MS      = 500   // ms between JustTCG requests
 const CACHE_TTL_MS  = 23 * 60 * 60 * 1000   // skip cards refreshed in last 23h
+const TOP_MARKET    = 300   // also refresh the top-N catalog cards by market value
+const PAGE_SIZE     = 1000  // catalog ranking page size
+const MAX_PAGES     = 40    // safety cap on the ranking scan
+
+/** Highest TCGplayer market (fallback mid) across a card's price bands. */
+function bestMarket(tcg: any): number {
+  const prices = tcg?.prices
+  if (!prices) return 0
+  let best = 0
+  for (const b of Object.values(prices) as any[]) {
+    const m = typeof b?.market === 'number' && b.market > 0 ? b.market
+            : typeof b?.mid === 'number' && b.mid > 0 ? b.mid
+            : 0
+    if (m > best) best = m
+  }
+  return best
+}
 
 function mergePoints(
   existing: JustTcgPoint[],
@@ -63,26 +80,53 @@ export async function GET(req: NextRequest) {
 
   const supabase = createServiceClient()
 
-  // Fetch unique catalog IDs from active inventory across all users
-  const { data: inventoryRows, error: invErr } = await supabase
+  // ── Build the refresh set: active inventory + the top cards by market value ──
+  // Previously ONLY inventory was covered, which is why the CSOI top-100 charts
+  // stayed empty — nobody owns most of those cards.
+  const { data: inventoryRows } = await supabase
     .from('inventory_items')
     .select('catalog_id')
     .neq('status', 'sold')
+  const invIds = [...new Set((inventoryRows ?? []).map((r: any) => r.catalog_id as string))]
 
-  if (invErr || !inventoryRows?.length) {
-    return NextResponse.json({ ok: true, processed: 0, reason: 'no active inventory' })
+  // Rank the catalog by TCGplayer market price (paged light projection of just
+  // the pricing subtree, so we don't pull every card's full metadata).
+  const ranked: { id: string; price: number }[] = []
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const { data: rows, error } = await supabase
+      .from('card_catalog_items')
+      .select('catalog_id, tcg:metadata_json->tcgplayer')
+      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1)
+    if (error || !rows?.length) break
+    for (const r of rows as any[]) {
+      const price = bestMarket(r.tcg)
+      if (price > 0) ranked.push({ id: r.catalog_id as string, price })
+    }
+    if (rows.length < PAGE_SIZE) break
+  }
+  const topIds = ranked.sort((a, b) => b.price - a.price).slice(0, TOP_MARKET).map((x) => x.id)
+
+  const candidateIds = [...new Set([...invIds, ...topIds])]
+  if (candidateIds.length === 0) {
+    return NextResponse.json({ ok: true, processed: 0, reason: 'no candidates' })
   }
 
-  // Unique catalog IDs
-  const uniqueIds = [...new Set(inventoryRows.map((r: any) => r.catalog_id as string))]
-
-  // Fetch card data for these catalog IDs
-  const { data: cards } = await supabase
+  // Fetch full card data, then refresh the BATCH_LIMIT least-recently-updated
+  // ones so coverage rotates across runs (every 6h).
+  const { data: allCards } = await supabase
     .from('card_catalog_items')
     .select('catalog_id, card_name, card_number, set_name, metadata_json')
-    .in('catalog_id', uniqueIds.slice(0, BATCH_LIMIT))
+    .in('catalog_id', candidateIds)
 
-  if (!cards?.length) {
+  const lastFetchedMs = (c: any) => {
+    const f = c.metadata_json?.tcg_history?.fetched_at as string | undefined
+    return f ? new Date(f).getTime() : 0
+  }
+  const cards = (allCards ?? [])
+    .sort((a: any, b: any) => lastFetchedMs(a) - lastFetchedMs(b))
+    .slice(0, BATCH_LIMIT)
+
+  if (!cards.length) {
     return NextResponse.json({ ok: true, processed: 0 })
   }
 
