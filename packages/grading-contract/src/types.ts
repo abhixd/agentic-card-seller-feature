@@ -51,6 +51,21 @@ export interface GradeResponse {
   issues?: Issues | null;
   /** overall grade confidence */
   confidence?: "low" | "medium" | "high" | null;
+  /** per-pillar visual overlays (base64) for click-to-inspect popups:
+   *  { centering, edges, surface: string; corners: { TL, TR, BR, BL: string } } */
+  pillar_visuals?: {
+    centering?: string | null;
+    edges?: string | null;
+    surface?: string | null;
+    corners?: Record<"TL" | "TR" | "BR" | "BL", string> | null;
+  } | null;
+  /** high-res zoomed close-ups of detected problem areas (present only when /grade is called with
+   *  ?zoom=1) — clean crops for the buyer to verify defects before purchase. */
+  pillar_zooms?: {
+    edges?: Record<string, { crop_b64: string; flagged?: string[] }>;
+    surface?: { scratches?: { crop_b64: string; count?: number } };
+    corners?: Record<"TL" | "TR" | "BR" | "BL", string> | null;
+  } | null;
   /** present when a title/identity is supplied; shape still evolving — treat as opaque for now */
   economics?: Record<string, unknown> | null;
   decision?: Record<string, unknown> | null;

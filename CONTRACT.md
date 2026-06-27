@@ -29,17 +29,20 @@ const grade = await gradeCard(process.env.GRADING_API_URL!, { image, title, pric
 - **Endpoint:** `apps/web/app/api/grade` proxies to `GRADING_API_URL` (so the URL — not code — selects
   which grading backend the app talks to).
 
-### Public response shape (v1.0.0)
+### Public response shape (v1.1.0)
 
 | field | type | notes |
 |---|---|---|
 | `overall_score` | number? | 1..10 |
 | `psa_equivalent` | string? | e.g. `"PSA 9 MINT"` |
-| `centering` | `{ score, left_right, top_bottom, reliable, notes?, content_region?, confidence? }` | `left_right`/`top_bottom` are `"49/51"` strings; `confidence` (0..1) is the **planned** faint-edge/thin-border reliability — null until grading fills it in |
+| `centering` | `{ score, left_right, top_bottom, reliable, notes?, content_region?, confidence? }` | `left_right`/`top_bottom` are `"49/51"` strings; `confidence` (0..1) is the graded reliability (min per-side P) — **live** |
 | `corners` / `edges` / `surface` | `{ score, worst_severity? }` | |
 | `issues` | `{ corners[], edges[], surface[], centering[] }` | human-readable findings |
 | `confidence` | `"low" \| "medium" \| "high"`? | overall grade confidence |
+| `pillar_visuals` | `{ centering, edges, surface: b64, corners: {TL,TR,BR,BL: b64} }`? | per-pillar overlay images for click-to-inspect popups |
 | `economics` / `decision` | object? | present when a title/identity is supplied; treat as opaque for now |
+
+Version history: **1.1.0** added `centering.confidence` + `pillar_visuals` (both optional → MINOR).
 
 `_`-prefixed keys (`_warped_jpeg_b64`, `_source`, …) ride the wire but are **internal** — not part of the
 contract. Don't depend on them from the product.

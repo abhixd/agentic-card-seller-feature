@@ -43,7 +43,15 @@ YOLO_WEIGHTS  = os.environ.get(
 )
 YOLO_CONF   = float(os.environ.get("YOLO_CONF", "0.25"))
 YOLO_IMGSZ  = int(os.environ.get("YOLO_IMGSZ", "640"))
-PADDING_FRAC   = cfg("segmentation", "padding_frac", 0.03)
+# Warp margin as a fraction of the card's longer side. Default 0.03 — load-bearing: the edge-band
+# thresholds (CV_THRESHOLDS) are calibrated to this margin, and dropping it shifts the edge pillar (a
+# pillar-sweep showed 0.01 moves ~24% of grades). Env-overridable so 0.01 can be A/B'd later without a
+# code change — set PADDING_FRAC on the Railway service, but re-validate the edge pillar before adopting.
+PADDING_FRAC   = float(os.environ.get("PADDING_FRAC", cfg("segmentation", "padding_frac", 0.03)))
+# How the PADDING_FRAC margin is applied: "output-inset" maps the card corners → an inset rectangle and lets
+# the homography fill the margin (perspective-correct → ZERO tilt). "radial" is the legacy corner-push, which
+# tilts a perspective-photographed card. Default output-inset (radial retired 2026-06); PAD_MODE=radial reverts.
+PAD_MODE       = os.environ.get("PAD_MODE", "output-inset").lower()
 CB_SEARCH_FRAC = cfg("cb_refine", "search_frac", 0.10)      # refine_cb_in_warped inward search
 CB_BALANCE_MARGIN = cfg("cb_refine", "balance_margin", 0.006)  # _balance_cb_padding tolerance
 CB_CONTOUR_CAP    = cfg("cb_refine", "contour_cap", 0.05)      # _expand_cb_to_contour: max outward expand (frac of card)
@@ -123,6 +131,24 @@ def adaptive_padding(quad_raw, padding_frac=0.03):
     """Compute padding in pixels as a fraction of the card's longer side."""
     sides = [np.linalg.norm(quad_raw[(i+1) % 4] - quad_raw[i]) for i in range(4)]
     return padding_frac * max(sides)
+
+
+def inset_quad_padded(quad_raw, m, out_w=630, out_h=880):
+    """OUTPUT-INSET padding: the quad_padded (source px) whose warp to (out_w,out_h) places the card at a
+    uniform fractional inset `m` on every side. Equivalent to mapping the card corners to an inset rectangle
+    and letting the homography fill the margin — perspective-correct, ZERO tilt (unlike the radial corner-push,
+    which skews a perspective-photographed card). `m<=0` → no padding. card_boundary_analytical(quad_raw, this)
+    then returns cb=[m,m,1-m,1-m]; downstream warps (630x880 grade, 1260x1760 zoom) keep the inset since the
+    aspect matches."""
+    quad_raw = np.asarray(quad_raw, np.float32)
+    if m <= 1e-9:
+        return quad_raw
+    src = _order_corners(quad_raw)
+    dst = np.array([[m*out_w, m*out_h], [(1-m)*out_w, m*out_h],
+                    [(1-m)*out_w, (1-m)*out_h], [m*out_w, (1-m)*out_h]], dtype=np.float32)
+    M   = cv2.getPerspectiveTransform(src, dst)
+    rect = np.array([[[0, 0]], [[out_w, 0]], [[out_w, out_h]], [[0, out_h]]], dtype=np.float32)
+    return cv2.perspectiveTransform(rect, np.linalg.inv(M)).reshape(4, 2).astype(np.float32)
 
 
 # ── Edge refinement ────────────────────────────────────────────────────────────
@@ -1195,11 +1221,12 @@ def _detect_seg(img_bgr: np.ndarray, api_key: str = None):
     }
 
 
-def detect_and_grade(img_bgr: np.ndarray, api_key: str = None) -> dict:
+def detect_and_grade(img_bgr: np.ndarray, api_key: str = None, zoom: bool = False) -> dict:
     """
     Full pipeline: detect card -> warp -> Claude grading.
 
     Detector chosen by CARD_DETECTOR env ("yolo" | "seg" | "seg_then_yolo").
+    `zoom` (CV backend only) adds high-res per-defect close-ups under `pillar_zooms`.
     Returns grade dict. Raises ValueError if no card detected.
     """
     if CARD_DETECTOR == "seg":
@@ -1213,11 +1240,14 @@ def detect_and_grade(img_bgr: np.ndarray, api_key: str = None) -> dict:
     else:  # "yolo" (default)
         quad_raw, contour, meta = _detect_yolo(img_bgr)
 
-    pad_px      = adaptive_padding(quad_raw, padding_frac=PADDING_FRAC)
-    centroid    = quad_raw.mean(axis=0)
-    dirs        = quad_raw - centroid
-    norms       = np.linalg.norm(dirs, axis=1, keepdims=True).clip(min=1)
-    quad_padded = quad_raw + (dirs / norms) * pad_px
+    if PAD_MODE == "output-inset":
+        quad_padded = inset_quad_padded(quad_raw, PADDING_FRAC)   # perspective-correct margin, zero tilt
+    else:                                                          # legacy radial corner-push (tilts perspective cards)
+        pad_px      = adaptive_padding(quad_raw, padding_frac=PADDING_FRAC)
+        centroid    = quad_raw.mean(axis=0)
+        dirs        = quad_raw - centroid
+        norms       = np.linalg.norm(dirs, axis=1, keepdims=True).clip(min=1)
+        quad_padded = quad_raw + (dirs / norms) * pad_px
 
     # Grading backend: "cv" (classical-CV XGBoost, default) | "vlm" (Claude Sonnet, legacy backup).
     if os.environ.get("GRADER_BACKEND", "cv").lower() == "vlm":
@@ -1226,7 +1256,7 @@ def detect_and_grade(img_bgr: np.ndarray, api_key: str = None) -> dict:
     else:
         import cv_grader   # lazy (cv_grader imports grader); CV is the default backend
         result = cv_grader.grade_card_cv(img_bgr, quad_raw=quad_raw,
-                                         quad_padded=quad_padded, contour=contour)
+                                         quad_padded=quad_padded, contour=contour, zoom=zoom)
     result.update(meta)
     result["_quad_raw"]    = quad_raw.tolist()
     result["_quad_padded"] = quad_padded.tolist()

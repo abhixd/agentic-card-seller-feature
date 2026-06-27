@@ -226,6 +226,32 @@
       "default": null,
       "title": "Confidence"
     },
+    "pillar_visuals": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pillar Visuals"
+    },
+    "pillar_zooms": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Pillar Zooms"
+    },
     "economics": {
       "anyOf": [
         {
@@ -262,5 +288,5 @@
   "title": "GradeResponse",
   "type": "object",
   "$id": "https://acs/grading-contract/grade-response.schema.json",
-  "x-contract-version": "1.0.0"
+  "x-contract-version": "1.2.0"
 }
