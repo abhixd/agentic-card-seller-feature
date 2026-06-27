@@ -626,6 +626,49 @@ function GradePanel({
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
+/**
+ * Local fallback forecast — a linear-trend projection with a widening band,
+ * fit on the recent history. Used whenever the Prophet forecast service isn't
+ * available, so the forecast line is always present when there's enough history.
+ */
+function localForecast(points: { date: string; price: number }[], horizonDays: number): ForecastPoint[] {
+  const clean = [...points]
+    .filter((p) => typeof p.price === 'number' && p.price > 0 && p.date)
+    .sort((a, b) => a.date.localeCompare(b.date))
+  if (clean.length < 3) return []
+
+  const recent = clean.slice(-60)
+  const t0 = new Date(recent[0].date).getTime()
+  const xs = recent.map((p) => (new Date(p.date).getTime() - t0) / 86_400_000)
+  const ys = recent.map((p) => p.price)
+  const n = xs.length
+  const sx = xs.reduce((s, v) => s + v, 0)
+  const sy = ys.reduce((s, v) => s + v, 0)
+  const sxx = xs.reduce((s, v) => s + v * v, 0)
+  const sxy = xs.reduce((s, v, i) => s + v * ys[i], 0)
+  const denom = n * sxx - sx * sx || 1
+  const b = (n * sxy - sx * sy) / denom
+  const a = (sy - b * sx) / n
+  const resid = ys.map((y, i) => y - (a + b * xs[i]))
+  const std = Math.sqrt(resid.reduce((s, r) => s + r * r, 0) / n) || ys[ys.length - 1] * 0.05
+
+  const lastX = xs[xs.length - 1]
+  const lastMs = new Date(recent[recent.length - 1].date).getTime()
+  const step = Math.max(1, Math.round(horizonDays / 12))
+  const out: ForecastPoint[] = []
+  for (let d = step; d <= horizonDays; d += step) {
+    const yhat = a + b * (lastX + d)
+    const band = std * (1 + d / horizonDays) * 1.5
+    out.push({
+      date: new Date(lastMs + d * 86_400_000).toISOString().slice(0, 10),
+      yhat: Math.max(0, yhat),
+      lower: Math.max(0, yhat - band),
+      upper: yhat + band,
+    })
+  }
+  return out
+}
+
 export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
   // ── Source selection ──────────────────────────────────────────────────────
   const [source,      setSource]      = useState<DataSource>('ebay')
@@ -644,7 +687,7 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
   const [tcgConfigured, setTcgConfigured] = useState(true)
 
   // ── Forecast state ────────────────────────────────────────────────────────
-  const [showForecast,     setShowForecast]     = useState(false)
+  const [showForecast,     setShowForecast]     = useState(true)
   const [forecastHorizon,  setForecastHorizon]  = useState<ForecastHorizon>(30)
   const [forecastPoints,   setForecastPoints]   = useState<ForecastPoint[]>([])
   const [fittedPoints,     setFittedPoints]     = useState<ForecastPoint[]>([])
@@ -763,12 +806,17 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
     loadForecast(forecastHorizon)
       .then((res) => {
         if (cancelled) return
-        if (res.error) { setForecastError(res.error); return }
-        setForecastPoints(res.forecast ?? [])
+        // On any service error/empty, leave forecastPoints empty so the LOCAL
+        // trend fallback (below) draws the line instead. No hard error surfaced.
+        if (res.error || !res.forecast?.length) {
+          setForecastPoints([]); setFittedPoints([]); setChangepoints([])
+          return
+        }
+        setForecastPoints(res.forecast)
         setFittedPoints(res.fitted ?? [])
         setChangepoints(res.changepoints ?? [])
       })
-      .catch(() => { if (!cancelled) setForecastError('Forecast unavailable') })
+      .catch(() => { if (!cancelled) setForecastPoints([]) })
       .finally(() => { if (!cancelled) setForecastLoading(false) })
 
     return () => { cancelled = true }
@@ -825,8 +873,14 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
   }, [tcgPoints, tcgDuration])
 
   const tcgBaseData   = source === 'justtcg' ? buildTcgChartDays(tcgVisiblePoints, TCG_DURATION_DAYS[tcgDuration]) : []
-  const tcgChartData  = (source === 'justtcg' && showForecast && forecastPoints.length)
-    ? mergeForecast(tcgBaseData, forecastPoints, fittedPoints, changepoints)
+  // Prefer the Prophet service forecast; fall back to a local trend projection so
+  // the purple forecast line is always present when there's enough history.
+  const forecastIsLocal = showForecast && forecastPoints.length === 0
+  const effectiveForecast = (source === 'justtcg' && showForecast)
+    ? (forecastPoints.length ? forecastPoints : localForecast(tcgVisiblePoints, forecastHorizon))
+    : []
+  const tcgChartData  = (source === 'justtcg' && showForecast && effectiveForecast.length)
+    ? mergeForecast(tcgBaseData, effectiveForecast, fittedPoints, changepoints)
     : tcgBaseData
   const tcgColor      = '#a78bfa'
   const tcgHasTrend   = tcgChartData.length >= 4 && tcgChartData[0].trend != null
@@ -1135,7 +1189,7 @@ export function PriceHistoryChart({ catalogId }: { catalogId: string }) {
 
           <p className="text-[9px] text-white/15 text-right">
             Data via JustTCG · TCGPlayer market price · NM condition
-            {showForecast && ' · Forecast via Prophet (Meta)'}
+            {showForecast && (forecastIsLocal ? ' · Forecast: local trend model' : ' · Forecast via Prophet (Meta)')}
           </p>
         </div>
       )}

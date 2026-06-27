@@ -278,7 +278,7 @@ export function CardDecisionHero({
             ref={tiltRef}
             onMouseMove={onTiltMove}
             onMouseLeave={() => setTilt({ rx: 0, ry: 0, on: false })}
-            className="hero-rise relative w-44 sm:w-52"
+            className="hero-rise relative w-48 sm:w-60"
             style={{ animationDelay: '0ms', perspective: '900px' }}
           >
             <div
@@ -406,15 +406,15 @@ export function CardDecisionHero({
           role="dialog"
           aria-modal="true"
           aria-label={`${cardName} enlarged`}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 backdrop-blur-sm cursor-zoom-out p-6"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md cursor-zoom-out p-3 sm:p-4"
           style={{ animation: 'heroRise .18s ease' }}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={imageUrl}
             alt={cardName}
-            className="max-h-[92vh] max-w-[92vw] object-contain rounded-2xl"
-            style={{ boxShadow: '0 30px 90px rgba(0,0,0,0.7)', animation: 'heroRise .28s cubic-bezier(.22,1,.36,1)' }}
+            className="max-h-[96vh] max-w-[96vw] object-contain rounded-2xl"
+            style={{ boxShadow: '0 30px 100px rgba(0,0,0,0.75)', animation: 'heroRise .28s cubic-bezier(.22,1,.36,1)' }}
           />
           <span className="absolute bottom-5 left-1/2 -translate-x-1/2 text-[11px] text-white/40">
             Click anywhere or press Esc to close
