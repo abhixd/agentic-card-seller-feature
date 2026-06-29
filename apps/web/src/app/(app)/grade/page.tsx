@@ -4,6 +4,7 @@ import { useState } from 'react'
 import type { GradeResult, CardProfile } from '@/lib/grading/types'
 import { GradeResultCompact } from '@/components/grading/GradeResultCompact'
 import { GradeFeedback } from '@/components/grading/GradeFeedback'
+import { SurfaceScratchPanel } from '@/components/grading/SurfaceScratchPanel'
 
 export default function GradePage() {
   const [file, setFile] = useState<File | null>(null)
@@ -127,6 +128,11 @@ export default function GradePage() {
               grader_backend: result._grader_backend,
             }}
             warpedJpegB64={result._warped_jpeg_b64}
+          />
+
+          <SurfaceScratchPanel
+            warpedJpegB64={result._warped_jpeg_b64}
+            surface={result.defect_boxes?.surface}
           />
 
           {result.summary && <p className="text-sm text-muted-foreground">{result.summary}</p>}
