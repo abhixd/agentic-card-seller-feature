@@ -55,7 +55,7 @@ export function SurfaceScratchPanel({
                       height={h * 100}
                       fill="none"
                       stroke={SCRATCH_COLOR}
-                      strokeWidth={1.5}
+                      strokeWidth={0.6}
                       vectorEffect="non-scaling-stroke"
                     />
                   )
