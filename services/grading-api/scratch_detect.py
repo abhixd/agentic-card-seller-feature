@@ -25,6 +25,7 @@ _ENABLED = os.environ.get("SCRATCH_ENABLED", "1").lower() in ("1", "true", "yes"
 _MODEL = os.environ.get("SCRATCH_MODEL", "sdoddi/card-scratch-rfdetr")
 _THRESHOLD = float(os.environ.get("SCRATCH_THRESHOLD", "0.8"))
 _MAX_BOXES = int(os.environ.get("SCRATCH_MAX_BOXES", "20"))
+print(f"[scratch_detect] loaded — enabled={_ENABLED} model={_MODEL} thr={_THRESHOLD}", flush=True)
 
 
 def defect_boxes(warped_cen):
