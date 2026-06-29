@@ -22,7 +22,7 @@ Env (set on the Railway card-grader-api service):
 import os
 
 _ENABLED = os.environ.get("SCRATCH_ENABLED", "1").lower() in ("1", "true", "yes", "on")
-_MODEL = os.environ.get("SCRATCH_MODEL", "sdoddi/card-scratch-rfdetr")
+_MODEL = os.environ.get("SCRATCH_MODEL", "sdoddi/card-scratch-rfdetr-large")  # Large: ~half the FPs of Medium at equal recall
 _THRESHOLD = float(os.environ.get("SCRATCH_THRESHOLD", "0.6"))   # 0.6 after eyeballing real cards (0.8 too conservative)
 _MAX_BOXES = int(os.environ.get("SCRATCH_MAX_BOXES", "20"))
 print(f"[scratch_detect] loaded — enabled={_ENABLED} model={_MODEL} thr={_THRESHOLD}", flush=True)
