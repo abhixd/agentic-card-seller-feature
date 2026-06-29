@@ -92,6 +92,105 @@
       "title": "ContentRegion",
       "type": "object"
     },
+    "Defect": {
+      "additionalProperties": true,
+      "description": "One detected defect: a bounding box [x, y, w, h] in FRACTIONS of the warped card (0..1, origin\ntop-left) plus its classification. Producers: the Sonnet/Opus condition detector (all pillars) and the\nlocal RF-DETR scratch detector (surface). `extra=allow` so producer-specific keys pass through.",
+      "properties": {
+        "area": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Area"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Type"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Category"
+        },
+        "box": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Box"
+        },
+        "conf": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conf"
+        }
+      },
+      "title": "Defect",
+      "type": "object"
+    },
+    "DefectBoxes": {
+      "description": "Per-pillar detected defects \u2192 outline rectangles drawn over the warped card.",
+      "properties": {
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/Defect"
+          },
+          "title": "Edges",
+          "type": "array"
+        },
+        "corners": {
+          "items": {
+            "$ref": "#/$defs/Defect"
+          },
+          "title": "Corners",
+          "type": "array"
+        },
+        "surface": {
+          "items": {
+            "$ref": "#/$defs/Defect"
+          },
+          "title": "Surface",
+          "type": "array"
+        }
+      },
+      "title": "DefectBoxes",
+      "type": "object"
+    },
     "Issues": {
       "properties": {
         "corners": {
@@ -252,6 +351,17 @@
       "default": null,
       "title": "Pillar Zooms"
     },
+    "defect_boxes": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DefectBoxes"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "economics": {
       "anyOf": [
         {
@@ -288,5 +398,5 @@
   "title": "GradeResponse",
   "type": "object",
   "$id": "https://acs/grading-contract/grade-response.schema.json",
-  "x-contract-version": "1.2.0"
+  "x-contract-version": "1.3.0"
 }

@@ -17,7 +17,8 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = "1.2.0"   # 1.2.0: + pillar_zooms (high-res defect close-ups, optional, additive)
+CONTRACT_VERSION = "1.3.0"   # 1.3.0: + defect_boxes (per-pillar defect outline rectangles, optional, additive)
+# 1.2.0: + pillar_zooms (high-res defect close-ups, optional, additive)
 
 
 class ContentRegion(BaseModel):
@@ -54,6 +55,25 @@ class Issues(BaseModel):
     centering: List[str] = Field(default_factory=list)
 
 
+class Defect(BaseModel):
+    """One detected defect: a bounding box [x, y, w, h] in FRACTIONS of the warped card (0..1, origin
+    top-left) plus its classification. Producers: the Sonnet/Opus condition detector (all pillars) and the
+    local RF-DETR scratch detector (surface). `extra=allow` so producer-specific keys pass through."""
+    model_config = ConfigDict(extra="allow")
+    area: Optional[str] = None                          # region, e.g. "top" / "TL" / "surface"
+    type: Optional[str] = None                          # short label, e.g. "scratch" / "whitening"
+    category: Optional[str] = None                      # artifact | trace | minor | heavy
+    box: Optional[List[float]] = None                   # [x, y, w, h], fractions 0..1
+    conf: Optional[float] = None                        # detector confidence (RF-DETR), when available
+
+
+class DefectBoxes(BaseModel):
+    """Per-pillar detected defects → outline rectangles drawn over the warped card."""
+    edges: List[Defect] = Field(default_factory=list)
+    corners: List[Defect] = Field(default_factory=list)
+    surface: List[Defect] = Field(default_factory=list)
+
+
 class GradeResponse(BaseModel):
     model_config = ConfigDict(extra="allow")           # _-prefixed internal/visual keys flow through
     overall_score: Optional[float] = None              # 1..10
@@ -71,5 +91,8 @@ class GradeResponse(BaseModel):
     # high-res zoomed close-ups of detected problem areas (gated behind ?zoom=1) — for buyer verification:
     #   {edges:{side:{crop_b64,flagged[]}}, surface:{scratches:{crop_b64,count}}, corners:{TL,TR,BR,BL:<base64>}}
     pillar_zooms: Optional[Dict[str, Any]] = None
+    # per-pillar detected defects (outline rectangles over the warped card); box = [x,y,w,h] fractions 0..1.
+    # Sonnet backend fills all pillars (Opus detector); CV backend fills `surface` (local RF-DETR scratches).
+    defect_boxes: Optional[DefectBoxes] = None
     economics: Optional[Dict[str, Any]] = None         # present when title/identity supplied (shape evolving)
     decision: Optional[Dict[str, Any]] = None

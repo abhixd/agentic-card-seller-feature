@@ -452,4 +452,11 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
                 img_bgr, quad_padded, raw, result.get("_corner_crops_b64"))
         except Exception:
             pass
+
+    # ── scratch defect boxes (local RF-DETR; fills the surface boxes the CV backend lacked). Non-fatal. ──
+    try:
+        import scratch_detect
+        result["defect_boxes"] = scratch_detect.defect_boxes(warped_cen)
+    except Exception:
+        pass
     return result
