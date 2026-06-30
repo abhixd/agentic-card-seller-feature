@@ -453,10 +453,14 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
         except Exception:
             pass
 
-    # ── scratch defect boxes (local RF-DETR; fills the surface boxes the CV backend lacked). Non-fatal. ──
+    # ── RF-DETR defect boxes — the primary defect detectors for all 3 pillars. Non-fatal. ──
+    #    scratch model → surface ;  edge/corner model → edges + corners.  (scores still come from CV for now)
     try:
-        import scratch_detect
-        result["defect_boxes"] = scratch_detect.defect_boxes(warped_cen)
+        import scratch_detect, ec_detect
+        db = scratch_detect.defect_boxes(warped_cen)       # {edges:[], corners:[], surface:[scratches]}
+        ec = ec_detect.defect_boxes(warped_cen)            # {edges:[...], corners:[...], surface:[]}
+        db["edges"], db["corners"] = ec["edges"], ec["corners"]
+        result["defect_boxes"] = db
     except Exception:
         pass
     return result
