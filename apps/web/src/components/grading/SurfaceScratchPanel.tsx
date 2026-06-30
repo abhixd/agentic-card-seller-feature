@@ -7,6 +7,7 @@
  * returned (>= the server SCRATCH_THRESHOLD, currently 0.6) are present — no client-side thresholding.
  */
 import type { SurfaceDefect } from '@/lib/grading/types'
+import { inflateBox } from '@/lib/grading/defects'
 
 const SCRATCH_COLOR = '#ef4444' // red-500
 
@@ -45,7 +46,7 @@ export function SurfaceScratchPanel({
                 className="pointer-events-none absolute inset-0 h-full w-full"
               >
                 {boxes.map((d, i) => {
-                  const [x, y, w, h] = d.box as number[]
+                  const [x, y, w, h] = inflateBox(d.box as number[])
                   return (
                     <rect
                       key={i}
@@ -55,14 +56,14 @@ export function SurfaceScratchPanel({
                       height={h * 100}
                       fill="none"
                       stroke={SCRATCH_COLOR}
-                      strokeWidth={0.6}
+                      strokeWidth={0.4}
                       vectorEffect="non-scaling-stroke"
                     />
                   )
                 })}
               </svg>
               {boxes.map((d, i) => {
-                const [x, y] = d.box as number[]
+                const [x, y] = inflateBox(d.box as number[])
                 return (
                   <span
                     key={i}

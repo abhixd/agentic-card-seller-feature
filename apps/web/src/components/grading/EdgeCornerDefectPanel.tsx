@@ -8,6 +8,7 @@
  * Only detections the grader returned (>= the server EC_THRESHOLD, currently 0.6) are present.
  */
 import type { SurfaceDefect } from '@/lib/grading/types'
+import { inflateBox } from '@/lib/grading/defects'
 
 const EDGE_COLOR = '#06b6d4'   // cyan-500
 const CORNER_COLOR = '#f97316' // orange-500
@@ -55,7 +56,7 @@ export function EdgeCornerDefectPanel({
                 className="pointer-events-none absolute inset-0 h-full w-full"
               >
                 {items.map(({ d, color }, i) => {
-                  const [x, y, w, h] = d.box as number[]
+                  const [x, y, w, h] = inflateBox(d.box as number[])
                   return (
                     <rect
                       key={i}
@@ -65,14 +66,14 @@ export function EdgeCornerDefectPanel({
                       height={h * 100}
                       fill="none"
                       stroke={color}
-                      strokeWidth={0.6}
+                      strokeWidth={0.4}
                       vectorEffect="non-scaling-stroke"
                     />
                   )
                 })}
               </svg>
               {items.map(({ d, color }, i) => {
-                const [x, y] = d.box as number[]
+                const [x, y] = inflateBox(d.box as number[])
                 return (
                   <span
                     key={i}
