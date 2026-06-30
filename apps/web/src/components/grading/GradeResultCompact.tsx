@@ -240,7 +240,7 @@ export function GradeResultCompact({
 
           <div className="space-y-1">
             <PillarRow label="centering" score={pillars.centering} highlight onClick={hasVisual('centering') ? () => setOpenPillar('centering') : undefined} />
-            {/* edges/corners defects now shown by the rf-detr EdgeCornerDefectPanel box overlay (not the CV pillar_visuals popup) */}
+            {/* edges/corners defects now shown by the rf-detr DefectsPanel box overlay (not the CV pillar_visuals popup) */}
             <PillarRow label="corners" score={pillars.corners} />
             <PillarRow label="edges" score={pillars.edges} />
             <PillarRow label="surface" score={pillars.surface} onClick={hasVisual('surface') ? () => setOpenPillar('surface') : undefined} />
