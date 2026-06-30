@@ -5,6 +5,7 @@ import type { GradeResult, CardProfile } from '@/lib/grading/types'
 import { GradeResultCompact } from '@/components/grading/GradeResultCompact'
 import { GradeFeedback } from '@/components/grading/GradeFeedback'
 import { SurfaceScratchPanel } from '@/components/grading/SurfaceScratchPanel'
+import { EdgeCornerDefectPanel } from '@/components/grading/EdgeCornerDefectPanel'
 
 export default function GradePage() {
   const [file, setFile] = useState<File | null>(null)
@@ -128,6 +129,12 @@ export default function GradePage() {
               grader_backend: result._grader_backend,
             }}
             warpedJpegB64={result._warped_jpeg_b64}
+          />
+
+          <EdgeCornerDefectPanel
+            warpedJpegB64={result._warped_jpeg_b64}
+            edges={result.defect_boxes?.edges}
+            corners={result.defect_boxes?.corners}
           />
 
           <SurfaceScratchPanel
