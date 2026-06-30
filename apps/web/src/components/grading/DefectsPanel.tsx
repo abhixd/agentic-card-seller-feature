@@ -1,10 +1,11 @@
 'use client'
 
 /**
- * DefectsPanel — unified defect view. Draws ALL rf-detr detections over the warped card
- * (edge = cyan, corner = orange, surface = red) and lists every defect in one table. Hover or click
- * a row to highlight its box on the card (the others dim) and reveal its confidence. Replaces the
- * separate SurfaceScratchPanel + EdgeCornerDefectPanel.
+ * DefectsPanel — one STATIC card + a pillar selector. Pick "Surface" or "Edges & Corners"; the card
+ * image stays the same and only the overlay boxes + the table switch to that group's rf-detr
+ * detections (edge = cyan, corner = orange, surface = red). Hover or click a table row to highlight
+ * its box on the card (the others dim) and show its confidence — the same consistent interaction for
+ * every pillar.
  */
 import { useState } from 'react'
 import type { DefectBoxes, SurfaceDefect } from '@/lib/grading/types'
@@ -16,6 +17,13 @@ const PILLAR = {
   surface: { color: '#ef4444', label: 'Surface' },
 } as const
 type Pillar = keyof typeof PILLAR
+type Item = { d: SurfaceDefect; pillar: Pillar }
+
+const TABS = [
+  { key: 'surface', label: 'Surface' },
+  { key: 'ec', label: 'Edges & Corners' },
+] as const
+type TabKey = (typeof TABS)[number]['key']
 
 export function DefectsPanel({
   warpedJpegB64,
@@ -24,28 +32,46 @@ export function DefectsPanel({
   warpedJpegB64?: string
   defects?: DefectBoxes | null
 }) {
+  const valid = (d: SurfaceDefect) => Array.isArray(d.box) && d.box!.length === 4
+  const mk = (arr: SurfaceDefect[] | undefined, pillar: Pillar): Item[] =>
+    (arr ?? []).filter(valid).map((d) => ({ d, pillar }))
+  const groups: Record<TabKey, Item[]> = {
+    surface: mk(defects?.surface, 'surface'),
+    ec: [...mk(defects?.edges, 'edge'), ...mk(defects?.corners, 'corner')],
+  }
+
+  const [tab, setTab] = useState<TabKey>(() => (groups.surface.length === 0 && groups.ec.length > 0 ? 'ec' : 'surface'))
   const [pinned, setPinned] = useState<number | null>(null)
   const [hovered, setHovered] = useState<number | null>(null)
   const active = hovered ?? pinned
 
-  const valid = (d: SurfaceDefect) => Array.isArray(d.box) && d.box!.length === 4
-  const items: { d: SurfaceDefect; pillar: Pillar }[] = [
-    ...(defects?.edges ?? []).filter(valid).map((d) => ({ d, pillar: 'edge' as Pillar })),
-    ...(defects?.corners ?? []).filter(valid).map((d) => ({ d, pillar: 'corner' as Pillar })),
-    ...(defects?.surface ?? []).filter(valid).map((d) => ({ d, pillar: 'surface' as Pillar })),
-  ].sort((a, b) => (b.d.conf ?? 0) - (a.d.conf ?? 0))
+  const items = groups[tab].slice().sort((a, b) => (b.d.conf ?? 0) - (a.d.conf ?? 0))
   const showCard = !!warpedJpegB64
-
   const activeItem = active !== null ? items[active] : undefined
   const activeBox = activeItem ? inflateBox(activeItem.d.box as number[]) : null
+  const legend: Pillar[] = tab === 'surface' ? ['surface'] : ['edge', 'corner']
+
+  function pick(key: TabKey) {
+    setTab(key); setPinned(null); setHovered(null)
+  }
 
   return (
     <div className="rounded-lg border p-4">
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-3 flex items-center justify-between gap-3">
         <span className="text-sm font-medium">Defects</span>
-        <span className="rounded-md border px-2.5 py-1 text-xs font-medium text-muted-foreground">
-          {items.length} detected
-        </span>
+        <div className="flex rounded-md border p-0.5 text-xs">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => pick(t.key)}
+              className={`rounded px-2.5 py-1 font-medium ${tab === t.key ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              {t.label}
+              <span className="ml-1 tabular-nums opacity-70">{groups[t.key].length}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className={showCard ? 'grid gap-5 sm:grid-cols-[minmax(0,236px)_1fr]' : ''}>
@@ -99,7 +125,7 @@ export function DefectsPanel({
               )}
             </div>
             <div className="mt-1.5 flex flex-wrap justify-center gap-3 text-[11px] text-muted-foreground">
-              {(['edge', 'corner', 'surface'] as Pillar[]).map((p) => (
+              {legend.map((p) => (
                 <span key={p} className="flex items-center gap-1">
                   <span className="size-2.5 rounded-[2px]" style={{ background: PILLAR[p].color }} />
                   {PILLAR[p].label.toLowerCase()}
@@ -111,7 +137,9 @@ export function DefectsPanel({
 
         <div className="min-w-0 text-sm">
           {items.length === 0 ? (
-            <p className="text-muted-foreground">No defects detected.</p>
+            <p className="text-muted-foreground">
+              No {tab === 'surface' ? 'surface' : 'edge or corner'} defects detected.
+            </p>
           ) : (
             <>
               <table className="w-full border-collapse">
