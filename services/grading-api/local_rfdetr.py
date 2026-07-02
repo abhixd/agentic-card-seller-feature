@@ -36,13 +36,17 @@ class LocalRFDETR:
             proc = AutoImageProcessor.from_pretrained(self.ckpt)
             model = AutoModelForObjectDetection.from_pretrained(self.ckpt)
             model.eval()
+            # Use the GPU when one is present (e.g. the Modal L4 container); on CPU-only hosts (Railway) this
+            # resolves to "cpu" and behaviour is unchanged.
+            self._device = "cuda" if torch.cuda.is_available() else "cpu"
+            model.to(self._device)
             self._proc, self._model = proc, model
 
     def detect(self, img_bgr, threshold: float = 0.3):
         """All detections on `img_bgr` (BGR). Boxes are pixel xyxy in the input image's own dimensions."""
         self._load()
         rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        inp = self._proc(images=rgb, return_tensors="pt")
+        inp = self._proc(images=rgb, return_tensors="pt").to(self._device)
         with torch.no_grad():
             out = self._model(**inp)
         res = self._proc.post_process_object_detection(

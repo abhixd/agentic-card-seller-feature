@@ -455,12 +455,18 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
 
     # ── RF-DETR defect boxes — the primary defect detectors for all 3 pillars. Non-fatal. ──
     #    scratch model → surface ;  edge/corner model → edges + corners.  (scores still come from CV for now)
+    #    DETECT_BACKEND=modal offloads the (CPU-slow) inference to the Modal GPU /detect endpoint; the result
+    #    shape is identical, so the contract is unchanged either way.
     try:
-        import scratch_detect, ec_detect
-        db = scratch_detect.defect_boxes(warped_cen)       # {edges:[], corners:[], surface:[scratches]}
-        ec = ec_detect.defect_boxes(warped_cen)            # {edges:[...], corners:[...], surface:[]}
-        db["edges"], db["corners"] = ec["edges"], ec["corners"]
-        result["defect_boxes"] = db
+        if os.environ.get("DETECT_BACKEND", "local").lower() == "modal":
+            import remote_detect
+            result["defect_boxes"] = remote_detect.defect_boxes(warped_cen)
+        else:
+            import scratch_detect, ec_detect
+            db = scratch_detect.defect_boxes(warped_cen)       # {edges:[], corners:[], surface:[scratches]}
+            ec = ec_detect.defect_boxes(warped_cen)            # {edges:[...], corners:[...], surface:[]}
+            db["edges"], db["corners"] = ec["edges"], ec["corners"]
+            result["defect_boxes"] = db
     except Exception:
         pass
     return result
