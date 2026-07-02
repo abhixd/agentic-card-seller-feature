@@ -333,6 +333,21 @@ def segment_card(img_bgr: np.ndarray,
     # quad drives the perspective warp. "edges" fits the detected sides and intersects them (axis-aligned,
     # no corner clip); "corners" is the legacy approxPolyDP. Smoothed `contour` stays the display outline (cw).
     quad    = edge_intersection_quad(contour_raw) if SEG_QUAD_MODE == "edges" else quad_from_contour(contour)
+    # SEG_REFINE=1: snap each quad side to the sub-pixel photometric card edge (SAM3's mask is conservative on
+    # low-contrast edges — see quad_refine.py). The contours are mapped through the old→new quad homography so
+    # the mask/display outline moves WITH the refined edges (else the mask would blacken the recovered border).
+    try:                                            # non-fatal: refinement must never break segmentation itself
+        import quad_refine
+        if quad_refine.ENABLED and SEG_QUAD_MODE == "edges":
+            q2, _ri = quad_refine.refine_quad(img_bgr, quad)
+            if _ri.get("accepted"):
+                _H = cv2.getPerspectiveTransform(np.asarray(quad, np.float32), np.asarray(q2, np.float32))
+                contour     = cv2.perspectiveTransform(contour.reshape(-1, 1, 2).astype(np.float32), _H).reshape(-1, 2)
+                contour_raw = cv2.perspectiveTransform(
+                    np.asarray(contour_raw, np.float32).reshape(-1, 1, 2), _H).reshape(-1, 2)
+                quad = q2
+    except Exception as _qe:
+        print(f"[seg] quad_refine skipped: {type(_qe).__name__}: {_qe}", flush=True)
     return {
         "contour_raw": contour_raw,
         "contour":     contour,
