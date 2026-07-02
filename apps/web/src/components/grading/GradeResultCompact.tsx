@@ -240,12 +240,12 @@ export function GradeResultCompact({
 
           <div className="space-y-1">
             <PillarRow label="centering" score={pillars.centering} highlight onClick={hasVisual('centering') ? () => setOpenPillar('centering') : undefined} />
-            {/* edges/corners defects now shown by the rf-detr DefectsPanel box overlay (not the CV pillar_visuals popup) */}
+            {/* surface / edges / corners defects are shown by the rf-detr DefectsPanel selection below — the old
+                per-pillar CV popup images were redundant, so these bars are non-interactive. */}
             <PillarRow label="corners" score={pillars.corners} />
             <PillarRow label="edges" score={pillars.edges} />
-            <PillarRow label="surface" score={pillars.surface} onClick={hasVisual('surface') ? () => setOpenPillar('surface') : undefined} />
+            <PillarRow label="surface" score={pillars.surface} />
           </div>
-          {pv && <p className="px-2 text-[11px] text-muted-foreground/70">tap a pillar to see what we measured</p>}
 
           <div className="flex items-center gap-4 border-t pt-2 text-[13px]">
             <span><span className="text-muted-foreground">L/R</span>&nbsp; <span className="tabular-nums">{lr[0]}/{lr[1]}</span></span>

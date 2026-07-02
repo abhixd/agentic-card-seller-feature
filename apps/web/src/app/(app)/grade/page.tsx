@@ -71,7 +71,7 @@ export default function GradePage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-4 p-6">
+    <div className="mx-auto max-w-5xl space-y-4 p-6">
       <div>
         <h1 className="text-xl font-semibold">Grade a card</h1>
         <p className="text-sm text-muted-foreground">Upload a card front — the same CV grader the browser extension uses.</p>
@@ -88,105 +88,119 @@ export default function GradePage() {
         </button>
       </div>
 
-      {/* before grading: show the upload so the user can see what they're grading */}
-      {preview && !result && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={preview} alt="card preview" className="mx-auto max-h-80 rounded-md border object-contain" />
-      )}
       {error && <p className="text-sm text-red-600">{error}</p>}
 
-      {result && (
+      {result ? (
+        // After grading: card + grade on the LEFT, all the details on the RIGHT — reviewable in one scan.
+        <div className="grid items-start gap-4 lg:grid-cols-2">
+          {/* LEFT — the graded card + grade + centering (GradeResultCompact is itself image-left / scores-right) */}
+          <div className="space-y-3">
+            <GradeResultCompact result={result} profile={profile} profileLoading={profileLoading} />
+
+            {/* the original upload is hidden after grading — let the user pull it back up to double-check */}
+            {preview && (
+              <div>
+                <button
+                  onClick={() => setShowOriginal((v) => !v)}
+                  className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                >
+                  {showOriginal ? 'Hide original photo' : 'View original photo'}
+                </button>
+                {showOriginal && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={preview} alt="original upload" className="mt-2 w-full rounded-md border object-contain" />
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* RIGHT — defects, the centering feedback, notes, and the grading reference */}
+          <div className="space-y-3">
+            <DefectsPanel warpedJpegB64={result._warped_jpeg_b64} defects={result.defect_boxes} />
+
+            <GradeFeedback
+              aspect="centering"
+              question="Does this read look right?"
+              context={{
+                overall_score: result.overall_score,
+                psa_equivalent: result.psa_equivalent,
+                centering: result.centering,
+                content_region: result.centering.content_region,
+                card_boundary: result._card_boundary,
+                border_type: result._border_type,
+                grader_backend: result._grader_backend,
+              }}
+              warpedJpegB64={result._warped_jpeg_b64}
+            />
+
+            {result.summary && <p className="text-sm text-muted-foreground">{result.summary}</p>}
+            {result.issues && result.issues.length > 0 && (
+              <ul className="list-inside list-disc text-sm text-muted-foreground">
+                {result.issues.map((it, i) => (
+                  <li key={i}>{it}</li>
+                ))}
+              </ul>
+            )}
+
+            <GradingReference />
+          </div>
+        </div>
+      ) : (
+        // Before grading: show the upload preview and the grading reference.
         <>
-          <GradeResultCompact result={result} profile={profile} profileLoading={profileLoading} />
-
-          {/* (4) the original upload is hidden after grading — let the user pull it back up to double-check */}
           {preview && (
-            <div>
-              <button
-                onClick={() => setShowOriginal((v) => !v)}
-                className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
-              >
-                {showOriginal ? 'Hide original photo' : 'View original photo'}
-              </button>
-              {showOriginal && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={preview} alt="original upload" className="mx-auto mt-2 max-h-96 rounded-md border object-contain" />
-              )}
-            </div>
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={preview} alt="card preview" className="mx-auto max-h-80 rounded-md border object-contain" />
           )}
-
-          <GradeFeedback
-            aspect="centering"
-            question="Does this read look right?"
-            context={{
-              overall_score: result.overall_score,
-              psa_equivalent: result.psa_equivalent,
-              centering: result.centering,
-              content_region: result.centering.content_region,
-              card_boundary: result._card_boundary,
-              border_type: result._border_type,
-              grader_backend: result._grader_backend,
-            }}
-            warpedJpegB64={result._warped_jpeg_b64}
-          />
-
-          <DefectsPanel
-            warpedJpegB64={result._warped_jpeg_b64}
-            defects={result.defect_boxes}
-          />
-
-          {result.summary && <p className="text-sm text-muted-foreground">{result.summary}</p>}
-          {result.issues && result.issues.length > 0 && (
-            <ul className="list-inside list-disc text-sm text-muted-foreground">
-              {result.issues.map((it, i) => (
-                <li key={i}>{it}</li>
-              ))}
-            </ul>
-          )}
+          <GradingReference />
         </>
       )}
+    </div>
+  )
+}
 
-      {/* ── Grading reference: when it's worth it + PSA fee tiers ── */}
-      <div className="space-y-4 pt-4 border-t border-border/30">
-        <div className="space-y-2">
-          <p className="text-[11px] uppercase tracking-widest text-muted-foreground font-medium">When grading makes sense</p>
-          <div className="rounded-xl overflow-hidden border border-border/30 divide-y divide-border/20">
-            {[
-              { label: 'Raw card value', threshold: '≥ $20', why: 'Fixed PSA fees eat into margins below this' },
-              { label: 'Condition', threshold: 'NM or better', why: 'Anything below NM rarely grades PSA 9+' },
-              { label: 'Demand', threshold: 'Active comps', why: 'Graded cards need buyers — niche cards may sit' },
-              { label: 'Gem premium', threshold: '2× raw or more', why: 'PSA 10 should be worth ≥ 2× raw to justify the risk' },
-            ].map((r) => (
-              <div key={r.label} className="flex items-start justify-between gap-3 px-3 py-2.5">
-                <div className="min-w-0">
-                  <p className="text-xs font-medium">{r.label}</p>
-                  <p className="text-[10px] text-muted-foreground leading-snug mt-0.5">{r.why}</p>
-                </div>
-                <span className="text-[11px] font-semibold text-indigo-400 shrink-0 tabular-nums mt-0.5">{r.threshold}</span>
+// ── Grading reference: when it's worth it + PSA fee tiers. Two tables side-by-side on wider viewports (compact). ──
+function GradingReference() {
+  return (
+    <div className="grid gap-4 border-t border-border/30 pt-4 sm:grid-cols-2">
+      <div className="space-y-2">
+        <p className="text-[11px] uppercase tracking-widest text-muted-foreground font-medium">When grading makes sense</p>
+        <div className="rounded-xl overflow-hidden border border-border/30 divide-y divide-border/20">
+          {[
+            { label: 'Raw card value', threshold: '≥ $20', why: 'Fixed PSA fees eat into margins below this' },
+            { label: 'Condition', threshold: 'NM or better', why: 'Anything below NM rarely grades PSA 9+' },
+            { label: 'Demand', threshold: 'Active comps', why: 'Graded cards need buyers — niche cards may sit' },
+            { label: 'Gem premium', threshold: '2× raw or more', why: 'PSA 10 should be worth ≥ 2× raw to justify the risk' },
+          ].map((r) => (
+            <div key={r.label} className="flex items-start justify-between gap-3 px-3 py-2">
+              <div className="min-w-0">
+                <p className="text-xs font-medium">{r.label}</p>
+                <p className="text-[10px] text-muted-foreground leading-snug mt-0.5">{r.why}</p>
               </div>
-            ))}
-          </div>
+              <span className="text-[11px] font-semibold text-indigo-400 shrink-0 tabular-nums mt-0.5">{r.threshold}</span>
+            </div>
+          ))}
         </div>
-        <div className="space-y-2">
-          <p className="text-[11px] uppercase tracking-widest text-muted-foreground font-medium">PSA submission fees</p>
-          <div className="rounded-xl overflow-hidden border border-border/30 divide-y divide-border/20">
-            {[
-              { name: 'Value', cost: 18, turnaround: '~100 days' },
-              { name: 'Economy', cost: 25, turnaround: '~65 days' },
-              { name: 'Regular', cost: 50, turnaround: '~20 days' },
-              { name: 'Express', cost: 150, turnaround: '~10 days' },
-            ].map((t) => (
-              <div key={t.name} className="flex items-center justify-between px-3 py-2.5">
-                <div>
-                  <p className="text-xs font-medium">{t.name}</p>
-                  <p className="text-[10px] text-muted-foreground">{t.turnaround}</p>
-                </div>
-                <span className="text-sm font-bold tabular-nums">${t.cost}</span>
+      </div>
+      <div className="space-y-2">
+        <p className="text-[11px] uppercase tracking-widest text-muted-foreground font-medium">PSA submission fees</p>
+        <div className="rounded-xl overflow-hidden border border-border/30 divide-y divide-border/20">
+          {[
+            { name: 'Value', cost: 18, turnaround: '~100 days' },
+            { name: 'Economy', cost: 25, turnaround: '~65 days' },
+            { name: 'Regular', cost: 50, turnaround: '~20 days' },
+            { name: 'Express', cost: 150, turnaround: '~10 days' },
+          ].map((t) => (
+            <div key={t.name} className="flex items-center justify-between px-3 py-2">
+              <div>
+                <p className="text-xs font-medium">{t.name}</p>
+                <p className="text-[10px] text-muted-foreground">{t.turnaround}</p>
               </div>
-            ))}
-          </div>
-          <p className="text-[10px] text-muted-foreground/60">Approximate PSA pricing — tiers and turnaround change periodically.</p>
+              <span className="text-sm font-bold tabular-nums">${t.cost}</span>
+            </div>
+          ))}
         </div>
+        <p className="text-[10px] text-muted-foreground/60">Approximate PSA pricing — tiers and turnaround change periodically.</p>
       </div>
     </div>
   )
