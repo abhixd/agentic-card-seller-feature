@@ -278,6 +278,15 @@ def _get_grade_mods():
 
 _STRIP = {"_raw", "_analytical_centering"}
 
+
+def _grade_one(img_bgr, api_key: str = "", zoom: bool = False) -> dict:
+    """Grade one card. GRADE_BACKEND=modal runs the WHOLE grade on Modal in one /fullgrade call (no warp bounce);
+    otherwise the local detect_and_grade (which may still offload seg/detect to Modal). Identical return shape."""
+    if os.environ.get("GRADE_BACKEND", "local").lower() == "modal":
+        import remote_grade
+        return remote_grade.full_grade(img_bgr, zoom)
+    return _get_grader().detect_and_grade(img_bgr, api_key, zoom)
+
 def _decode(raw: bytes):
     img = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
     if img is None:
@@ -313,11 +322,10 @@ async def grade_card_endpoint(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Image decode error: {e}")
 
-    grader = _get_grader()
     aggregator, grade_comps = _get_grade_mods()
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, grader.detect_and_grade, img_bgr, api_key, bool(zoom))
+        result = await loop.run_in_executor(None, _grade_one, img_bgr, api_key, bool(zoom))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
@@ -329,7 +337,7 @@ async def grade_card_endpoint(
     if image_back is not None:
         try:
             back_img = _decode(await image_back.read())
-            back = await loop.run_in_executor(None, grader.detect_and_grade, back_img, api_key)
+            back = await loop.run_in_executor(None, _grade_one, back_img, api_key, False)
             for k in _STRIP:
                 back.pop(k, None)
             result["_back"] = back
