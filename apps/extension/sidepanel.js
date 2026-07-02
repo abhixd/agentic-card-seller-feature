@@ -628,6 +628,9 @@ function renderPSAResult(r, listing) {
   renderPsaPillar("surface", C ? C.surface_score : surf.score,
     worstSeverityLabel([surf.scratches, surf.print_lines, surf.stains, surf.creases]));
 
+  // RF-DETR defect boxes (surface / edges & corners) over the warped card — mirrors the web DefectsPanel.
+  renderDefects(r);
+
   // Economics — shown when the server attached eBay comps + ROI.
   if (r.economics) {
     $("economics-block").style.display = "";
@@ -666,6 +669,119 @@ function renderPsaPillar(name, score, descriptor) {
   $(`issues-${name}`).innerHTML =
     `<span class="${cls}" style="font-weight:700">${scoreText}</span>` +
     `<span class="pillar-count">${descriptor}</span>`;
+}
+
+// ── Defects panel — RF-DETR defect boxes over the warped card + a Surface / Edges&Corners toggle + a table
+//    (hover/click a row to highlight its box). Vanilla-JS port of the web DefectsPanel; colors + inflateBox match. ──
+const DEFECT_COLORS = { edge: "#06b6d4", corner: "#f97316", surface: "#ef4444" };
+const DEFECT_LABEL  = { edge: "Edge",    corner: "Corner",  surface: "Surface" };
+
+// Grow a box [x,y,w,h] (0..1) outward + floor tiny ones, clamped inside the card — mirrors lib/grading/defects.ts.
+function defectInflate(box, min = 0.045, pad = 0.01) {
+  let [x, y, w, h] = box;
+  x -= pad; y -= pad; w += 2 * pad; h += 2 * pad;
+  if (w < min) { x -= (min - w) / 2; w = min; }
+  if (h < min) { y -= (min - h) / 2; h = min; }
+  w = Math.min(w, 1); h = Math.min(h, 1);
+  x = Math.max(0, Math.min(x, 1 - w));
+  y = Math.max(0, Math.min(y, 1 - h));
+  return [x, y, w, h];
+}
+
+function renderDefects(r) {
+  const block = $("defects-block");
+  if (!block) return;
+  block.innerHTML = "";
+  const db = r.defect_boxes || {};
+  const valid = (d) => Array.isArray(d.box) && d.box.length === 4;
+  const mk = (arr, pillar) => (arr || []).filter(valid).map((d) => ({ d, pillar }));
+  const groups = {
+    surface: mk(db.surface, "surface"),
+    ec: [...mk(db.edges, "edge"), ...mk(db.corners, "corner")],
+  };
+  const warp = r._warped_jpeg_b64;
+  if (!warp || (groups.surface.length === 0 && groups.ec.length === 0)) { block.style.display = "none"; return; }
+  block.style.display = "";
+
+  let tab = (groups.surface.length === 0 && groups.ec.length > 0) ? "ec" : "surface";
+
+  const head = document.createElement("div"); head.className = "defects-head";
+  head.innerHTML = `<span class="defects-title">Defects</span>`;
+  const toggle = document.createElement("div"); toggle.className = "defects-toggle";
+  const tabBtns = {};
+  [["surface", "Surface"], ["ec", "Edges & Corners"]].forEach(([key, label]) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "defects-tab";
+    b.innerHTML = `${label} <span class="defects-count">${groups[key].length}</span>`;
+    b.onclick = () => { tab = key; draw(); };
+    tabBtns[key] = b; toggle.appendChild(b);
+  });
+  head.appendChild(toggle); block.appendChild(head);
+  const body = document.createElement("div"); body.className = "defects-body"; block.appendChild(body);
+
+  function draw() {
+    Object.entries(tabBtns).forEach(([k, b]) => b.classList.toggle("active", k === tab));
+    body.innerHTML = "";
+    const items = groups[tab].slice().sort((a, b) => (b.d.conf ?? 0) - (a.d.conf ?? 0));
+
+    const wrap = document.createElement("div"); wrap.className = "image-overlay-wrap defects-card";
+    const img = document.createElement("img"); img.className = "overlay-img"; img.src = `data:image/jpeg;base64,${warp}`;
+    wrap.appendChild(img);
+    const svg = document.createElementNS(NS_SVG, "svg");
+    svg.setAttribute("class", "overlay-svg"); svg.setAttribute("viewBox", "0 0 100 100"); svg.setAttribute("preserveAspectRatio", "none");
+    const rects = items.map((it) => {
+      const [x, y, w, h] = defectInflate(it.d.box);
+      const rect = document.createElementNS(NS_SVG, "rect");
+      rect.setAttribute("x", x * 100); rect.setAttribute("y", y * 100);
+      rect.setAttribute("width", w * 100); rect.setAttribute("height", h * 100);
+      rect.setAttribute("fill", "none"); rect.setAttribute("stroke", DEFECT_COLORS[it.pillar]);
+      rect.setAttribute("stroke-width", "0.4"); rect.setAttribute("vector-effect", "non-scaling-stroke");
+      svg.appendChild(rect); return rect;
+    });
+    wrap.appendChild(svg); body.appendChild(wrap);
+
+    const legend = document.createElement("div"); legend.className = "defects-legend";
+    (tab === "surface" ? ["surface"] : ["edge", "corner"]).forEach((p) => {
+      const s = document.createElement("span"); s.className = "defects-legend-item";
+      s.innerHTML = `<span class="defects-swatch" style="background:${DEFECT_COLORS[p]}"></span>${DEFECT_LABEL[p].toLowerCase()}`;
+      legend.appendChild(s);
+    });
+    body.appendChild(legend);
+
+    if (items.length === 0) {
+      const p = document.createElement("p"); p.className = "defects-empty";
+      p.textContent = `No ${tab === "surface" ? "surface" : "edge or corner"} defects detected.`;
+      body.appendChild(p); return;
+    }
+    const table = document.createElement("table"); table.className = "defects-table";
+    table.innerHTML = `<thead><tr><th>Defect</th><th>Type</th><th class="r">Conf</th></tr></thead>`;
+    const tbody = document.createElement("tbody");
+    const setActive = (idx) => {
+      rects.forEach((rc, j) => {
+        const on = idx === j, dim = idx !== null && !on;
+        rc.setAttribute("stroke-width", on ? "1" : "0.4");
+        rc.setAttribute("stroke-opacity", dim ? "0.25" : "1");
+        rc.setAttribute("fill", on ? DEFECT_COLORS[items[j].pillar] + "22" : "none");
+      });
+      Array.from(tbody.children).forEach((row, j) => row.classList.toggle("active", idx === j));
+    };
+    let pinned = null;
+    items.forEach((it, i) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        `<td><span class="defects-swatch" style="background:${DEFECT_COLORS[it.pillar]}"></span>${DEFECT_LABEL[it.pillar]}</td>` +
+        `<td class="muted">${it.d.type ?? "—"}</td>` +
+        `<td class="r">${it.d.conf != null ? Math.round(it.d.conf * 100) + "%" : "—"}</td>`;
+      tr.onmouseenter = () => setActive(i);
+      tr.onmouseleave = () => setActive(pinned);
+      tr.onclick = () => { pinned = (pinned === i ? null : i); setActive(pinned); };
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody); body.appendChild(table);
+    const hint = document.createElement("p"); hint.className = "defects-hint"; hint.textContent = "tap a row to highlight it on the card";
+    body.appendChild(hint);
+  }
+  draw();
 }
 
 // Reduce a list of severity words to the single worst-case descriptor.

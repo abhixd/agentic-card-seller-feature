@@ -580,3 +580,33 @@ body {
   font-family: 'SF Mono', Consolas, monospace; font-size: 11px;
   color: var(--accent2);
 }
+
+/* ── Defects panel (RF-DETR boxes over the warped card) — mirrors the web DefectsPanel ── */
+.defects-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.defects-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.defects-toggle { display: flex; gap: 2px; padding: 2px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.defects-tab { border: none; background: none; cursor: pointer; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; color: var(--sub); font-family: var(--font); }
+.defects-tab:hover { color: var(--text); }
+.defects-tab.active { background: var(--accent); color: #fff; }
+.defects-count { opacity: .7; font-variant-numeric: tabular-nums; margin-left: 2px; }
+
+/* let the warp image define the height so the SVG box overlay aligns to it exactly (like the web) */
+.defects-card { aspect-ratio: auto; max-width: 210px; margin: 0 auto 8px; border: 1px solid var(--border); }
+.defects-card .overlay-img { position: static; width: 100%; height: auto; object-fit: unset; }
+
+.defects-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; font-size: 11px; color: var(--sub); margin-bottom: 8px; }
+.defects-legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.defects-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: 0 0 auto; }
+
+.defects-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.defects-table thead th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--sub); font-weight: 600; padding-bottom: 4px; }
+.defects-table th.r, .defects-table td.r { text-align: right; }
+.defects-table td { padding: 5px 0; border-bottom: 1px solid var(--border); color: var(--text); }
+.defects-table tbody tr:last-child td { border-bottom: none; }
+.defects-table td.muted { color: var(--sub); }
+.defects-table td .defects-swatch { margin-right: 5px; vertical-align: -1px; }
+.defects-table td.r { font-variant-numeric: tabular-nums; font-weight: 600; }
+.defects-table tbody tr { cursor: pointer; }
+.defects-table tbody tr:hover, .defects-table tbody tr.active { background: var(--surface2); }
+.defects-empty { color: var(--sub); font-size: 12px; }
+.defects-hint { color: var(--sub); opacity: .7; font-size: 10px; margin-top: 6px; text-align: center; }
