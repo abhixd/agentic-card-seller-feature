@@ -430,7 +430,16 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
                                            for k in ("TL", "TR", "BR", "BL")}
     except Exception:
         pass
-    if contour is not None and quad_padded is not None:
+    if cropped:
+        # Cropped cards fill the frame → the true OUTER boundary is the frame (cb_center). The SAM3 contour
+        # undershoots ~5% inward on cropped inputs (traces inside the yellow border, landing on the content
+        # border), so emitting it would make consumers draw the outer edge ON TOP of the inner border. Emit a
+        # frame rectangle instead so the card boundary renders at the true outer edge.
+        x1, y1, x2, y2 = cb_center
+        result["_card_contour_warped"] = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+        H0, W0 = img_bgr.shape[:2]
+        result["_card_contour_orig"]   = [[0.0, 0.0], [float(W0), 0.0], [float(W0), float(H0)], [0.0, float(H0)]]
+    elif contour is not None and quad_padded is not None:
         wc = grader._contour_to_warped_norm(contour, quad_padded)
         if wc is not None:
             result["_card_contour_warped"] = np.asarray(wc, float).round(5).tolist()
