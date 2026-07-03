@@ -27,7 +27,40 @@ _MODEL_PATH = os.path.join(_HERE, "models", "cv_xgb_raw.pkl")
 # ── per-side inner-frame selector (flag-guarded; falls back to coherence on ANY failure) ────────────
 # Activate by setting env PERSIDE_CENTERING=1 (Railway). Default OFF = production behaviour unchanged.
 _PERSIDE_ENABLED = os.environ.get("PERSIDE_CENTERING", "").strip().lower() in ("1", "true", "yes", "on")
+# Plausibility guard: re-pick a side that locked onto a physically-impossible near-zero border. Default ON;
+# set PERSIDE_REPICK=0 to disable.
+_REPICK_ENABLED = os.environ.get("PERSIDE_REPICK", "1").strip().lower() in ("1", "true", "yes", "on")
 _perside_cache = {}
+
+
+def _plausibility_repick(ctx, cand, sel, chosen):
+    """A card always has a border, so an inner-edge inset at ~0 is a detection failure, not real centering
+    (e.g. vintage cards with evolution text ON the top border fool the variance detector into locking to the
+    card edge). If a side's inset is both essentially zero (<1.2% of the card) AND a severe outlier vs the
+    other three, re-pick that side's best-scoring candidate within a plausible inset band derived from them.
+    Real off-centering (thin but nonzero border) never trips this."""
+    import per_side_selector as PS
+    try:
+        ins = {s: PS.inset_frac(ctx, s, chosen[s][1]) for s in "LRTB"}
+    except Exception:
+        return chosen
+    for s in "LRTB":
+        others = [ins[o] for o in "LRTB" if o != s]
+        med = float(np.median(others)) if others else 0.0
+        if med <= 0 or not (ins[s] < 0.012 and ins[s] < 0.4 * med):
+            continue
+        lo, hi = 0.4 * med, 2.5 * med
+        try:
+            scores = sel.score([fv for _, _, fv in cand[s]])
+        except Exception:
+            continue
+        best = None
+        for (dname, pos, fv), sc in zip(cand[s], scores):
+            if lo <= PS.inset_frac(ctx, s, pos) <= hi and (best is None or sc > best[2]):
+                best = (dname, pos, float(sc))
+        if best is not None:
+            chosen[s] = best
+    return chosen
 
 def _perside_selector():
     if "sel" not in _perside_cache:
@@ -84,9 +117,12 @@ def _perside_inner_frame(warped_cen, cb_center):
         ctx = PS.make_ctx(warped_cen, None, cb_center)        # already masked; cb_center is fractional
         if ctx is None:
             return None
-        chosen = sel.select(PS.candidates(ctx))
+        cand = PS.candidates(ctx)
+        chosen = sel.select(cand)
         if not all(s in chosen for s in "LRTB"):
             return None
+        if _REPICK_ENABLED:
+            chosen = _plausibility_repick(ctx, cand, sel, chosen)
         L, T, R, B = (chosen["L"][1], chosen["T"][1], chosen["R"][1], chosen["B"][1])
         x1, y1, x2, y2 = ctx["cb"]
         iL, iR, iT, iB = L - x1, x2 - R, T - y1, y2 - B
