@@ -1,54 +1,66 @@
 'use client'
 
-import { useState } from 'react'
+/**
+ * /grade — the B2C "Drop → Reveal → Explore" flow.
+ *
+ * One click means zero clicks: dropping / pasting / picking a photo STARTS the grade — there is no
+ * Grade button. While the grader runs, the photo shows a scanning animation with staged captions
+ * (the pipeline as theater), then GradeResultCompact reveals the grade badge + value + verdict.
+ */
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { GradeResult, CardProfile } from '@/lib/grading/types'
 import { GradeResultCompact } from '@/components/grading/GradeResultCompact'
 import { GradeFeedback } from '@/components/grading/GradeFeedback'
 import { DefectsPanel } from '@/components/grading/DefectsPanel'
 
+const SCAN_STEPS = [
+  'Finding your card…',
+  'Straightening the photo…',
+  'Measuring centering…',
+  'Inspecting corners, edges and surface…',
+  'Scoring…',
+]
+
 export default function GradePage() {
-  const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
+  const [lastFile, setLastFile] = useState<File | null>(null)
   const [result, setResult] = useState<GradeResult | null>(null)
   const [profile, setProfile] = useState<CardProfile | null>(null)
   const [profileLoading, setProfileLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showOriginal, setShowOriginal] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const [scanStep, setScanStep] = useState(0)
+  const inputRef = useRef<HTMLInputElement>(null)
 
-  function onPick(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0] ?? null
-    setFile(f)
+  // Dropping a photo IS the trigger — grade immediately, no second click.
+  const gradeFile = useCallback(async (f: File) => {
+    setLastFile(f)
     setResult(null)
     setProfile(null)
     setError(null)
     setShowOriginal(false)
-    setPreview(f ? URL.createObjectURL(f) : null)
-  }
-
-  async function grade() {
-    if (!file) return
+    setPreview(URL.createObjectURL(f))
     setLoading(true)
-    setError(null)
-    setResult(null)
-    setProfile(null)
+    setScanStep(0)
     try {
       const fd = new FormData()
-      fd.append('image', file)
+      fd.append('image', f)
       const res = await fetch('/api/grade?zoom=1', { method: 'POST', body: fd })   // include high-res defect close-ups
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error ?? 'Grading failed')
       setResult(data as GradeResult)
-      void identifyCard(file)   // hydrate identity + profile from /scout (same photo); non-blocking
+      void identifyCard(f)   // hydrate identity + comps from /scout (same photo); non-blocking
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Grading failed')
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
   // /grade returns the grade fast (CV); identity needs a Claude vision read, so fetch it from /scout
-  // separately and let the profile fill in once it resolves — the grade card paints immediately.
+  // separately and let the profile (and the verdict's dollar figures) fill in once it resolves.
   async function identifyCard(f: File) {
     setProfileLoading(true)
     try {
@@ -70,44 +82,106 @@ export default function GradePage() {
     }
   }
 
-  const showPreGrade = !result && !!preview   // an image is loaded but not graded yet → image left, reference right
+  // Paste-to-grade: ⌘V a screenshot or copied image anywhere on the page.
+  useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      const item = Array.from(e.clipboardData?.items ?? []).find((i) => i.type.startsWith('image/'))
+      const f = item?.getAsFile()
+      if (f) void gradeFile(f)
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [gradeFile])
+
+  // Staged scanning captions while the grader runs.
+  useEffect(() => {
+    if (!loading) return
+    const t = setInterval(() => setScanStep((s) => Math.min(s + 1, SCAN_STEPS.length - 1)), 1600)
+    return () => clearInterval(t)
+  }, [loading])
+
+  function reset() {
+    setPreview(null)
+    setLastFile(null)
+    setResult(null)
+    setProfile(null)
+    setError(null)
+    setShowOriginal(false)
+    if (inputRef.current) inputRef.current.value = ''
+  }
+
+  const idle = !loading && !result
 
   return (
-    <div className={`mx-auto space-y-4 p-6 ${showPreGrade ? 'max-w-4xl' : 'max-w-2xl'}`}>
+    <div className="mx-auto max-w-2xl space-y-4 p-6">
       <div>
         <h1 className="text-xl font-semibold">Grade a card</h1>
-        <p className="text-sm text-muted-foreground">Upload a card front — the same CV grader the browser extension uses.</p>
+        <p className="text-sm text-muted-foreground">Drop a photo — get an instant AI grade and what it&apos;s worth.</p>
       </div>
 
-      <div className="flex items-center gap-3 rounded-lg border p-3">
-        <input type="file" accept="image/*" onChange={onPick} className="min-w-0 flex-1 text-sm" />
+      {/* ── Drop zone (idle) — drop / paste / click / camera all auto-grade ── */}
+      {idle && (
         <button
-          onClick={grade}
-          disabled={!file || loading}
-          className="shrink-0 rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background disabled:opacity-50"
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault()
+            setDragOver(false)
+            const f = e.dataTransfer.files?.[0]
+            if (f && f.type.startsWith('image/')) void gradeFile(f)
+          }}
+          className={`w-full rounded-xl border-2 border-dashed px-4 py-12 text-center transition-colors ${
+            dragOver ? 'border-emerald-500 bg-emerald-500/5' : 'border-border hover:border-foreground/30 hover:bg-muted/30'
+          }`}
         >
-          {loading ? 'Grading…' : 'Grade'}
+          <div className="text-3xl" aria-hidden>🃏</div>
+          <p className="mt-2 text-base font-medium">Drop your card here</p>
+          <p className="mt-0.5 text-sm text-muted-foreground">or paste a photo, click to browse, or use your camera</p>
+          <p className="mt-3 text-xs text-muted-foreground/70">⚡ instant AI grade · free</p>
         </button>
-      </div>
+      )}
+      <input ref={inputRef} type="file" accept="image/*" className="hidden"
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) void gradeFile(f) }} />
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
-
-      {/* BEFORE grading, with an image loaded: image on the LEFT, the grading reference on the RIGHT —
-          so everything is reviewable in one scan before you commit to a grade. */}
-      {showPreGrade && (
-        <div className="grid items-start gap-4 sm:grid-cols-2">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={preview!} alt="card preview" className="w-full rounded-md border object-contain" />
-          <GradingReference />
+      {error && (
+        <div className="flex items-center justify-between rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2.5">
+          <p className="text-sm text-red-600">{error}</p>
+          <button onClick={reset} className="shrink-0 rounded-md border px-3 py-1 text-xs hover:bg-muted">Try another photo</button>
         </div>
       )}
 
-      {/* AFTER grading — the results (unchanged single-column layout). */}
+      {/* ── Scanning (grading in flight) — the pipeline as theater ── */}
+      {loading && preview && (
+        <div className="mx-auto max-w-xs">
+          <div className="relative overflow-hidden rounded-xl border">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={preview} alt="your card" className="block w-full object-contain" />
+            <div className="absolute inset-0 bg-black/10" />
+            <div className="scan-sweep absolute inset-x-0 h-16" />
+          </div>
+          <p className="mt-3 text-center text-sm text-muted-foreground" aria-live="polite">{SCAN_STEPS[scanStep]}</p>
+          <style jsx>{`
+            .scan-sweep {
+              background: linear-gradient(to bottom, transparent, rgba(16, 185, 129, 0.25), rgba(16, 185, 129, 0.5), rgba(16, 185, 129, 0.25), transparent);
+              animation: sweep 1.5s ease-in-out infinite alternate;
+            }
+            @keyframes sweep {
+              from { top: -12%; }
+              to { top: 96%; }
+            }
+          `}</style>
+        </div>
+      )}
+
+      {/* ── Reveal + explore ── */}
       {result && (
         <>
-          <GradeResultCompact result={result} profile={profile} profileLoading={profileLoading} />
+          <GradeResultCompact result={result} profile={profile} profileLoading={profileLoading} onGradeAnother={reset} />
 
-          {/* the original upload is hidden after grading — let the user pull it back up to double-check */}
+          <DefectsPanel warpedJpegB64={result._warped_jpeg_b64} defects={result.defect_boxes} />
+
           {preview && (
             <div>
               <button
@@ -137,25 +211,12 @@ export default function GradePage() {
             }}
             warpedJpegB64={result._warped_jpeg_b64}
           />
-
-          <DefectsPanel
-            warpedJpegB64={result._warped_jpeg_b64}
-            defects={result.defect_boxes}
-          />
-
-          {result.summary && <p className="text-sm text-muted-foreground">{result.summary}</p>}
-          {result.issues && result.issues.length > 0 && (
-            <ul className="list-inside list-disc text-sm text-muted-foreground">
-              {result.issues.map((it, i) => (
-                <li key={i}>{it}</li>
-              ))}
-            </ul>
-          )}
         </>
       )}
 
-      {/* Grading reference at the bottom when it's NOT sitting beside the preview (no image yet, or after grading). */}
-      {!showPreGrade && <GradingReference />}
+      {/* Grading reference stays for the curious — collapsed out of the main flow. */}
+      {idle && <GradingReference />}
+      {lastFile && idle && null}
     </div>
   )
 }

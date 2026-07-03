@@ -610,3 +610,41 @@ body {
 .defects-table tbody tr:hover, .defects-table tbody tr.active { background: var(--surface2); }
 .defects-empty { color: var(--sub); font-size: 12px; }
 .defects-hint { color: var(--sub); opacity: .7; font-size: 10px; margin-top: 6px; text-align: center; }
+
+/* ── B2C reveal (badge · verdict · plain language) — consistent with the web /grade design ── */
+.img-wrap { position: relative; }
+.grade-badge-overlay {
+  position: absolute; right: -6px; bottom: 14px;
+  width: 54px; height: 54px; border-radius: 50%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  border: 2px solid var(--surface);
+  background: rgba(63,185,80,0.22); color: var(--green);
+}
+.grade-badge-overlay.medium { background: rgba(210,153,34,0.22); color: var(--yellow); }
+.grade-badge-overlay.low    { background: rgba(248,81,73,0.20);  color: var(--red); }
+.grade-badge-overlay .gb-num  { font-size: 22px; font-weight: 800; line-height: 1; }
+.grade-badge-overlay .gb-word { font-size: 7px; font-weight: 700; letter-spacing: 0.04em; margin-top: 2px; }
+
+.adjust-borders-link {
+  display: block; width: 100%; margin: 6px 0 2px;
+  background: none; border: none; cursor: pointer;
+  font-family: var(--font); font-size: 11px; color: var(--sub);
+  text-decoration: underline; text-underline-offset: 2px; text-align: center;
+}
+.adjust-borders-link:hover { color: var(--text); }
+
+.grade-reveal { margin-bottom: 8px; }
+.grade-headline { font-size: 18px; font-weight: 700; color: var(--green); }
+.grade-headline.medium { color: var(--yellow); }
+.grade-headline.low    { color: var(--red); }
+.grade-sub { font-size: 11.5px; color: var(--sub); margin-top: 2px; }
+
+.verdict-banner {
+  margin-top: 8px; padding: 8px 10px; border-radius: var(--radius-sm);
+  font-size: 12px; line-height: 1.45;
+}
+.verdict-banner.good { background: rgba(63,185,80,0.12);  color: var(--green); }
+.verdict-banner.mid  { background: rgba(210,153,34,0.12); color: var(--yellow); }
+.verdict-banner.bad  { background: rgba(248,81,73,0.10);  color: var(--red); }
+
+.btn-close { margin-left: auto; }

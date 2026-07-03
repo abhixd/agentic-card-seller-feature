@@ -1,17 +1,19 @@
 'use client'
 
 /**
- * GradeResultCompact — the reorganized /grade result: one screen, card-with-inline-correction on
- * the left, all scores on the right, identity on top and a grade-based price next to the grade.
- * Dragging a centering handle recomputes centering + overall + PSA + suggested price LIVE
- * (lib/grading/score.ts mirrors the server), and reveals Save (→ /api/grade/corrections).
+ * GradeResultCompact — the "reveal" screen of the B2C grade flow.
  *
- * identity / pricing are PLACEHOLDER props for now — wire vision-ID and a graded-price source
- * behind them later (pricing is keyed by PSA grade so it tracks a correction that changes the grade).
+ * Hierarchy (in order of what a collector asks): ① the grade — one big badge; ② what it's worth —
+ * graded vs raw value from the profile comps; ③ should I grade it — the verdict banner; ④ why —
+ * plain-language pillar rows (exact numbers live in tooltips). Power tools stay but stay quiet:
+ * "Centering off? Adjust borders" under the card opens the drag-handle editor, which recomputes
+ * centering + overall + PSA + verdict LIVE (lib/grading/score.ts mirrors the server) and reveals
+ * Save (→ /api/grade/corrections).
  */
 import { useRef, useState } from 'react'
 import type { GradeResult, CardIdentity, CardProfile } from '@/lib/grading/types'
 import { type Box, ratiosFromBox, centeringScore, overallScore, psaLabel } from '@/lib/grading/score'
+import { centeringPhrase, confidencePhrase, pillarNote, verdict, badgeWord } from '@/lib/grading/plain'
 import { PillarVisualDialog } from './PillarVisualDialog'
 import { CardProfileModal } from './CardProfileModal'
 import { DefectZoomGallery } from './DefectZoomGallery'
@@ -21,7 +23,6 @@ const BORDER = '#10b981' // print border (inner)
 type Side = 'top' | 'bottom' | 'left' | 'right'
 
 export type { CardIdentity }
-export type GradePricing = Record<number, { market: number; list: number }>  // by PSA grade
 
 function parseRatio(s?: string): [number, number] {
   const p = (s ?? '').split('/').map((n) => parseInt(n, 10))
@@ -29,33 +30,46 @@ function parseRatio(s?: string): [number, number] {
 }
 const money = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
 
-function PillarRow({ label, score, highlight, onClick }: { label: string; score: number; highlight?: boolean; onClick?: () => void }) {
-  const cls = `flex w-full items-center gap-2.5 rounded-md px-2 py-1 text-left ${highlight ? 'bg-emerald-500/10' : ''} ${onClick ? 'cursor-pointer hover:bg-muted/60' : ''}`
+const BADGE_TONE = (g: number) =>
+  g >= 9 ? { bg: 'bg-emerald-500/15', fg: 'text-emerald-600 dark:text-emerald-400', bar: 'bg-emerald-500' }
+  : g >= 7 ? { bg: 'bg-amber-500/15', fg: 'text-amber-600 dark:text-amber-400', bar: 'bg-amber-500' }
+  : { bg: 'bg-rose-500/15', fg: 'text-rose-600 dark:text-rose-400', bar: 'bg-rose-500' }
+
+const VERDICT_TONE = {
+  success: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
+  warning: 'bg-amber-500/10 text-amber-700 dark:text-amber-400',
+  danger: 'bg-rose-500/10 text-rose-700 dark:text-rose-400',
+} as const
+
+function PillarRow({ label, score, note, weak, onClick, tooltip }: {
+  label: string; score: number; note: string; weak?: boolean; onClick?: () => void; tooltip?: string
+}) {
+  const cls = `flex w-full items-center gap-2.5 rounded-md px-2 py-1 text-left ${onClick ? 'cursor-pointer hover:bg-muted/60' : ''}`
   const body = (
     <>
-      <span className={`w-16 text-[13px] ${highlight ? 'text-emerald-700 dark:text-emerald-400' : 'text-muted-foreground'}`}>{label}</span>
-      <div className="h-[5px] flex-1 rounded-full bg-muted">
-        <div className={`h-[5px] rounded-full ${highlight ? 'bg-emerald-500' : 'bg-foreground/40'}`} style={{ width: `${Math.max(0, Math.min(100, score * 10))}%` }} />
+      <span className="w-[70px] shrink-0 text-[13px] text-muted-foreground">{label}</span>
+      <div className="h-[5px] min-w-14 flex-1 rounded-full bg-muted">
+        <div className={`h-[5px] rounded-full ${weak ? 'bg-amber-500' : 'bg-emerald-500/80'}`} style={{ width: `${Math.max(0, Math.min(100, score * 10))}%` }} />
       </div>
-      <span className="w-6 text-right text-[13px] font-medium tabular-nums">{score.toFixed(1)}</span>
+      <span className={`w-[118px] shrink-0 truncate text-right text-[12px] ${weak ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'}`} title={tooltip}>{note}</span>
       {onClick && <span className="text-[11px] text-muted-foreground/50" aria-hidden>⤢</span>}
     </>
   )
   return onClick
-    ? <button type="button" onClick={onClick} title="See what we measured" className={cls}>{body}</button>
-    : <div className={cls}>{body}</div>
+    ? <button type="button" onClick={onClick} title={tooltip ?? 'See what we measured'} className={cls}>{body}</button>
+    : <div className={cls} title={tooltip}>{body}</div>
 }
 
 export function GradeResultCompact({
   result,
   profile,
   profileLoading,
-  pricing,
+  onGradeAnother,
 }: {
   result: GradeResult
   profile?: CardProfile | null
   profileLoading?: boolean
-  pricing?: GradePricing
+  onGradeAnother?: () => void
 }) {
   const cb = result._card_boundary && result._card_boundary.length === 4 ? result._card_boundary : null
   const cr0 = result.centering.content_region ?? null
@@ -86,7 +100,15 @@ export function GradeResultCompact({
   const overall = dirty ? overallScore(pillars) : result.overall_score
   const psa = dirty ? psaLabel(overall) : result.psa_equivalent
   const grade = Math.max(1, Math.min(10, Math.round(overall)))
-  const price = pricing?.[grade] ?? null
+  const psaShort = psa.split(' ').slice(0, 2).join(' ')
+
+  const conf = result.centering.confidence
+  const confP = confidencePhrase(conf, result.centering.reliable)
+  const v = verdict(grade, conf, profile?.comps)
+  const tone = BADGE_TONE(grade)
+  const cenPhrase = liveRatios ? centeringPhrase(`${lr[0]}/${lr[1]}`, `${tb[0]}/${tb[1]}`) : centeringPhrase(result.centering.left_right, result.centering.top_bottom)
+  const weakest = (Object.entries(pillars) as [string, number][]).sort((a, b) => a[1] - b[1])[0][0]
+  const isWeak = (p: string, s: number) => p === weakest && s < 9
 
   // ── drag: pointer capture on the handle — the captured DOM node (keyed) survives the
   // re-renders the drag triggers, so moves keep flowing to the current-render handler ──
@@ -151,47 +173,51 @@ export function GradeResultCompact({
       ]
     : []
 
+  const defectCount = (result.defect_boxes?.surface?.length ?? 0) + (result.defect_boxes?.edges?.length ?? 0) + (result.defect_boxes?.corners?.length ?? 0)
+
   return (
-    <div className="rounded-lg border p-4">
+    <div className="rounded-xl border p-4">
       {/* identity — vision-ID hydrated from /scout; click to open the card profile */}
-      <div className="mb-3 border-b pb-3">
+      <div className="mb-3 flex items-start justify-between gap-2 border-b pb-3">
         {identity?.name ? (
           <button
             type="button"
             onClick={() => profile && setShowProfile(true)}
-            className="flex w-full items-start justify-between gap-2 rounded-md px-1 py-0.5 text-left hover:bg-muted/60"
+            className="flex min-w-0 flex-1 items-start justify-between gap-2 rounded-md px-1 py-0.5 text-left hover:bg-muted/60"
             title="View card profile"
           >
             <span className="min-w-0">
               <span className="block truncate text-[15px] font-medium">{identity.name}</span>
               <span className="mt-0.5 block truncate text-xs text-muted-foreground">
                 {[identity.set, identity.number && `#${identity.number}`, identity.rarity].filter(Boolean).join(' · ') || 'tap for details'}
-                {identity.confidence != null && <span className="text-foreground/40"> · ID {Math.round(identity.confidence * 100)}%</span>}
               </span>
             </span>
             <span className="shrink-0 self-center text-[11px] text-blue-600 dark:text-blue-400">profile ↗</span>
           </button>
         ) : (
-          <div className="px-1">
+          <div className="min-w-0 flex-1 px-1">
             <div className="text-[15px] font-medium">{profileLoading ? 'Identifying…' : <span className="text-muted-foreground">Card details</span>}</div>
             <div className="mt-0.5 text-xs text-muted-foreground">
-              {profileLoading ? 'reading the card from your photo' : 'card not identified — try a clearer, straight-on photo'}
+              {profileLoading ? 'reading the card from your photo' : 'card not identified'}
             </div>
           </div>
         )}
+        {identity?.confidence != null && (
+          <span className="shrink-0 rounded-full bg-muted px-2.5 py-1 text-[11px] text-muted-foreground">ID {Math.round(identity.confidence * 100)}%</span>
+        )}
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-[240px_1fr]">
-        {/* LEFT: card + inline correction */}
+      <div className="grid gap-4 sm:grid-cols-[200px_1fr]">
+        {/* LEFT: card + adjust-borders (the inline centering correction) */}
         <div>
-          <div ref={wrap} className={`relative overflow-hidden rounded-md border ${editing ? 'touch-none select-none ring-2 ring-emerald-500/40' : ''}`}>
+          <div ref={wrap} className={`relative overflow-hidden rounded-lg border ${editing ? 'touch-none select-none ring-2 ring-emerald-500/40' : ''}`}>
             {warped ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={`data:image/jpeg;base64,${warped}`} alt="graded card" className="block w-full" draggable={false} />
             ) : (
               <div className="flex aspect-[5/7] w-full items-center justify-center text-xs text-muted-foreground">no preview</div>
             )}
-            {showOverlay && (
+            {showOverlay && editing && (
               <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="pointer-events-none absolute inset-0 size-full">
                 <rect x={cb![0] * 100} y={cb![1] * 100} width={(cb![2] - cb![0]) * 100} height={(cb![3] - cb![1]) * 100} fill="none" stroke={EDGE} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
                 <rect x={box!.x1 * 100} y={box!.y1 * 100} width={(box!.x2 - box!.x1) * 100} height={(box!.y2 - box!.y1) * 100} fill="none" stroke={BORDER} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
@@ -206,16 +232,19 @@ export function GradeResultCompact({
                 style={{ left: `${h.x}%`, top: `${h.y}%` }} />
             ))}
           </div>
+          <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
+            auto-straightened{defectCount > 0 && <> · <span className="text-blue-600 dark:text-blue-400">{defectCount} mark{defectCount === 1 ? '' : 's'} found</span></>}
+          </p>
           {saved ? (
-            <p className="mt-2 text-[11px] text-emerald-600">✓ Saved — thanks, this trains the grader.</p>
+            <p className="mt-1 text-center text-[11px] text-emerald-600">✓ Saved — thanks, this trains the grader.</p>
           ) : editing ? (
-            <div className="mt-2 flex gap-2">
+            <div className="mt-1 flex gap-2">
               <button onClick={save} disabled={saving || !dirty} className="flex-1 rounded-md bg-foreground px-2 py-1.5 text-xs font-medium text-background disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
               <button onClick={() => { setEditing(false); setBox(cr0 ? { ...cr0 } : null); setDirty(false) }} className="rounded-md border px-2 py-1.5 text-xs">Cancel</button>
             </div>
           ) : (
             showOverlay && (
-              <button onClick={() => setEditing(true)} className="mt-2 w-full text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground">
+              <button onClick={() => setEditing(true)} className="mt-1 w-full text-center text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground">
                 Centering off? ✏️ Adjust borders
               </button>
             )
@@ -223,47 +252,56 @@ export function GradeResultCompact({
           {err && <p className="mt-1 text-[11px] text-red-600">{err}</p>}
         </div>
 
-        {/* RIGHT: grade + price + pillars + centering */}
+        {/* RIGHT: the reveal — badge, value, verdict, pillars */}
         <div className="min-w-0 space-y-3">
-          <div className="flex gap-2.5">
-            <div className="flex-1 rounded-md border px-3 py-2">
-              <div className="text-[11px] text-muted-foreground">Estimated grade</div>
-              <div className="text-xl font-semibold tabular-nums text-emerald-600">{psa.split(' ').slice(0, 2).join(' ')}</div>
-              <div className="text-[11px] text-muted-foreground tabular-nums">overall {overall.toFixed(1)} / 10</div>
+          <div className="flex items-center gap-3.5">
+            <div className={`flex size-[76px] shrink-0 flex-col items-center justify-center rounded-full ${tone.bg}`}>
+              <span className={`text-[30px] font-semibold leading-none tabular-nums ${tone.fg}`}>{grade}</span>
+              <span className={`mt-0.5 text-[9px] font-medium tracking-wide ${tone.fg}`}>{badgeWord(grade)}</span>
             </div>
-            <div className="flex-[1.3] rounded-md bg-emerald-500/10 px-3 py-2">
-              <div className="text-[11px] text-emerald-700 dark:text-emerald-400">Suggested list{price ? '' : ' (soon)'}</div>
-              <div className="text-xl font-semibold tabular-nums text-emerald-700 dark:text-emerald-400">{price ? money(price.list) : '$—'}</div>
-              <div className="text-[11px] text-emerald-700/80 dark:text-emerald-400/80 tabular-nums">{price ? `market ~${money(price.market)} · after fees` : `at ${psa.split(' ').slice(0, 2).join(' ')} · pricing coming soon`}</div>
+            <div className="min-w-0">
+              <div className="text-lg font-semibold">{psaShort} likely</div>
+              <div className="text-[13px] text-muted-foreground">{confP.label}{dirty && <span className="text-emerald-600"> · updated live</span>}</div>
+              <div className="mt-1 text-xl font-semibold tabular-nums">
+                {v.gradedValue != null ? money(v.gradedValue) : profileLoading ? <span className="text-muted-foreground">$…</span> : <span className="text-muted-foreground">$—</span>}
+                <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                  {v.gradedValue != null ? `value at ${psaShort}` : profileLoading ? 'looking up value…' : 'value unavailable'}
+                  {v.rawValue != null && ` · raw ~${money(v.rawValue)}`}
+                </span>
+              </div>
             </div>
           </div>
 
-          <div className="space-y-1">
-            <PillarRow label="centering" score={pillars.centering} highlight onClick={hasVisual('centering') ? () => setOpenPillar('centering') : undefined} />
-            {/* surface / edges / corners defects are shown by the rf-detr DefectsPanel selection below — the old
-                per-pillar CV popup images were redundant, so these bars are non-interactive. */}
-            <PillarRow label="corners" score={pillars.corners} />
-            <PillarRow label="edges" score={pillars.edges} />
-            <PillarRow label="surface" score={pillars.surface} />
+          <div className={`flex items-center gap-2.5 rounded-lg px-3 py-2.5 ${VERDICT_TONE[v.tone]}`}>
+            <span aria-hidden className="text-base leading-none">{v.tone === 'success' ? '✓' : v.tone === 'warning' ? '≈' : '✕'}</span>
+            <p className="text-[13px]"><span className="font-semibold">{v.title}</span> {v.detail}</p>
           </div>
 
-          <div className="flex items-center gap-4 border-t pt-2 text-[13px]">
-            <span><span className="text-muted-foreground">L/R</span>&nbsp; <span className="tabular-nums">{lr[0]}/{lr[1]}</span></span>
-            <span><span className="text-muted-foreground">T/B</span>&nbsp; <span className="tabular-nums">{tb[0]}/{tb[1]}</span></span>
-            {dirty && <span className="ml-auto text-[11px] text-emerald-600">updated live</span>}
-            {!dirty && result.centering.reliable === false && <span className="ml-auto text-[11px] text-amber-600">low-confidence read</span>}
+          <div className="space-y-0.5">
+            <PillarRow label="Centering" score={pillars.centering} note={cenPhrase} weak={isWeak('centering', pillars.centering)}
+              tooltip={`L/R ${lr[0]}/${lr[1]} · T/B ${tb[0]}/${tb[1]} · score ${pillars.centering.toFixed(1)}`}
+              onClick={hasVisual('centering') ? () => setOpenPillar('centering') : undefined} />
+            <PillarRow label="Corners" score={pillars.corners} note={pillarNote('corners', result)} weak={isWeak('corners', pillars.corners)} tooltip={`score ${pillars.corners.toFixed(1)}`} />
+            <PillarRow label="Edges" score={pillars.edges} note={pillarNote('edges', result)} weak={isWeak('edges', pillars.edges)} tooltip={`score ${pillars.edges.toFixed(1)}`} />
+            <PillarRow label="Surface" score={pillars.surface} note={pillarNote('surface', result)} weak={isWeak('surface', pillars.surface)} tooltip={`score ${pillars.surface.toFixed(1)}`} />
+          </div>
+
+          <div className="flex items-center gap-2 border-t pt-2.5">
+            {onGradeAnother && (
+              <button onClick={onGradeAnother} className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted">Grade another</button>
+            )}
+            {result.pillar_zooms && (
+              <button type="button" onClick={() => setShowZooms(true)} className="rounded-md border px-3 py-1.5 text-xs hover:bg-muted">
+                🔍 Inspect close-ups
+              </button>
+            )}
+            <span className="ml-auto text-[11px] text-muted-foreground tabular-nums" title="exact centering ratios">
+              {lr[0]}/{lr[1]} · {tb[0]}/{tb[1]}
+            </span>
           </div>
         </div>
       </div>
-      {result.pillar_zooms && (
-        <button
-          type="button"
-          onClick={() => setShowZooms(true)}
-          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed py-2 text-[13px] text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-        >
-          🔍 Inspect defect close-ups <span className="text-muted-foreground/60">— high-res edges, corners &amp; surface</span>
-        </button>
-      )}
+
       <PillarVisualDialog pillar={openPillar} visuals={result.pillar_visuals} onClose={() => setOpenPillar(null)} />
       <CardProfileModal profile={showProfile ? profile ?? null : null} onClose={() => setShowProfile(false)} />
       <DefectZoomGallery zooms={showZooms ? result.pillar_zooms ?? null : null} onClose={() => setShowZooms(false)} />

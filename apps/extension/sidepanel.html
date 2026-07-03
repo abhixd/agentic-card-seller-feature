@@ -102,12 +102,17 @@
     <div id="decision-reason" class="decision-reason"></div>
   </div>
 
-  <!-- Card identity + images -->
+  <!-- Card identity + images (the grade badge is injected onto the first warp by addWarped) -->
   <div class="result-images" id="result-images"></div>
+  <button id="btn-adjust-borders" class="adjust-borders-link hidden">Centering off? ✏️ Adjust borders</button>
 
   <!-- Grade estimate -->
   <div class="result-block">
-    <div class="block-header">Grade Estimate</div>
+    <div class="block-header">Grade estimate</div>
+    <div id="grade-reveal" class="grade-reveal hidden">
+      <div id="grade-headline" class="grade-headline"></div>
+      <div id="grade-sub" class="grade-sub"></div>
+    </div>
     <div class="grade-row">
       <div class="grade-band-wrap">
         <span id="grade-band" class="grade-band"></span>
@@ -115,6 +120,7 @@
       </div>
       <div id="card-name" class="card-name"></div>
     </div>
+    <div id="verdict-banner" class="verdict-banner hidden"></div>
     <div id="grade-dist" class="grade-dist"></div>
     <div id="grade-limiting" class="grade-limiting hidden"></div>
   </div>
@@ -163,9 +169,10 @@
 
   <!-- Actions -->
   <div class="results-actions">
-    <button id="btn-new" class="btn btn-ghost">← New analysis</button>
+    <button id="btn-new" class="btn btn-ghost">Grade another</button>
     <button id="btn-feedback-good" class="btn btn-icon" title="Grade was accurate">👍</button>
     <button id="btn-feedback-bad"  class="btn btn-icon" title="Grade was off">👎</button>
+    <button id="btn-close-panel" class="btn btn-ghost btn-close" title="Done — close the panel">✕ Close</button>
   </div>
 
 </section>

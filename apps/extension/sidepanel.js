@@ -258,6 +258,8 @@ function wireEvents() {
   $("upload-input").addEventListener("change", onUpload);
   $("btn-feedback-good").addEventListener("click", () => sendFeedback(true));
   $("btn-feedback-bad").addEventListener("click",  () => sendFeedback(false));
+  $("btn-close-panel").addEventListener("click", () => window.close());          // done grading → close the panel
+  $("btn-adjust-borders").addEventListener("click", () => openPillarDetail("centering"));  // manual centering correction
 
   // Pillar drill-down — event delegation so it survives re-renders
   document.addEventListener("click", (e) => {
@@ -405,7 +407,11 @@ function renderResults(r, listing) {
     wrap.appendChild(img); wrap.appendChild(lbl); imgContainer.appendChild(wrap);
   });
 
-  // Grade estimate
+  // Grade estimate (legacy path — hide the PSA reveal elements, show the classic band row)
+  $("grade-reveal").classList.add("hidden");
+  $("verdict-banner").classList.add("hidden");
+  $("btn-adjust-borders").classList.add("hidden");
+  document.querySelector(".grade-row").classList.remove("hidden");
   const ge = r.grade_estimate ?? {};
   $("grade-band").textContent     = ge.grade_range ?? "—";
   const conf = ge.confidence ?? "low";
@@ -582,10 +588,12 @@ function renderPSAResult(r, listing) {
     $("decision-reason").textContent = r.summary ?? "";
   }
 
-  // Trust anchors — show the perspective-corrected card(s) that were graded.
+  // Trust anchors — show the perspective-corrected card(s) that were graded. The FIRST warp carries
+  // the grade badge overlay (slab-label style), consistent with the web reveal.
   const imgContainer = $("result-images");
   imgContainer.innerHTML = "";
-  const addWarped = (b64, label) => {
+  const gradeNum = Math.max(1, Math.min(10, Math.round(overall || 0)));
+  const addWarped = (b64, label, withBadge) => {
     if (!b64) return;
     const wrap = document.createElement("div"); wrap.className = "img-wrap";
     const img  = document.createElement("img"); img.className = "result-img";
@@ -593,23 +601,41 @@ function renderPSAResult(r, listing) {
     img.alt = label;
     const lbl = document.createElement("div"); lbl.className = "result-img-label";
     lbl.textContent = label;
-    wrap.appendChild(img); wrap.appendChild(lbl); imgContainer.appendChild(wrap);
+    wrap.appendChild(img); wrap.appendChild(lbl);
+    if (withBadge && overall) {
+      const badge = document.createElement("div");
+      badge.className = `grade-badge-overlay ${psaScoreClass(overall)}`;
+      badge.innerHTML = `<span class="gb-num">${gradeNum}</span><span class="gb-word">${badgeWord(gradeNum)}</span>`;
+      wrap.appendChild(badge);
+    }
+    imgContainer.appendChild(wrap);
   };
-  addWarped(r._warped_jpeg_b64, r._back ? "Front" : "Warped");
-  if (r._back) addWarped(r._back._warped_jpeg_b64, "Back");
+  addWarped(r._warped_jpeg_b64, r._back ? "Front" : "Warped", true);
+  if (r._back) addWarped(r._back._warped_jpeg_b64, "Back", false);
+  $("btn-adjust-borders").classList.toggle("hidden", !r._warped_jpeg_b64);
 
-  // Grade estimate block — overall score + PSA equivalent
-  $("grade-band").textContent = overall ? overall.toFixed(1) : "—";
-  $("grade-conf").textContent = psaEquiv ? psaEquiv.replace(/^PSA\s*/i, "PSA ") : "AI";
-  $("grade-conf").className   = `grade-conf ${psaScoreClass(overall)}`;
-  let nameParts = [];
-  if (r._back) nameParts.push("Front + Back");
-  else if (r._back_error) nameParts.push("Front only (back: no card)");
-  if (r._border_type && r._border_type !== "uniform_fallback") nameParts.push(`${r._border_type} border`);
-  if (r._adjusted) nameParts.unshift("✎ adjusted");
-  $("card-name").textContent = nameParts.join(" · ");
+  // Grade reveal — "PSA 9 likely · high confidence", consistent with the web. The legacy
+  // grade-band row stays for the non-PSA path and is hidden here.
+  const psaShort = psaEquiv ? psaEquiv.replace(/^PSA\s*/i, "PSA ").split(" ").slice(0, 2).join(" ") : `Grade ${gradeNum}`;
+  const confP = confidencePhrase(cen0Conf(r), r.centering?.reliable);
+  $("grade-reveal").classList.remove("hidden");
+  $("grade-headline").textContent = `${psaShort} likely`;
+  $("grade-headline").className = `grade-headline ${psaScoreClass(overall)}`;
+  const subBits = [confP, `overall ${overall ? overall.toFixed(1) : "—"}/10`];
+  if (r._back) subBits.push("front + back");
+  else if (r._back_error) subBits.push("front only");
+  if (r._adjusted) subBits.unshift("✎ adjusted");
+  $("grade-sub").textContent = subBits.join(" · ");
+  document.querySelector(".grade-row").classList.add("hidden");
   $("grade-dist").innerHTML   = "";
   $("grade-limiting").classList.add("hidden");
+
+  // Verdict — should you grade it? Qualitative (dollar figures arrive with the comps source).
+  const vb = $("verdict-banner");
+  vb.classList.remove("hidden");
+  if (gradeNum >= 9) { vb.className = "verdict-banner good"; vb.textContent = "✓ Strong grading candidate — high grade, cards like this usually clear the fee."; }
+  else if (gradeNum >= 7) { vb.className = "verdict-banner mid"; vb.textContent = "≈ Borderline — at this grade the fee may outweigh the value bump."; }
+  else { vb.className = "verdict-banner bad"; vb.textContent = "✕ Skip grading — condition caps the grade; fees likely exceed the bump."; }
 
   // Pillar summary cards — score badge (combined/worst-side when both sides
   // graded) + descriptor from the front reading.
@@ -620,13 +646,16 @@ function renderPSAResult(r, listing) {
   const C = combined;
 
   renderPsaPillar("centering", C ? C.centering_score : cen.score,
-    `${cen.left_right ?? "—"} L/R · ${cen.top_bottom ?? "—"} T/B`);
+    centeringPhrase(cen.left_right, cen.top_bottom));
   renderPsaPillar("corners", C ? C.corners_score : cor.score,
-    worstSeverityLabel([cor.top_left, cor.top_right, cor.bottom_right, cor.bottom_left]));
+    plainPillarNote("corners", r, C ? C.corners_score : cor.score,
+      worstSeverityLabel([cor.top_left, cor.top_right, cor.bottom_right, cor.bottom_left])));
   renderPsaPillar("edges", C ? C.edges_score : edg.score,
-    worstSeverityLabel([edg.top, edg.right, edg.bottom, edg.left]));
+    plainPillarNote("edges", r, C ? C.edges_score : edg.score,
+      worstSeverityLabel([edg.top, edg.right, edg.bottom, edg.left])));
   renderPsaPillar("surface", C ? C.surface_score : surf.score,
-    worstSeverityLabel([surf.scratches, surf.print_lines, surf.stains, surf.creases]));
+    plainPillarNote("surface", r, C ? C.surface_score : surf.score,
+      worstSeverityLabel([surf.scratches, surf.print_lines, surf.stains, surf.creases])));
 
   // RF-DETR defect boxes (surface / edges & corners) over the warped card — mirrors the web DefectsPanel.
   renderDefects(r);
@@ -782,6 +811,61 @@ function renderDefects(r) {
     body.appendChild(hint);
   }
   draw();
+}
+
+// ── Plain-language helpers (mirror apps/web lib/grading/plain.ts so both surfaces speak the same) ──
+
+// "45/55" + "48/52" → a human read of how centered the card is.
+function centeringPhrase(leftRight, topBottom) {
+  const dev = (s) => {
+    const p = (s ?? "").split("/").map((n) => parseInt(n, 10));
+    return p.length === 2 && !p.some(Number.isNaN) ? Math.abs(p[0] - 50) : 0;
+  };
+  const d = Math.max(dev(leftRight), dev(topBottom));
+  if (d <= 3)  return "dead centered";
+  if (d <= 7)  return "near perfect";
+  if (d <= 12) return "slightly off-center";
+  if (d <= 20) return "noticeably off-center";
+  return "heavily off-center";
+}
+
+// Selector confidence float → the label the reveal shows.
+function confidencePhrase(conf, reliable) {
+  if (reliable === false || (conf != null && conf < 0.6)) return "low confidence — try a brighter photo";
+  if (conf != null && conf < 0.85) return "medium confidence";
+  return "high confidence";
+}
+function cen0Conf(r) { return r?.centering?.confidence ?? null; }
+
+// One short note per pillar from what the detectors actually found (defect_boxes), else the
+// legacy severity words, else a score-based read.
+function plainPillarNote(pillar, r, score, fallback) {
+  const boxes = (r.defect_boxes ?? {})[pillar === "surface" ? "surface" : pillar] ?? [];
+  const n = boxes.length;
+  if (pillar === "corners") {
+    if (n > 0) return n === 1 ? "wear on one corner" : `wear on ${n} corners`;
+    if (score >= 9) return "sharp, all four";
+  }
+  if (pillar === "edges") {
+    if (n > 0) return n === 1 ? "light wear, one spot" : `light wear, ${n} spots`;
+    if (score >= 9) return "clean all around";
+  }
+  if (pillar === "surface") {
+    if (n > 0) return n === 1 ? "one faint mark" : `${n} faint marks`;
+    if (score >= 9) return "clean";
+  }
+  return fallback || (score >= 8 ? "minor wear" : "wear visible");
+}
+
+// PSA-style word under the big badge number.
+function badgeWord(grade) {
+  if (grade >= 10) return "GEM MINT";
+  if (grade >= 9)  return "MINT";
+  if (grade >= 8)  return "NM-MT";
+  if (grade >= 7)  return "NEAR MINT";
+  if (grade >= 6)  return "EX-MT";
+  if (grade >= 5)  return "EXCELLENT";
+  return "PLAYED";
 }
 
 // Reduce a list of severity words to the single worst-case descriptor.
