@@ -648,3 +648,12 @@ body {
 .verdict-banner.bad  { background: rgba(248,81,73,0.10);  color: var(--red); }
 
 .btn-close { margin-left: auto; }
+
+/* conf label above the active defect box (web parity) */
+.defects-conf-label {
+  position: absolute; transform: translateY(-110%);
+  padding: 0 4px; border-radius: 3px;
+  background: rgba(13,17,23,0.85);
+  font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums;
+  pointer-events: none; z-index: 2;
+}

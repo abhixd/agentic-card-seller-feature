@@ -729,8 +729,8 @@ function renderDefects(r) {
     ec: [...mk(db.edges, "edge"), ...mk(db.corners, "corner")],
   };
   const warp = r._warped_jpeg_b64;
-  if (!warp || (groups.surface.length === 0 && groups.ec.length === 0)) { block.style.display = "none"; return; }
-  block.style.display = "";
+  if (!warp) { block.style.display = "none"; return; }
+  block.style.display = "";   // ALWAYS show after a grade (web parity): tabs with counts + empty message when clean
 
   let tab = (groups.surface.length === 0 && groups.ec.length > 0) ? "ec" : "surface";
 
@@ -767,7 +767,11 @@ function renderDefects(r) {
       rect.setAttribute("stroke-width", "0.4"); rect.setAttribute("vector-effect", "non-scaling-stroke");
       svg.appendChild(rect); return rect;
     });
-    wrap.appendChild(svg); body.appendChild(wrap);
+    wrap.appendChild(svg);
+    const confLbl = document.createElement("div");           // conf label above the active box (web parity)
+    confLbl.className = "defects-conf-label"; confLbl.style.display = "none";
+    wrap.appendChild(confLbl);
+    body.appendChild(wrap);
 
     const legend = document.createElement("div"); legend.className = "defects-legend";
     (tab === "surface" ? ["surface"] : ["edge", "corner"]).forEach((p) => {
@@ -793,6 +797,16 @@ function renderDefects(r) {
         rc.setAttribute("fill", on ? DEFECT_COLORS[items[j].pillar] + "22" : "none");
       });
       Array.from(tbody.children).forEach((row, j) => row.classList.toggle("active", idx === j));
+      if (idx !== null && items[idx] && items[idx].d.conf != null) {   // conf label above the active box
+        const [bx, by] = defectInflate(items[idx].d.box);
+        confLbl.textContent = items[idx].d.conf.toFixed(2);
+        confLbl.style.color = DEFECT_COLORS[items[idx].pillar];
+        confLbl.style.left = `${bx * 100}%`;
+        confLbl.style.top = `${by * 100}%`;
+        confLbl.style.display = "";
+      } else {
+        confLbl.style.display = "none";
+      }
     };
     let pinned = null;
     items.forEach((it, i) => {
