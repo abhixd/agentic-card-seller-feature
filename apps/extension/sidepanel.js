@@ -772,6 +772,7 @@ function renderDefects(r) {
     confLbl.className = "defects-conf-label"; confLbl.style.display = "none";
     wrap.appendChild(confLbl);
     body.appendChild(wrap);
+    attachZoomPan(wrap);                                     // scroll-zoom / drag-pan / dbl-click reset
 
     const legend = document.createElement("div"); legend.className = "defects-legend";
     (tab === "surface" ? ["surface"] : ["edge", "corner"]).forEach((p) => {
@@ -817,11 +818,20 @@ function renderDefects(r) {
         `<td class="r">${it.d.conf != null ? Math.round(it.d.conf * 100) + "%" : "—"}</td>`;
       tr.onmouseenter = () => setActive(i);
       tr.onmouseleave = () => setActive(pinned);
-      tr.onclick = () => { pinned = (pinned === i ? null : i); setActive(pinned); };
+      tr.onclick = () => {
+        pinned = (pinned === i ? null : i);
+        setActive(pinned);
+        if (pinned !== null) {                               // zoom the card to the pinned defect
+          const [bx, by, bw, bh] = defectInflate(items[i].d.box);
+          wrap._zoomTo(bx + bw / 2, by + bh / 2, 3);
+        } else {
+          wrap._zoomReset();
+        }
+      };
       tbody.appendChild(tr);
     });
     table.appendChild(tbody); body.appendChild(table);
-    const hint = document.createElement("p"); hint.className = "defects-hint"; hint.textContent = "tap a row to highlight it on the card";
+    const hint = document.createElement("p"); hint.className = "defects-hint"; hint.textContent = "tap a row to zoom to it · tap again to reset";
     body.appendChild(hint);
   }
   draw();
@@ -1678,6 +1688,23 @@ function attachZoomPan(wrap) {
   wrap.addEventListener("pointerup", endPan);
   wrap.addEventListener("pointercancel", endPan);
   wrap.addEventListener("dblclick", () => { scale = 1; tx = 0; ty = 0; apply(); });
+
+  // Programmatic zoom (smooth) — e.g. "tap a defect row → zoom to its box".
+  // (fx, fy) = fractional point on the image to center; s = target scale.
+  const animate = (fn) => {
+    layer.style.transition = "transform 0.28s ease";
+    fn();
+    setTimeout(() => { layer.style.transition = ""; }, 300);
+  };
+  wrap._zoomTo = (fx, fy, s) => animate(() => {
+    scale = Math.min(MAX, Math.max(MIN, s));
+    const w = wrap.clientWidth, h = wrap.clientHeight;
+    tx = w / 2 - fx * w * scale;
+    ty = h / 2 - fy * h * scale;
+    if (scale === MIN) { tx = 0; ty = 0; }
+    clampPan(); apply();
+  });
+  wrap._zoomReset = () => animate(() => { scale = 1; tx = 0; ty = 0; apply(); });
 
   const hint = document.createElement("div");
   hint.className = "zoom-hint";

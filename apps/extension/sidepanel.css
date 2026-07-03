@@ -590,9 +590,11 @@ body {
 .defects-tab.active { background: var(--accent); color: #fff; }
 .defects-count { opacity: .7; font-variant-numeric: tabular-nums; margin-left: 2px; }
 
-/* let the warp image define the height so the SVG box overlay aligns to it exactly (like the web) */
-.defects-card { aspect-ratio: auto; max-width: 210px; margin: 0 auto 8px; border: 1px solid var(--border); }
-.defects-card .overlay-img { position: static; width: 100%; height: auto; object-fit: unset; }
+/* the warp is always 630x880 (63:88), so a fixed aspect keeps the SVG boxes aligned AND keeps the
+   wrap's height when attachZoomPan moves the children into the absolutely-positioned zoom layer */
+.defects-card { aspect-ratio: 63/88; max-width: 230px; margin: 0 auto 8px; border: 1px solid var(--border); }
+.defects-card { cursor: zoom-in; }
+.defects-card[data-zoomable] .zoom-layer { will-change: transform; }
 
 .defects-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; font-size: 11px; color: var(--sub); margin-bottom: 8px; }
 .defects-legend-item { display: inline-flex; align-items: center; gap: 4px; }
