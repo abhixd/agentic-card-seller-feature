@@ -15,7 +15,17 @@ const { mockSaveToInventory, mockListInventory, mockGetInventoryItem, mockUpdate
   }))
 
 vi.mock('@/lib/supabase/server', () => ({
-  createClient: vi.fn().mockResolvedValue({ auth: { getUser: mockGetUser } }),
+  createClient: vi.fn().mockResolvedValue({
+    auth: { getUser: mockGetUser },
+    // the POST route's acquisition-cost fallback reads card_analyses directly
+    from: vi.fn(() => ({
+      select: vi.fn(() => ({
+        eq: vi.fn(() => ({
+          maybeSingle: vi.fn(async () => ({ data: null })),
+        })),
+      })),
+    })),
+  }),
 }))
 
 vi.mock('@/lib/inventory/inventoryService', () => ({

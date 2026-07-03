@@ -213,7 +213,7 @@ export default function AnalysisResultPage() {
                 }}
               />
             </div>
-            <span className="text-sm font-semibold text-white tabular-nums">
+            <span data-testid="condition-score" className="text-sm font-semibold text-white tabular-nums">
               {condition_score}<span className="text-zinc-600 font-normal"> / 20</span>
             </span>
           </div>
@@ -230,7 +230,7 @@ export default function AnalysisResultPage() {
         }}
       >
         {saveError && (
-          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+          <div data-testid="save-error" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
             {saveError}
           </div>
         )}

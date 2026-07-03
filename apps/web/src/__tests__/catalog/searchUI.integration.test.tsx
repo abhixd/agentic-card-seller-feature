@@ -8,7 +8,7 @@ import type { CardSearchResult } from '@/types/catalog'
 // ---------------------------------------------------------------------------
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: vi.fn() }),
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   usePathname: () => '/analyze',
   useSearchParams: () => new URLSearchParams(),
 }))
@@ -198,6 +198,7 @@ describe('AnalyzePage search flow', () => {
     await waitFor(() => screen.getByTestId('search-results'))
 
     const firstResult = screen.getAllByTestId('search-result-item')[0]
-    expect(firstResult).toHaveAttribute('href', '/analyze/uuid-charizard')
+    // href carries the search query for back-navigation: /analyze/<id>?q=<query>
+    expect(firstResult.getAttribute('href')).toMatch(/^\/analyze\/uuid-charizard/)
   })
 })

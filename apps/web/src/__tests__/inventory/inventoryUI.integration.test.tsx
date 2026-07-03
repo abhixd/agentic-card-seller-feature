@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import type { InventoryListItem, InventoryDetail } from '@/types/inventory'
 
 // ---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ describe('InventoryPage — list', () => {
     render(<InventoryPage />)
     await waitFor(() => screen.getByTestId('inventory-empty'))
     expect(screen.getByTestId('inventory-empty')).toBeInTheDocument()
-    expect(screen.getByText(/no cards in inventory/i)).toBeInTheDocument()
+    expect(screen.getByText(/your collection starts here/i)).toBeInTheDocument()
   })
 
   it('renders inventory items after load', async () => {
@@ -101,7 +101,8 @@ describe('InventoryPage — list', () => {
     await waitFor(() => screen.getByTestId('inventory-list'))
     const items = screen.getAllByTestId('inventory-item')
     expect(items).toHaveLength(1)
-    expect(screen.getByText('Charizard')).toBeInTheDocument()
+    // scope to the list — the hero stats banner also mentions the top card
+    expect(within(screen.getByTestId('inventory-list')).getByText('Charizard')).toBeInTheDocument()
   })
 
   it('shows estimated market value in list', async () => {
@@ -110,7 +111,7 @@ describe('InventoryPage — list', () => {
     })))
     render(<InventoryPage />)
     await waitFor(() => screen.getByTestId('inventory-list'))
-    expect(screen.getByText('$120.00')).toBeInTheDocument()
+    expect(within(screen.getByTestId('inventory-list')).getByText('$120.00')).toBeInTheDocument()
   })
 
   it('shows error state when fetch fails', async () => {
@@ -126,7 +127,7 @@ describe('InventoryPage — list', () => {
     })))
     render(<InventoryPage />)
     await waitFor(() => screen.getByTestId('inventory-list'))
-    expect(screen.getByText('Owned')).toBeInTheDocument()
+    expect(within(screen.getByTestId('inventory-list')).getByText('Owned')).toBeInTheDocument()
   })
 })
 

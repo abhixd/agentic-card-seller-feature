@@ -110,11 +110,21 @@ describe('searchCatalog', () => {
     )
   })
 
-  it('caps results at MAX_LIMIT (50) even if caller requests more', async () => {
+  it('caps the DB fetch at 4000 rows even if caller requests more', async () => {
     const chain = makeQueryChain([])
     const supabase = makeSupabase(chain)
 
     await searchCatalog(supabase, { q: 'pokemon', limit: 999 })
+
+    // dbLimit = min(requestedLimit * DB_FETCH_MULTIPLIER(5), 4000)
+    expect(chain.limit).toHaveBeenCalledWith(4000)
+  })
+
+  it('fetches 5x the requested limit for dedup headroom', async () => {
+    const chain = makeQueryChain([])
+    const supabase = makeSupabase(chain)
+
+    await searchCatalog(supabase, { q: 'pokemon', limit: 10 })
 
     expect(chain.limit).toHaveBeenCalledWith(50)
   })

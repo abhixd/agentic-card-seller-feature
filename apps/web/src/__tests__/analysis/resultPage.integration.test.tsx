@@ -152,7 +152,7 @@ describe('AnalysisResultPage — full result display', () => {
     render(<AnalysisResultPage />)
     await waitFor(() => screen.getByTestId('recommendation-banner'))
     expect(screen.getByTestId('recommendation-banner')).toBeInTheDocument()
-    expect(screen.getByTestId('recommendation-type')).toHaveTextContent('Submit for Grading')
+    expect(screen.getByTestId('recommendation-type')).toHaveTextContent('Send for Grading')
   })
 
   it('renders recommendation rationale', async () => {
@@ -168,7 +168,7 @@ describe('AnalysisResultPage — full result display', () => {
     await waitFor(() => screen.getByTestId('comps-section'))
     expect(screen.getByTestId('comps-estimate')).toHaveTextContent('$120.00')
     expect(screen.getByTestId('comps-range')).toHaveTextContent('$100.00 – $140.00')
-    expect(screen.getByTestId('comps-count')).toHaveTextContent('8 comps')
+    expect(screen.getByTestId('comps-count')).toHaveTextContent('8 sold')
   })
 
   it('renders the fees breakdown with net proceeds', async () => {
@@ -187,7 +187,7 @@ describe('AnalysisResultPage — full result display', () => {
   it('shows condition score when provided', async () => {
     render(<AnalysisResultPage />)
     await waitFor(() => screen.getByTestId('analysis-result'))
-    expect(screen.getByText('18 / 20')).toBeInTheDocument()
+    expect(screen.getByTestId('condition-score')).toHaveTextContent('18 / 20')
   })
 })
 
@@ -206,7 +206,7 @@ describe('AnalysisResultPage — SELL_RAW recommendation', () => {
     render(<AnalysisResultPage />)
     await waitFor(() => screen.getByTestId('recommendation-banner'))
     expect(screen.queryByTestId('grading-scenarios')).not.toBeInTheDocument()
-    expect(screen.getByTestId('recommendation-type')).toHaveTextContent('Sell Raw')
+    expect(screen.getByTestId('recommendation-type')).toHaveTextContent('Sell It')
   })
 })
 
@@ -228,7 +228,7 @@ describe('AnalysisResultPage — INSUFFICIENT_CONFIDENCE recommendation', () => 
     vi.stubGlobal('fetch', makeAnalysisFetch(noDataAnalysis))
     render(<AnalysisResultPage />)
     await waitFor(() => screen.getByTestId('recommendation-banner'))
-    expect(screen.getByTestId('recommendation-type')).toHaveTextContent('Insufficient Data')
+    expect(screen.getByTestId('recommendation-type')).toHaveTextContent('Not Enough Data')
     expect(screen.queryByTestId('grading-scenarios')).not.toBeInTheDocument()
   })
 })
