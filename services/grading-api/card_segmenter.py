@@ -321,8 +321,10 @@ def is_cropped_to_border(contour_raw, W, H):
     (high coverage + tiny margins to the image edge), is axis-aligned, and the image aspect ≈ the card aspect.
     Such inputs need no segment+warp — the image already IS the (rectified) card — so the caller uses a full-frame
     quad (identity warp) instead of the circumscribing quad, avoiding the warp looseness that drifts centering.
-    Tuned to fire ONLY on clearly cropped+aligned cards (validated: no false positives on background / rotated /
-    slab / toploader inputs — those have coverage <0.85, large margins, or rotation)."""
+    Only fire when the card TRULY fills the frame: a card with even a ~3% background margin (e.g. a Mimikyu on a
+    pink surface) must NOT bypass — the bypass would keep that margin and put the boundary at the image edge; the
+    normal circumscribing+mask path handles a background margin correctly. Thresholds separate the tight-crop case
+    (card_004: coverage 0.91, min-margin 0.018 → bypass) from the margin case (Mimikyu: 0.882, 0.026 → normal)."""
     pts = np.asarray(contour_raw, np.float32).reshape(-1, 2)
     x0, y0, x1, y1 = pts[:, 0].min(), pts[:, 1].min(), pts[:, 0].max(), pts[:, 1].max()
     coverage = float((x1 - x0) * (y1 - y0) / (W * H))
@@ -330,7 +332,7 @@ def is_cropped_to_border(contour_raw, W, H):
     ang = cv2.minAreaRect(pts)[-1]
     rot = min(abs(ang), abs(ang - 90), abs(ang + 90))
     aspect = min(W, H) / max(W, H)
-    return coverage > 0.88 and min_margin < 0.03 and rot < 2.0 and abs(aspect - CARD_ASPECT) < 0.05
+    return coverage > 0.90 and min_margin < 0.02 and rot < 2.0 and abs(aspect - CARD_ASPECT) < 0.05
 
 
 # ── Hosted segmentation inference ─────────────────────────────────────────────
