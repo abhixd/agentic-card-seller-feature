@@ -51,6 +51,11 @@ SEG_CLASSES    = os.environ.get("SEG_CLASSES",   "card")
 # perspective (recommended — see circumscribing_quad). "edges" = RANSAC regression line per side then intersect
 # (can cut corners on rounded/shadowed edges). "corners" = legacy approxPolyDP. Set SEG_QUAD_MODE to revert.
 SEG_QUAD_MODE  = os.environ.get("SEG_QUAD_MODE",  "edges")
+# When the input is ALREADY cropped tight to the card's outer border (card fills the frame, axis-aligned,
+# card aspect), skip the perspective warp entirely — the image IS the card, so segmenting+warping only adds
+# looseness and drifts centering. Default ON in circumscribe mode; set SEG_CROP_BYPASS=0 to disable.
+SEG_CROP_BYPASS = os.environ.get("SEG_CROP_BYPASS", "1").strip().lower() in ("1", "true", "yes", "on")
+CARD_ASPECT     = 63.0 / 88.0   # standard TCG card short/long side ratio (~0.716)
 SEG_SIGMA      = float(os.environ.get("SEG_SIGMA", str(cfg("segmentation", "sigma", 2.5))))
 SEG_RESAMPLE_N = int(os.environ.get("SEG_RESAMPLE_N", str(cfg("segmentation", "resample_n", 400))))
 SEG_BASE_URL   = os.environ.get("SEG_BASE_URL", "https://serverless.roboflow.com")
@@ -311,6 +316,23 @@ def circumscribing_quad(contour_raw, band_frac=0.02):
     return _order_quad(np.asarray(quad, np.float32))
 
 
+def is_cropped_to_border(contour_raw, W, H):
+    """True when the input image is ALREADY cropped tight to the card's outer border: the card fills the frame
+    (high coverage + tiny margins to the image edge), is axis-aligned, and the image aspect ≈ the card aspect.
+    Such inputs need no segment+warp — the image already IS the (rectified) card — so the caller uses a full-frame
+    quad (identity warp) instead of the circumscribing quad, avoiding the warp looseness that drifts centering.
+    Tuned to fire ONLY on clearly cropped+aligned cards (validated: no false positives on background / rotated /
+    slab / toploader inputs — those have coverage <0.85, large margins, or rotation)."""
+    pts = np.asarray(contour_raw, np.float32).reshape(-1, 2)
+    x0, y0, x1, y1 = pts[:, 0].min(), pts[:, 1].min(), pts[:, 0].max(), pts[:, 1].max()
+    coverage = float((x1 - x0) * (y1 - y0) / (W * H))
+    min_margin = float(min(x0 / W, (W - x1) / W, y0 / H, (H - y1) / H))
+    ang = cv2.minAreaRect(pts)[-1]
+    rot = min(abs(ang), abs(ang - 90), abs(ang + 90))
+    aspect = min(W, H) / max(W, H)
+    return coverage > 0.88 and min_margin < 0.03 and rot < 2.0 and abs(aspect - CARD_ASPECT) < 0.05
+
+
 # ── Hosted segmentation inference ─────────────────────────────────────────────
 def _post_workflow(b64: str, api_key: str, classes: str) -> dict:
     url = f"{SEG_BASE_URL}/infer/workflows/{SEG_WORKSPACE}/{SEG_WORKFLOW}"
@@ -428,7 +450,11 @@ def segment_card(img_bgr: np.ndarray,
     # cut the card (recommended); "edges" = edge_intersection (regression lines, can cut corners); "corners" =
     # legacy approxPolyDP. Smoothed `contour` stays the display outline (cw).
     if SEG_QUAD_MODE == "circumscribe":
-        quad = circumscribing_quad(contour_raw)
+        _H, _W = img_bgr.shape[:2]
+        if SEG_CROP_BYPASS and is_cropped_to_border(contour_raw, _W, _H):
+            quad = np.array([[0, 0], [_W, 0], [_W, _H], [0, _H]], np.float32)   # already cropped → identity warp
+        else:
+            quad = circumscribing_quad(contour_raw)
     elif SEG_QUAD_MODE == "edges":
         quad = edge_intersection_quad(contour_raw)
     else:
