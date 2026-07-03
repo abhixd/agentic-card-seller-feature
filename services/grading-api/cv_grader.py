@@ -317,7 +317,7 @@ def extract_pillar_zooms(img_bgr, quad_padded, raw, corner_crops_b64):
     return out
 
 
-def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=False, **_ignore) -> dict:
+def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=False, cropped=False, **_ignore) -> dict:
     """Grade a card with the classical-CV pipeline. Same signature/return shape as
     grader.grade_card() (minus the api_key — no VLM call)."""
     if quad_padded is None and quad_raw is not None:
@@ -365,7 +365,9 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
     # Mask table background to the card contour so no remnant (corner wedges, edge
     # slivers) contaminates the centering read. Metric-safe (validated identical on GT);
     # masked copy is centering-only — grading features above used the un-masked warp.
-    warped_cen = grader.mask_background_to_contour(warped, cw)
+    # Cropped inputs fill the frame (no background to mask) → skip masking so the displayed warp has no black
+    # ring. Non-cropped: mask the table background to the card contour so remnants don't contaminate the read.
+    warped_cen = warped if cropped else grader.mask_background_to_contour(warped, cw)
     inn = _perside_inner_frame(warped_cen, cb_center) or IF.find_inner_frame(warped_cen, cb_center)
     lr, tb = inn["left_right"], inn["top_bottom"]
     H, W = warped.shape[:2]

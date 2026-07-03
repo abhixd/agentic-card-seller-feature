@@ -1218,6 +1218,7 @@ def _detect_seg(img_bgr: np.ndarray, api_key: str = None):
         "_detector": "seg",
         "_seg_conf": seg["conf"],
         "_seg_n_segments": seg["n_segments"],
+        "_cropped": bool(seg.get("cropped", False)),
     }
 
 
@@ -1240,7 +1241,13 @@ def detect_and_grade(img_bgr: np.ndarray, api_key: str = None, zoom: bool = Fals
     else:  # "yolo" (default)
         quad_raw, contour, meta = _detect_yolo(img_bgr)
 
-    if PAD_MODE == "output-inset":
+    cropped = bool(meta.get("_cropped", False))
+    if cropped:
+        # Input already cropped to the card border (image ≈ the card). Skip the padded perspective warp — the
+        # quad IS the frame, so warping to it is an identity resize; padding would only add a black margin. The
+        # grade path also skips background-masking (nothing to mask), so the displayed warp has no black ring.
+        quad_padded = quad_raw
+    elif PAD_MODE == "output-inset":
         quad_padded = inset_quad_padded(quad_raw, PADDING_FRAC)   # perspective-correct margin, zero tilt
     else:                                                          # legacy radial corner-push (tilts perspective cards)
         pad_px      = adaptive_padding(quad_raw, padding_frac=PADDING_FRAC)
@@ -1256,7 +1263,7 @@ def detect_and_grade(img_bgr: np.ndarray, api_key: str = None, zoom: bool = Fals
     else:
         import cv_grader   # lazy (cv_grader imports grader); CV is the default backend
         result = cv_grader.grade_card_cv(img_bgr, quad_raw=quad_raw,
-                                         quad_padded=quad_padded, contour=contour, zoom=zoom)
+                                         quad_padded=quad_padded, contour=contour, zoom=zoom, cropped=cropped)
     result.update(meta)
     result["_quad_raw"]    = quad_raw.tolist()
     result["_quad_padded"] = quad_padded.tolist()

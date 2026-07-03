@@ -449,10 +449,12 @@ def segment_card(img_bgr: np.ndarray,
     # quad drives the perspective warp. "circumscribe" = supporting-line quad that HUGS the contour and cannot
     # cut the card (recommended); "edges" = edge_intersection (regression lines, can cut corners); "corners" =
     # legacy approxPolyDP. Smoothed `contour` stays the display outline (cw).
+    cropped = False
     if SEG_QUAD_MODE == "circumscribe":
         _H, _W = img_bgr.shape[:2]
         if SEG_CROP_BYPASS and is_cropped_to_border(contour_raw, _W, _H):
             quad = np.array([[0, 0], [_W, 0], [_W, _H], [0, _H]], np.float32)   # already cropped → identity warp
+            cropped = True                                                       # → grade path skips padding + mask
         else:
             quad = circumscribing_quad(contour_raw)
     elif SEG_QUAD_MODE == "edges":
@@ -480,4 +482,5 @@ def segment_card(img_bgr: np.ndarray,
         "quad":        quad,
         "conf":        float(conf),
         "n_segments":  int(n),
+        "cropped":     bool(cropped),
     }
