@@ -214,6 +214,10 @@ export default function MarketplacePage() {
       const data = await res.json()
       setListings(data.listings ?? [])
       setTotal(data.total ?? 0)
+    } catch {
+      // network/API failure → empty state instead of an unhandled rejection
+      setListings([])
+      setTotal(0)
     } finally {
       setLoading(false)
     }

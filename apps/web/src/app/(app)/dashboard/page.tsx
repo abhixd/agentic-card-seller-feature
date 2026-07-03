@@ -215,7 +215,9 @@ export default async function DashboardPage() {
   for (const c of (marketCards ?? []) as any[]) {
     const price = extractTcgPrice(c.metadata_json)
     if (!price) continue
-    const key = (c.card_name as string).toLowerCase().trim()
+    // guard: a NULL card_name in one row must not 500 the whole dashboard
+    const key = String(c.card_name ?? '').toLowerCase().trim()
+    if (!key) continue
     // Keep only the highest-priced version per unique name
     const existing = allTickerCandidates.findIndex(x => x.name.toLowerCase().trim() === key)
     const hist = extractHistoryPts(c.metadata_json)

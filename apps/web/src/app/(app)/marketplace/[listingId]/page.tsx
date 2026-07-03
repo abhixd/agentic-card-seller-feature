@@ -342,8 +342,9 @@ export default function ListingDetailPage({ params }: { params: Promise<{ listin
 
   useEffect(() => {
     fetch(`/api/marketplace/listings/${listingId}`)
-      .then(r => r.json())
-      .then(data => { setListing(data); setLoading(false) })
+      .then(r => (r.ok ? r.json() : null))
+      // guard: a 404/500 or shapeless payload falls through to "Listing not found."
+      .then(data => { setListing(data && data.id ? data : null); setLoading(false) })
       .catch(() => setLoading(false))
 
     // Get current user
@@ -389,7 +390,7 @@ export default function ListingDetailPage({ params }: { params: Promise<{ listin
   const card       = listing.card_catalog_items
   const delta      = listing.price_delta_pct
   const market     = listing.ai_market_price
-  const imgSrc     = listing.image_urls[0] ?? card.canonical_image_url
+  const imgSrc     = listing.image_urls?.[0] ?? card?.canonical_image_url ?? null
   const isSeller   = currentUserId === listing.seller_id
   const isDeal     = delta !== null && delta < -5
   const isHot      = delta !== null && delta < -20

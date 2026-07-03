@@ -142,7 +142,7 @@ export default async function MarketPage() {
 
       return {
         catalog_id:  c.catalog_id  as string,
-        card_name:   c.card_name   as string,
+        card_name:   String(c.card_name ?? '') as string,
         set_name:    c.set_name    as string,
         card_number: c.card_number as string | null,
         image_url:   c.canonical_image_url as string | null,
@@ -163,6 +163,7 @@ export default async function MarketPage() {
   const seenNames = new Map<string, CardRow>()
   for (const card of processed) {
     const key = card.card_name.toLowerCase().trim()
+    if (!key) continue // skip rows with no name rather than crashing/grouping them
     const existing = seenNames.get(key)
     if (!existing || card.market > existing.market) {
       seenNames.set(key, card)
