@@ -1152,12 +1152,9 @@ function buildCenteringAuditCard(src, label = null) {
         x2: seedOuter.x2 - (seedOuter.x2-seedOuter.x1)*0.10,
         y2: seedOuter.y2 - (seedOuter.y2-seedOuter.y1)*0.10 };
 
-  // Cyan is the real boundary — seed the editable outer edge from its exact box
-  // so the green rectangle (only shown when overriding the edge) overlays the cyan.
-  if (contourPts && contourPts.length > 2) {
-    const xs = contourPts.map((p) => p[0]*100), ys = contourPts.map((p) => p[1]*100);
-    seedOuter = { x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) };
-  }
+  // seedOuter stays = _card_boundary (a straight rectangle), matching the web /grade centering view. We do NOT
+  // seed from the raw contour bbox — the outer boundary is drawn as a clean rectangle, not the wiggly contour.
+  void contourPts;
 
   let outer = { ...seedOuter };
   let inner = { ...seedInner };
@@ -1171,18 +1168,12 @@ function buildCenteringAuditCard(src, label = null) {
     const T = inner.y1 - outer.y1, B = outer.y2 - inner.y2;
     const midX = (inner.x1+inner.x2)/2, midY = (inner.y1+inner.y2)/2;
 
-    // Cyan = the real card boundary (seg). Shown except while overriding the edge,
-    // where the editable green rectangle stands in for it.
-    if (contourPts && contourPts.length > 2 && editMode !== "outer") {
-      const poly = document.createElementNS(NS_SVG, "polygon");
-      poly.setAttribute("points", contourPts.map((p) => `${p[0]*100},${p[1]*100}`).join(" "));
-      poly.setAttribute("fill", "none");
-      poly.setAttribute("stroke", "#22d3ee");          // cyan = card boundary
-      poly.setAttribute("stroke-width", "0.7");
-      poly.setAttribute("stroke-linejoin", "round");
-      poly.setAttribute("pointer-events", "none");
-      poly.setAttribute("class", "sv-contour");
-      svg.appendChild(poly);
+    // Cyan = the card boundary, drawn as a STRAIGHT rectangle (consistent with the web /grade view — the card
+    // IS a rectangle; we don't render the raw wiggly contour). Shown except while overriding the edge, where the
+    // editable green rectangle stands in for it.
+    if (editMode !== "outer") {
+      addRect(svg, outer.x1, outer.y1, outer.x2 - outer.x1, outer.y2 - outer.y1,
+              "sv-contour", { "stroke-width": "0.7", stroke: "#22d3ee" });
     }
 
     // Outer card edge — editable green rectangle ONLY while adjusting the edge.
@@ -1206,7 +1197,7 @@ function buildCenteringAuditCard(src, label = null) {
         [inner.x1,midY,"inner","left"], [inner.x2,midY,"inner","right"],
         [midX,inner.y1,"inner","top"],  [midX,inner.y2,"inner","bottom"],
       ].forEach(([hx,hy,rect,side]) => addHandle(hx,hy,rect,side));
-    } else if (editMode === "outer") {
+    } else {   // "outer" edit OR view mode → static inner content rect so the margins are visible (like the web)
       addRect(svg, inner.x1, inner.y1, inner.x2-inner.x1, inner.y2-inner.y1,
               "sv-content", { "stroke-width": "0.5" });
     }
