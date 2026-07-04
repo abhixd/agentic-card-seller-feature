@@ -1173,7 +1173,7 @@ function buildCenteringAuditCard(src, label = null) {
     // editable green rectangle stands in for it.
     if (editMode !== "outer") {
       addRect(svg, outer.x1, outer.y1, outer.x2 - outer.x1, outer.y2 - outer.y1,
-              "sv-contour", { fill: "none", "stroke-width": "0.7", stroke: "#22d3ee" });   // fill:none — a bare
+              "sv-contour", { fill: "none", "stroke-width": "0.35", stroke: "#22d3ee" });   // fill:none — a bare
       // SVG <rect> defaults to fill:black and would cover the card image (.sv-contour has no CSS fill rule).
     }
 
@@ -1200,7 +1200,7 @@ function buildCenteringAuditCard(src, label = null) {
       ].forEach(([hx,hy,rect,side]) => addHandle(hx,hy,rect,side));
     } else {   // "outer" edit OR view mode → static inner content rect so the margins are visible (like the web)
       addRect(svg, inner.x1, inner.y1, inner.x2-inner.x1, inner.y2-inner.y1,
-              "sv-content", { "stroke-width": "0.5" });
+              "sv-content", { "stroke-width": "0.3" });
     }
 
     // Border-width labels while editing either box
