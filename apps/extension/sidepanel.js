@@ -1173,7 +1173,8 @@ function buildCenteringAuditCard(src, label = null) {
     // editable green rectangle stands in for it.
     if (editMode !== "outer") {
       addRect(svg, outer.x1, outer.y1, outer.x2 - outer.x1, outer.y2 - outer.y1,
-              "sv-contour", { "stroke-width": "0.7", stroke: "#22d3ee" });
+              "sv-contour", { fill: "none", "stroke-width": "0.7", stroke: "#22d3ee" });   // fill:none — a bare
+      // SVG <rect> defaults to fill:black and would cover the card image (.sv-contour has no CSS fill rule).
     }
 
     // Outer card edge — editable green rectangle ONLY while adjusting the edge.
