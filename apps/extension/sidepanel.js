@@ -166,8 +166,9 @@ function renderGallery(listing) {
     img.onerror = () => { cell.style.display = "none"; };
     cell.appendChild(img);
 
-    // Hover to see the photo large (so front vs back is easy to tell apart).
-    cell.addEventListener("mouseenter", () => showGalleryPreview(url));
+    // Hover to see the photo large (so front vs back is easy to tell apart). Delayed so a normal
+    // hover-to-click to (un)select never triggers it; anchored below the strip so it can't cover the row.
+    cell.addEventListener("mouseenter", () => scheduleGalleryPreview(url, cell));
     cell.addEventListener("mouseleave", hideGalleryPreview);
 
     if (i === selFront || i === selBack) {
@@ -180,21 +181,36 @@ function renderGallery(listing) {
   });
 }
 
-// Large hover preview so small thumbnails are legible (front vs back).
-function showGalleryPreview(url) {
+// Hover preview so small thumbnails are legible (front vs back). Delayed (a quick hover-to-click to
+// (un)select never shows it) and anchored BELOW the gallery strip (never covers the thumbnails).
+let galleryPreviewTimer = null;
+function scheduleGalleryPreview(url, cell) {
+  clearTimeout(galleryPreviewTimer);
+  galleryPreviewTimer = setTimeout(() => showGalleryPreview(url, cell), 400);
+}
+function showGalleryPreview(url, cell) {
   let el = document.getElementById("gallery-preview");
   if (!el) {
     el = document.createElement("div");
     el.id = "gallery-preview";
     el.className = "gallery-preview";
-    const img = document.createElement("img");
-    el.appendChild(img);
+    el.appendChild(document.createElement("img"));
     document.body.appendChild(el);
   }
   el.querySelector("img").src = url;
-  el.classList.add("visible");
+  el.classList.add("visible");                 // display:block so we can measure it
+  const gal = document.getElementById("listing-gallery");
+  const gr = (gal || cell).getBoundingClientRect();
+  const cr = cell.getBoundingClientRect();
+  const pw = el.offsetWidth || 208, ph = el.offsetHeight || 208;
+  const left = Math.max(6, Math.min(cr.left, window.innerWidth - pw - 6));
+  let top = gr.bottom + 6;                      // below the whole strip → thumbnails stay visible & clickable
+  if (top + ph > window.innerHeight - 6) top = Math.max(6, gr.top - ph - 6);   // flip above if no room below
+  el.style.left = `${left}px`;
+  el.style.top = `${top}px`;
 }
 function hideGalleryPreview() {
+  clearTimeout(galleryPreviewTimer);
   document.getElementById("gallery-preview")?.classList.remove("visible");
 }
 
@@ -203,6 +219,7 @@ function hideGalleryPreview() {
 function onGalleryClick(e) {
   const cell = e.target.closest(".thumb-cell");
   if (!cell || !currentListing) return;
+  hideGalleryPreview();                         // dismiss the preview the moment a selection is made
   const i = Number(cell.dataset.idx);
 
   if (i === selFront)        selFront = null;

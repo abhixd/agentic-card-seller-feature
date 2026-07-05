@@ -161,19 +161,18 @@ body {
 .thumb-badge.tb-front { background: rgba(56,139,253,0.92); }
 .thumb-badge.tb-back  { background: rgba(63,185,80,0.92); }
 
-/* Large hover preview of a thumbnail */
+/* Hover preview of a thumbnail — JS anchors it BELOW the gallery strip (top/left set inline) so it never
+   covers the thumbnails you're selecting from. pointer-events:none = clicks pass straight through. */
 .gallery-preview {
-  position: fixed; top: 50%; left: 50%;
-  transform: translate(-50%, -50%) scale(0.96);
-  z-index: 50; pointer-events: none;
-  padding: 6px; background: var(--surface); border: 1px solid var(--border);
-  border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,0.55);
-  opacity: 0; transition: opacity 0.12s, transform 0.12s; display: none;
+  position: fixed; z-index: 50; pointer-events: none;
+  padding: 4px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  opacity: 0; transform: scale(0.98); transition: opacity 0.1s, transform 0.1s; display: none;
 }
-.gallery-preview.visible { opacity: 1; transform: translate(-50%, -50%) scale(1); display: block; }
+.gallery-preview.visible { opacity: 1; transform: scale(1); display: block; }
 .gallery-preview img {
-  display: block; max-width: 78vw; max-height: 70vh;
-  width: auto; height: auto; border-radius: 6px;
+  display: block; max-width: 200px; max-height: 50vh;
+  width: auto; height: auto; border-radius: 5px;
 }
 
 /* ── Loading ── */
