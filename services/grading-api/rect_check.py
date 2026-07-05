@@ -90,7 +90,11 @@ def _photometric_sides(warp_bgr, pf, band):
         dev = min(ang, abs(ang - 90), abs(ang - 180))
         mid = bases[len(ts) // 2].astype(np.float32)
         pos = float((np.array([x0, y0], np.float32) - mid) @ n.astype(np.float32))
-        out[side] = {"ang": round(float(dev), 3), "pos": round(pos, 1), "n": len(pts)}
+        out[side] = {"ang": round(float(dev), 3), "pos": round(pos, 1), "n": len(pts),
+                     # fitted line (point + unit dir, warp px) — consumed by the rectification
+                     # CORRECTION prototype (intersect sides → true corners → unwarp).
+                     "line": [round(float(x0), 2), round(float(y0), 2),
+                              round(float(vx), 5), round(float(vy), 5)]}
     return out
 
 
