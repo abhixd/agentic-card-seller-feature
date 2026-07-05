@@ -1256,6 +1256,30 @@ def detect_and_grade(img_bgr: np.ndarray, api_key: str = None, zoom: bool = Fals
         norms       = np.linalg.norm(dirs, axis=1, keepdims=True).clip(min=1)
         quad_padded = quad_raw + (dirs / norms) * pad_px
 
+    # ── SEG_RECT_CORRECT=on: apply the tapered quad correction BEFORE grading. ──
+    # Snaps the quad to the photometrically-measured die-cut edges when (and only when) the correction is
+    # in-trust-region, non-slab, and re-verifies (see rect_correct.py — lab-validated: stability jitter
+    # 6.24→5.00 vs baseline, GT big-keystone wins, slab class gated, 46/48 human edge review). Applied HERE
+    # so the warp, centering, detectors, corner crops AND the response _quad_raw/_quad_padded (which the
+    # extension feedback mapping consumes) all stay consistent. Anything but "corrected" leaves the quads
+    # untouched and the confidence veto covers it. KILL SWITCH: set SEG_RECT_CORRECT to "shadow" (log-only)
+    # or "off" and redeploy — no code change.
+    if not cropped:
+        try:
+            import rect_correct as _RCOR
+            if _RCOR.MODE == "on":
+                _o = _RCOR.correct_quad_tapered(img_bgr, quad_raw, PADDING_FRAC, qp=quad_padded)
+                meta["_rect_correct"] = {"mode": "on", "decision": _o.get("decision"), "w": _o.get("w"),
+                                         "end_dev": _o.get("end_dev"), "shift_full": _o.get("shift_full"),
+                                         "rc1_max_ang": (_o.get("rc1") or {}).get("max_ang"),
+                                         "slab_sides": (_o.get("slab") or {}).get("n_coherent")}
+                if _o.get("decision") == "corrected":
+                    quad_raw    = np.asarray(_o["final_quad"], np.float32)
+                    quad_padded = np.asarray(_o["qp1"], np.float32)
+                print(f"[rect_correct on] {meta['_rect_correct']}", flush=True)
+        except Exception as _e:                    # the correction must never break a grade
+            print(f"[rect_correct on] skipped: {type(_e).__name__}: {_e}", flush=True)
+
     # Grading backend: "cv" (classical-CV XGBoost, default) | "vlm" (Claude Sonnet, legacy backup).
     if os.environ.get("GRADER_BACKEND", "cv").lower() == "vlm":
         result = grade_card(img_bgr, quad_raw=quad_raw, quad_padded=quad_padded,

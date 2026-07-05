@@ -6,7 +6,10 @@ Validated in the lab 2026-07-04/05 (research notes: seg-ensemble). Prod modes vi
                     (decision, w, residuals, corner shift) to the response + one log line. THE SERVED GRADE
                     IS UNTOUCHED — shadow exists to measure decision mix / verify-failure / slab rates on
                     real traffic before any flip.
-  "on"            — reserved; NOT implemented yet (flip happens in a later change, after the shadow soak).
+  "on"            — grader.detect_and_grade applies the correction to quad_raw/quad_padded BEFORE grading
+                    (warp, centering, detectors, corner crops and the response quads all stay consistent).
+                    Anything but a verified "corrected" decision leaves the quads untouched. Kill switch:
+                    set this env back to "shadow"/"off" and redeploy.
 
 WHY TAPER (B#3 verdict, 2026-07-04): grading is STATELESS — no card identity across requests — so temporal
 hysteresis is impossible. A hard trust gate therefore creates a cliff: a card at end_dev 7.9px corrects, at

@@ -897,8 +897,10 @@ function rectSummary(r) {
   const rc = r?._rect_check, rcor = r?._rect_correct;
   if (!rc && !rcor) return null;
   const ang = rc?.max_ang, g = rc?.g_geom, dec = rcor?.decision;
-  if (dec === "corrected")
-    return { text: `geometry: would refine ${ang}°→${rcor.rc1_max_ang}° (×${rcor.w})`, tone: "warn" };
+  if (dec === "corrected")   // mode "on" = the warp WAS refined (rc/_rect_check reflect the corrected warp);
+    return rcor.mode === "on"   // mode "shadow" = log-only, the served warp is uncorrected.
+      ? { text: `geometry: refined → ${ang}° (×${rcor.w})`, tone: "clean" }
+      : { text: `geometry: would refine ${ang}°→${rcor.rc1_max_ang}° (×${rcor.w})`, tone: "warn" };
   if (typeof dec === "string" && dec.startsWith("flag-only:slab"))
     return { text: `geometry: slab/sleeve — flagged, not refined`, tone: "bad" };
   if (dec === "pass" || dec === "micro-skip")
