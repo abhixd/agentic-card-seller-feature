@@ -405,6 +405,23 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
     # ring. Non-cropped: mask the table background to the card contour so remnants don't contaminate the read.
     warped_cen = warped if cropped else grader.mask_background_to_contour(warped, cw)
     inn = _perside_inner_frame(warped_cen, cb_center) or IF.find_inner_frame(warped_cen, cb_center)
+    # ── RECT_CHECK=1: post-warp rectification check — a MIN-only geometric veto on centering confidence. ──
+    # Measures the physical die-cut edge in the UNMASKED warp against the output-inset invariant (card must sit
+    # at [PF,1-PF] with zero tilt). Can only LOWER confidence / clear reliable; never moves a ratio or grade.
+    # Structurally blind to true print off-centering (a real miscut still has a rectangular die-cut → passes).
+    _rc = None
+    if not cropped:
+        try:
+            import rect_check as RC
+            if RC.ENABLED:
+                _rc = RC.check(warped, grader.PADDING_FRAC)     # `warped` = unmasked padded warp
+                g = float(_rc["g_geom"])
+                if inn.get("confidence") is not None:
+                    inn["confidence"] = round(min(float(inn["confidence"]), g), 3)
+                if g < 0.5:
+                    inn["reliable"] = False                     # fires the product's low-confidence note
+        except Exception:
+            _rc = None                                          # the check must never break a grade
     lr, tb = inn["left_right"], inn["top_bottom"]
     H, W = warped.shape[:2]
     L, T, R, Bx = inn["frame_px"]
@@ -458,6 +475,8 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
     # ── visual payload (same keys the extension already consumes) ──
     # Show the background-masked warp so the extension UI has no table remnants either.
     result["_card_boundary"] = list(cb_center)
+    if _rc is not None:
+        result["_rect_check"] = _rc        # per-side ang/pos + g_geom (debug; RECT_CHECK=1 only)
     try:
         result["_warped_jpeg_b64"] = grader.encode_image(warped_cen)["data"]
         if quad_raw is not None:
