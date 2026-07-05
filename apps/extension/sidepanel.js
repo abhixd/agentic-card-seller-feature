@@ -626,6 +626,16 @@ function renderPSAResult(r, listing) {
   else if (r._back_error) subBits.push("front only");
   if (r._adjusted) subBits.unshift("✎ adjusted");
   $("grade-sub").textContent = subBits.join(" · ");
+  // Phase-1 rectification observation — a colored chip so the refine/slab/rectified cases are spottable
+  // while grading many cards. Observation-only; never changes the served grade (see rectSummary).
+  const rs = rectSummary(r);
+  if (rs) {
+    const chip = document.createElement("span");
+    chip.className = rectTone(rs.tone);
+    chip.style.marginLeft = "6px";
+    chip.textContent = "· " + rs.text;
+    $("grade-sub").appendChild(chip);
+  }
   document.querySelector(".grade-row").classList.add("hidden");
   $("grade-dist").innerHTML   = "";
   $("grade-limiting").classList.add("hidden");
@@ -860,6 +870,29 @@ function confidencePhrase(conf, reliable) {
   return "high confidence";
 }
 function cen0Conf(r) { return r?.centering?.confidence ?? null; }
+
+// Phase-1 rectification observation → one short chip. Reads the backend's optional debug keys
+// (_rect_check = the confidence veto's geometry measurement; _rect_correct = the SEG_RECT_CORRECT=shadow
+// decision — what the tapered warp-correction WOULD do). Null-safe: returns null when absent (cropped
+// cards, or backend flags off), so the normal UI is untouched. These are observation-only — the shadow
+// decision does NOT change the served grade.
+function rectSummary(r) {
+  const rc = r?._rect_check, rcor = r?._rect_correct;
+  if (!rc && !rcor) return null;
+  const ang = rc?.max_ang, g = rc?.g_geom, dec = rcor?.decision;
+  if (dec === "corrected")
+    return { text: `geometry: would refine ${ang}°→${rcor.rc1_max_ang}° (×${rcor.w})`, tone: "warn" };
+  if (typeof dec === "string" && dec.startsWith("flag-only:slab"))
+    return { text: `geometry: slab/sleeve — flagged, not refined`, tone: "bad" };
+  if (dec === "pass" || dec === "micro-skip")
+    return { text: `geometry: rectified (tilt ${ang}°)`, tone: "clean" };
+  if (typeof dec === "string" && dec.startsWith("flag-only"))
+    return { text: `geometry: uncertain — ${dec.replace("flag-only:", "")}`, tone: "warn" };
+  if (ang != null)  // shadow mode off — surface the veto measurement alone
+    return { text: `geometry tilt ${ang}° · g=${g ?? "—"}`, tone: (g != null && g < 0.5) ? "bad" : "clean" };
+  return null;
+}
+function rectTone(t) { return t === "bad" ? "issue-bad" : t === "warn" ? "issue-warn" : "issue-clean"; }
 
 // One short note per pillar from what the detectors actually found (defect_boxes), else the
 // legacy severity words, else a score-based read.
@@ -1108,6 +1141,12 @@ function buildCenteringAuditCard(src, label = null) {
   readout.className = "centering-readout";
   card.appendChild(readout);
 
+  // Phase-1 rectification readout (below the L/R·T/B readout) — the geometry veto + shadow-correction chip.
+  const rectReadout = document.createElement("div");
+  rectReadout.className = "centering-readout";
+  rectReadout.style.marginTop = "2px";
+  card.appendChild(rectReadout);
+
   const actions = document.createElement("div");
   actions.className = "cen-actions";
   // Manual adjustment is opt-in. Two scopes:
@@ -1203,6 +1242,25 @@ function buildCenteringAuditCard(src, label = null) {
               "sv-content", { "stroke-width": "0.3" });
     }
 
+    // ── Phase-1 rectification overlay (view mode only) ──
+    // 🟡 the MEASURED physical card edges (photometric line fit, from _rect_check.sides, warp px 630×880)
+    // vs 🟦 where the warp promises they should be (the output-inset rect at [3,97]%). Yellow off the cyan
+    // dashed rect = residual keystone/offset — exactly what the grader's confidence veto reacts to and what
+    // the shadow correction would straighten. Absent (no _rect_check) → nothing drawn.
+    const rchk = src._rect_check;
+    if (editMode === null && rchk && rchk.sides) {
+      addRect(svg, 3, 3, 94, 94, "sv-expected",
+              { fill: "none", stroke: "#22d3ee", "stroke-width": "0.25",
+                "stroke-dasharray": "1.5 1.5", opacity: "0.65" });
+      for (const s of ["top", "right", "bottom", "left"]) {
+        const sv = rchk.sides[s];
+        if (!sv || !Array.isArray(sv.line)) continue;
+        const [x0, y0, dx, dy] = sv.line, t = 700;      // extend the fitted line across the card
+        addLine(svg, (x0 - t*dx)/6.3, (y0 - t*dy)/8.8, (x0 + t*dx)/6.3, (y0 + t*dy)/8.8,
+                { stroke: "#facc15", "stroke-width": "0.45", opacity: "0.9" });   // /6.3=/630*100, /8.8=/880*100
+      }
+    }
+
     // Border-width labels while editing either box
     if (editMode) {
       addLabel(svg, NS_SVG, (outer.x1+inner.x1)/2, midY, `L ${(L*6.3)|0}`);
@@ -1220,6 +1278,11 @@ function buildCenteringAuditCard(src, label = null) {
       `<span>L/R <b>${lr}/${100-lr}</b></span>` +
       `<span>T/B <b>${tb}/${100-tb}</b></span>` +
       `<span>score <b class="${sc}">${score}</b></span>`;
+
+    // Phase-1 rectification chip (🟡 measured edges vs 🟦 expected). View mode only — hidden while adjusting.
+    const rs = (editMode === null) ? rectSummary(src) : null;
+    rectReadout.innerHTML = rs ? `<span class="${rectTone(rs.tone)}">${rs.text}</span>` : "";
+    rectReadout.style.display = rs ? "" : "none";
   }
 
   function addHandle(cx, cy, rect, side) {
@@ -1542,6 +1605,14 @@ function addRect(svg, x, y, w, h, cls, attrs = {}) {
   rect.setAttribute("class", cls);
   for (const [k, v] of Object.entries(attrs)) rect.setAttribute(k, v);
   svg.appendChild(rect);
+}
+
+function addLine(svg, x1, y1, x2, y2, attrs = {}) {
+  const line = document.createElementNS(NS_SVG, "line");
+  line.setAttribute("x1", x1); line.setAttribute("y1", y1);
+  line.setAttribute("x2", x2); line.setAttribute("y2", y2);
+  for (const [k, v] of Object.entries(attrs)) line.setAttribute(k, v);
+  svg.appendChild(line);
 }
 
 // ── Stage-B aggregator (client-side, no Claude) ────────────────────────────
