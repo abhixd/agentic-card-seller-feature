@@ -410,6 +410,7 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
     # at [PF,1-PF] with zero tilt). Can only LOWER confidence / clear reliable; never moves a ratio or grade.
     # Structurally blind to true print off-centering (a real miscut still has a rectangular die-cut → passes).
     _rc = None
+    _rcor = None
     if not cropped:
         try:
             import rect_check as RC
@@ -422,6 +423,21 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
                     inn["reliable"] = False                     # fires the product's low-confidence note
         except Exception:
             _rc = None                                          # the check must never break a grade
+        # ── SEG_RECT_CORRECT=shadow: run the tapered-correction DECISION pipeline, log it, serve nothing. ──
+        # Measures decision mix / verify-failure / slab rates on real traffic before any flip. The served
+        # grade is untouched by construction (no output of this block feeds the response ratios).
+        try:
+            import rect_correct as RCOR
+            if RCOR.MODE == "shadow" and quad_raw is not None:
+                o = RCOR.correct_quad_tapered(img_bgr, quad_raw, grader.PADDING_FRAC,
+                                              warp0=warped, qp=quad_padded, rc0=_rc)
+                _rcor = {"mode": "shadow", "decision": o.get("decision"), "w": o.get("w"),
+                         "end_dev": o.get("end_dev"), "shift_full": o.get("shift_full"),
+                         "rc1_max_ang": (o.get("rc1") or {}).get("max_ang"),
+                         "slab_sides": (o.get("slab") or {}).get("n_coherent")}
+                print(f"[rect_correct shadow] {_rcor}", flush=True)
+        except Exception as _e:
+            print(f"[rect_correct shadow] skipped: {type(_e).__name__}: {_e}", flush=True)
     lr, tb = inn["left_right"], inn["top_bottom"]
     H, W = warped.shape[:2]
     L, T, R, Bx = inn["frame_px"]
@@ -477,6 +493,8 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
     result["_card_boundary"] = list(cb_center)
     if _rc is not None:
         result["_rect_check"] = _rc        # per-side ang/pos + g_geom (debug; RECT_CHECK=1 only)
+    if _rcor is not None:
+        result["_rect_correct"] = _rcor    # shadow-mode decision log (SEG_RECT_CORRECT=shadow only)
     try:
         result["_warped_jpeg_b64"] = grader.encode_image(warped_cen)["data"]
         if quad_raw is not None:
