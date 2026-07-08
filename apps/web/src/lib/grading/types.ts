@@ -41,6 +41,19 @@ export interface PillarZooms {
   corners?: Partial<Record<'TL' | 'TR' | 'BR' | 'BL', string>> | null
 }
 
+export interface SurfaceDefect {
+  box?: number[] | null    // [x, y, w, h] as fractions of the warped image (0..1, top-left origin)
+  conf?: number | null     // detector confidence (RF-DETR scratch)
+  type?: string | null
+  category?: string | null
+}
+
+export interface DefectBoxes {
+  edges?: SurfaceDefect[]
+  corners?: SurfaceDefect[]
+  surface?: SurfaceDefect[]
+}
+
 export interface GradeResult {
   overall_score: number          // 1–10
   psa_equivalent: string         // e.g. "PSA 9 MINT"
@@ -59,6 +72,7 @@ export interface GradeResult {
   _border_type?: string          // detected printed-border style (e.g. "dragon", "yellow")
   pillar_visuals?: PillarVisuals  // per-pillar overlay images for click-to-inspect popups
   pillar_zooms?: PillarZooms      // high-res defect close-ups (present only with ?zoom=1)
+  defect_boxes?: DefectBoxes | null  // per-pillar detected defects; surface = RF-DETR scratches (for overlay)
   [key: string]: unknown
 }
 

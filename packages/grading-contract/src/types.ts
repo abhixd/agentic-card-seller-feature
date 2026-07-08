@@ -40,6 +40,26 @@ export interface Issues {
   centering: string[];
 }
 
+export interface Defect {
+  /** [x, y, w, h] as FRACTIONS of the warped card (0..1, origin top-left) */
+  box?: number[] | null;
+  /** detector confidence (RF-DETR scratches); may be absent for VLM-detected defects */
+  conf?: number | null;
+  /** short label, e.g. "scratch" / "whitening" */
+  type?: string | null;
+  /** artifact | trace | minor | heavy */
+  category?: string | null;
+  /** region, e.g. "top" / "TL" / "surface" */
+  area?: string | null;
+  [internal: string]: unknown;
+}
+
+export interface DefectBoxes {
+  edges: Defect[];
+  corners: Defect[];
+  surface: Defect[];
+}
+
 export interface GradeResponse {
   overall_score?: number | null;
   psa_equivalent?: string | null;
@@ -66,6 +86,9 @@ export interface GradeResponse {
     surface?: { scratches?: { crop_b64: string; count?: number } };
     corners?: Record<"TL" | "TR" | "BR" | "BL", string> | null;
   } | null;
+  /** per-pillar detected defects → outline rectangles over the warped card; box = [x,y,w,h] fractions 0..1.
+   *  Sonnet backend fills all pillars (Opus detector); CV backend fills `surface` (RF-DETR scratches). */
+  defect_boxes?: DefectBoxes | null;
   /** present when a title/identity is supplied; shape still evolving — treat as opaque for now */
   economics?: Record<string, unknown> | null;
   decision?: Record<string, unknown> | null;

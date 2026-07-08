@@ -36,6 +36,9 @@ COPY services/grading-api/main.py services/grading-api/inference.py services/gra
      services/grading-api/per_side_selector.py services/grading-api/inner_frame_var.py services/grading-api/inner_frame_dp.py \
      services/grading-api/trainer.py services/grading-api/model_store.py \
      services/grading-api/config.py services/grading-api/centering_config.yaml \
+     services/grading-api/scratch_detect.py services/grading-api/ec_detect.py services/grading-api/local_rfdetr.py \
+     services/grading-api/remote_detect.py services/grading-api/remote_grade.py services/grading-api/quad_refine.py \
+     services/grading-api/rect_check.py services/grading-api/rect_correct.py \
      services/grading-api/grade_model.json services/grading-api/feedback_to_yolo.py ./
 
 # per-side selector model + bundled base training set (for /admin/train server-side retrain)

@@ -47,10 +47,15 @@ except Exception:
 SEG_WORKSPACE  = os.environ.get("SEG_WORKSPACE", "srinivas-doddi")
 SEG_WORKFLOW   = os.environ.get("SEG_WORKFLOW",  "general-segmentation-api-6")
 SEG_CLASSES    = os.environ.get("SEG_CLASSES",   "card")
-# Warp-quad source. "edges" = fit a line to each detected SIDE (RANSAC) and intersect adjacent lines for
-# the corner → axis-aligned crop that traces the boundary even through rounded corners (no inscription/clip).
-# "corners" = legacy approxPolyDP corner approximation. Set SEG_QUAD_MODE=corners on Railway to revert instantly.
+# Warp-quad source. "circumscribe" = supporting-line quad, hugs the contour and CANNOT cut the card, handles
+# perspective (recommended — see circumscribing_quad). "edges" = RANSAC regression line per side then intersect
+# (can cut corners on rounded/shadowed edges). "corners" = legacy approxPolyDP. Set SEG_QUAD_MODE to revert.
 SEG_QUAD_MODE  = os.environ.get("SEG_QUAD_MODE",  "edges")
+# When the input is ALREADY cropped tight to the card's outer border (card fills the frame, axis-aligned,
+# card aspect), skip the perspective warp entirely — the image IS the card, so segmenting+warping only adds
+# looseness and drifts centering. Default ON in circumscribe mode; set SEG_CROP_BYPASS=0 to disable.
+SEG_CROP_BYPASS = os.environ.get("SEG_CROP_BYPASS", "1").strip().lower() in ("1", "true", "yes", "on")
+CARD_ASPECT     = 63.0 / 88.0   # standard TCG card short/long side ratio (~0.716)
 SEG_SIGMA      = float(os.environ.get("SEG_SIGMA", str(cfg("segmentation", "sigma", 2.5))))
 SEG_RESAMPLE_N = int(os.environ.get("SEG_RESAMPLE_N", str(cfg("segmentation", "resample_n", 400))))
 SEG_BASE_URL   = os.environ.get("SEG_BASE_URL", "https://serverless.roboflow.com")
@@ -60,6 +65,13 @@ SEG_RETRIES    = int(os.environ.get("SEG_RETRIES", "3"))
 # tiny high-confidence speck alongside (or instead of) the card; selecting by confidence then warped
 # that speck to a black image (card_06/08). We select by AREA and reject anything below this floor.
 SEG_MIN_AREA_FRAC = float(os.environ.get("SEG_MIN_AREA_FRAC", str(cfg("segmentation", "min_area_frac", 0.05))))
+
+# Segmentation source: "roboflow" (hosted Model-C SAM workflow, default) | "remote_sam3" (a self-hosted SAM3
+# server, e.g. the M4 box, reached over HTTP). Both return the same raw polygon → identical downstream warp.
+# Temporary bridge while Roboflow credits are out; the grader's seg_then_yolo fallback still wraps this.
+SEG_BACKEND      = os.environ.get("SEG_BACKEND", "roboflow").lower()
+SEG_REMOTE_URL   = os.environ.get("SEG_REMOTE_URL", "")        # e.g. https://<tunnel>/segment
+SEG_REMOTE_TOKEN = os.environ.get("SEG_REMOTE_TOKEN", "")
 
 
 def _poly_area(pts, sx=1.0, sy=1.0) -> float:
@@ -210,6 +222,119 @@ def edge_intersection_quad(contour_raw, drop=0.18):
     return np.asarray([o if o is not None else pts[idx[k]] for k, o in enumerate(out)], np.float32)
 
 
+# ── Circumscribing quad (SEG_QUAD_MODE=circumscribe) ──────────────────────────
+# Cut-proof quad that HUGS the contour under arbitrary (mild→moderate) perspective. edge_intersection_quad fits
+# a regression line THROUGH each side's points → on rounded/shadowed edges it sinks INSIDE and cuts the corner
+# (validated: cut 26/37 real cards). Circumscribing instead fits each side's DIRECTION freely (perspective) and
+# POSITIONS the line by TANGENCY to the outer edge (supporting line → mathematically cannot cut). Validated:
+# cut 1/37, hug ~3px, handles perspective (Pikachu). See research notes [[quad-photometric-refine]].
+
+def _minarearect_quad(contour_raw):
+    return cv2.boxPoints(cv2.minAreaRect(np.asarray(contour_raw, np.float32).reshape(-1, 1, 2))).astype(np.float32)
+
+
+def _order_quad(q):
+    """Order 4 corners TL, TR, BR, BL (image coords, y down)."""
+    q = np.asarray(q, np.float32)
+    c = q.mean(0)
+    q = q[np.argsort(np.arctan2(q[:, 1] - c[1], q[:, 0] - c[0]))]      # CCW-ish
+    q = np.roll(q, -int(np.argmin(q[:, 0] + q[:, 1])), axis=0)         # start at TL
+    if q[1, 1] > q[3, 1]:
+        q = q[[0, 3, 2, 1]]
+    return q
+
+
+def _approx4_corners(hull):
+    """4 true corners via approxPolyDP tuned to exactly 4 pts — perspective-safe (finds the real card corners
+    at any tilt). Returns None if it can't resolve to a convex quad."""
+    peri = cv2.arcLength(hull.reshape(-1, 1, 2), True)
+    for f in np.linspace(0.01, 0.10, 40):
+        ap = cv2.approxPolyDP(hull.reshape(-1, 1, 2), f * peri, True).reshape(-1, 2)
+        if len(ap) == 4 and cv2.isContourConvex(ap.reshape(-1, 1, 2).astype(np.int32)):
+            return ap.astype(np.float32)
+    return None
+
+
+def _line_intersect(L1, L2):
+    (p1, d1), (p2, d2) = L1, L2
+    M = np.array([[d1[0], -d2[0]], [d1[1], -d2[1]]], np.float32)
+    if abs(float(np.linalg.det(M))) < 1e-6:
+        return None
+    t = np.linalg.solve(M, (p2 - p1).astype(np.float32))
+    return p1 + t[0] * d1
+
+
+def circumscribing_quad(contour_raw, band_frac=0.02):
+    """Per-side free direction (Huber on clean straight-edge pts) + tangent position (never cuts). See header."""
+    pts = np.asarray(contour_raw, np.float32).reshape(-1, 2)
+    if len(pts) < 16:
+        return _minarearect_quad(pts)
+    hull = cv2.convexHull(pts.reshape(-1, 1, 2)).reshape(-1, 2).astype(np.float32)
+    corners = _approx4_corners(hull)
+    if corners is None:
+        return _minarearect_quad(pts)
+    corners = _order_quad(corners)
+    idx = sorted(int(np.argmin(((pts - c) ** 2).sum(1))) for c in corners)
+    if len(set(idx)) != 4:
+        return _minarearect_quad(pts)
+    diag = float(np.linalg.norm(corners[0] - corners[2]))
+    band = max(12.0, band_frac * diag)
+    cen = pts.mean(0)
+    lines = []
+    for k in range(4):
+        a, b = idx[k], idx[(k + 1) % 4]
+        arc = pts[a:b + 1] if a <= b else np.vstack([pts[a:], pts[:b + 1]])
+        c0, c1 = arc[0], arc[-1]
+        L = float(np.linalg.norm(c1 - c0))
+        if L < 1:
+            lines.append((c0, np.array([1, 0], np.float32))); continue
+        d0 = (c1 - c0) / L
+        n0 = np.array([-d0[1], d0[0]], np.float32)
+        if np.dot(n0, arc.mean(0) - cen) < 0:
+            n0 = -n0
+        along = (arc - c0) @ d0
+        perp = (arc - c0) @ n0
+        win = (along > 0.06 * L) & (along < 0.94 * L)
+        E = arc[win & (np.abs(perp) < band)]
+        if len(E) < 8:
+            E = arc[win] if int(win.sum()) >= 8 else arc
+        vx, vy, x0, y0 = cv2.fitLine(E, cv2.DIST_HUBER, 0, 0.01, 0.01).ravel()
+        d = np.array([vx, vy], np.float32)
+        if float(d @ d0) < 0:
+            d = -d
+        nrm = np.array([-d[1], d[0]], np.float32)
+        if np.dot(nrm, arc.mean(0) - cen) < 0:
+            nrm = -nrm
+        S = arc[win] if int(win.sum()) >= 8 else arc
+        pl = np.array([x0, y0], np.float32)
+        pl = pl + nrm * float((S @ nrm).max() - (pl @ nrm))       # tangent → never cuts
+        lines.append((pl, d))
+    quad = []
+    for k in range(4):
+        p = _line_intersect(lines[(k - 1) % 4], lines[k])
+        quad.append(p if p is not None else corners[k])
+    return _order_quad(np.asarray(quad, np.float32))
+
+
+def is_cropped_to_border(contour_raw, W, H):
+    """True when the input image is ALREADY cropped tight to the card's outer border: the card fills the frame
+    (high coverage + tiny margins to the image edge), is axis-aligned, and the image aspect ≈ the card aspect.
+    Such inputs need no segment+warp — the image already IS the (rectified) card — so the caller uses a full-frame
+    quad (identity warp) instead of the circumscribing quad, avoiding the warp looseness that drifts centering.
+    Only fire when the card TRULY fills the frame: a card with even a ~3% background margin (e.g. a Mimikyu on a
+    pink surface) must NOT bypass — the bypass would keep that margin and put the boundary at the image edge; the
+    normal circumscribing+mask path handles a background margin correctly. Thresholds separate the tight-crop case
+    (card_004: coverage 0.91, min-margin 0.018 → bypass) from the margin case (Mimikyu: 0.882, 0.026 → normal)."""
+    pts = np.asarray(contour_raw, np.float32).reshape(-1, 2)
+    x0, y0, x1, y1 = pts[:, 0].min(), pts[:, 1].min(), pts[:, 0].max(), pts[:, 1].max()
+    coverage = float((x1 - x0) * (y1 - y0) / (W * H))
+    min_margin = float(min(x0 / W, (W - x1) / W, y0 / H, (H - y1) / H))
+    ang = cv2.minAreaRect(pts)[-1]
+    rot = min(abs(ang), abs(ang - 90), abs(ang + 90))
+    aspect = min(W, H) / max(W, H)
+    return coverage > 0.90 and min_margin < 0.02 and rot < 2.0 and abs(aspect - CARD_ASPECT) < 0.05
+
+
 # ── Hosted segmentation inference ─────────────────────────────────────────────
 def _post_workflow(b64: str, api_key: str, classes: str) -> dict:
     url = f"{SEG_BASE_URL}/infer/workflows/{SEG_WORKSPACE}/{SEG_WORKFLOW}"
@@ -232,40 +357,18 @@ def _post_workflow(b64: str, api_key: str, classes: str) -> dict:
     raise RuntimeError(f"segmentation workflow call failed after {SEG_RETRIES} tries: {last_err}")
 
 
-def segment_card(img_bgr: np.ndarray,
-                 api_key: str | None = None,
-                 classes: str | None = None,
-                 sigma: float | None = None) -> dict:
-    """
-    Detect the card via the Roboflow segmentation workflow.
-
-    Returns dict:
-        contour_raw      : (M,2) float32 — raw segmentation polygon (source px)
-        contour          : (N,2) float32 — corner-preserving SMOOTHED outline
-        quad             : (4,2) float32 — corners derived from the smoothed contour
-        conf             : float
-        n_segments       : int
-
-    Raises ValueError if no card is segmented, RuntimeError on API failure.
-    """
-    api_key = api_key or os.environ.get("ROBOFLOW_API_KEY", "")
-    if not api_key:
-        raise RuntimeError("ROBOFLOW_API_KEY not set (required for segmentation detector)")
-    classes = classes if classes is not None else SEG_CLASSES
-    sigma   = SEG_SIGMA if sigma is None else sigma
-
+def _roboflow_polygon(img_bgr, api_key, classes):
+    """Roboflow segmentation workflow → (contour_raw source-px float32, conf, n_segments). Raises on miss / API failure."""
     oh, ow = img_bgr.shape[:2]
     ok, buf = cv2.imencode(".jpg", img_bgr)
     if not ok:
         raise RuntimeError("JPEG encode failed")
     b64 = base64.b64encode(buf.tobytes()).decode("ascii")
-
     data = _post_workflow(b64, api_key, classes)
     try:
         out = data["outputs"][0]
     except (KeyError, IndexError):
         raise ValueError("segmentation workflow returned no outputs")
-
     pred_block = out.get("predictions", {}) or {}
     img_block = pred_block.get("image") or {}
     iw = img_block.get("width")  or ow          # Roboflow occasionally returns width/height = None;
@@ -274,7 +377,6 @@ def segment_card(img_bgr: np.ndarray,
     preds = pred_block.get("predictions", []) or []
     if not preds:
         raise ValueError("no card segmented in image")
-
     # Select the LARGEST region (the card), NOT the highest-confidence one — Roboflow can emit a tiny
     # high-confidence speck that, picked by confidence, warps to black (card_06/08). The card is by far
     # the biggest object, so area is the reliable selector.
@@ -286,17 +388,101 @@ def segment_card(img_bgr: np.ndarray,
     if area_frac < SEG_MIN_AREA_FRAC:                       # even the largest region is a speck → genuine miss
         raise ValueError(f"segmentation found no card: largest region is {area_frac*100:.2f}% of the image "
                          f"(< {SEG_MIN_AREA_FRAC*100:.0f}% floor)")
-
     contour_raw = np.array([[p["x"] * sx, p["y"] * sy] for p in pts], dtype=np.float32)
-    contour     = smooth_contour(contour_raw, n=SEG_RESAMPLE_N, sigma=sigma).astype(np.float32)
-    # quad drives the perspective warp. "edges" fits the detected sides and intersects them (axis-aligned,
-    # no corner clip); "corners" is the legacy approxPolyDP. Smoothed `contour` stays the display outline (cw).
-    quad        = edge_intersection_quad(contour_raw) if SEG_QUAD_MODE == "edges" else quad_from_contour(contour)
+    return contour_raw, float(best.get("confidence", 0.0)), len(preds)
 
+
+def _remote_sam3_polygon(img_bgr):
+    """Self-hosted SAM3 server (SEG_REMOTE_URL) → (contour_raw source-px float32, conf, n). Raises on miss/unreachable."""
+    if not SEG_REMOTE_URL:
+        raise RuntimeError("SEG_REMOTE_URL not set (required for SEG_BACKEND=remote_sam3)")
+    oh, ow = img_bgr.shape[:2]
+    ok, buf = cv2.imencode(".jpg", img_bgr)
+    if not ok:
+        raise RuntimeError("JPEG encode failed")
+    b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+    headers = {"Authorization": f"Bearer {SEG_REMOTE_TOKEN}"} if SEG_REMOTE_TOKEN else {}
+    resp = requests.post(SEG_REMOTE_URL, json={"image": b64, "classes": SEG_CLASSES}, headers=headers, timeout=SEG_TIMEOUT)
+    resp.raise_for_status()
+    d = resp.json()
+    pts = d.get("points") or []
+    if len(pts) < 3:
+        raise ValueError("remote SAM3: segmentation polygon has too few points")
+    contour_raw = np.array(pts, dtype=np.float32)
+    area_frac = d.get("area_frac")
+    if area_frac is None:
+        area_frac = abs(cv2.contourArea(contour_raw.reshape(-1, 1, 2))) / max(ow * oh, 1)
+    if area_frac < SEG_MIN_AREA_FRAC:
+        raise ValueError(f"remote SAM3 found no card: largest region is {area_frac*100:.2f}% "
+                         f"(< {SEG_MIN_AREA_FRAC*100:.0f}% floor)")
+    return contour_raw, float(d.get("conf", 0.99)), int(d.get("n", 1))
+
+
+def segment_card(img_bgr: np.ndarray,
+                 api_key: str | None = None,
+                 classes: str | None = None,
+                 sigma: float | None = None) -> dict:
+    """
+    Detect the card and return its outline. Source = SEG_BACKEND:
+      "roboflow"    — hosted Model-C SAM workflow (default).
+      "remote_sam3" — self-hosted SAM3 server (SEG_REMOTE_URL), e.g. the M4 box.
+    Both return the same raw polygon; the smoothing → contour → quad below is IDENTICAL, so the downstream
+    warp / centering is unchanged regardless of source.
+
+    Returns dict:
+        contour_raw : (M,2) float32 — raw segmentation polygon (source px)
+        contour     : (N,2) float32 — corner-preserving SMOOTHED outline
+        quad        : (4,2) float32 — corners derived from the smoothed contour
+        conf        : float
+        n_segments  : int
+
+    Raises ValueError if no card is segmented, RuntimeError on API/transport failure.
+    """
+    classes = classes if classes is not None else SEG_CLASSES
+    sigma   = SEG_SIGMA if sigma is None else sigma
+    if SEG_BACKEND == "remote_sam3":
+        contour_raw, conf, n = _remote_sam3_polygon(img_bgr)
+    else:
+        api_key = api_key or os.environ.get("ROBOFLOW_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("ROBOFLOW_API_KEY not set (required for segmentation detector)")
+        contour_raw, conf, n = _roboflow_polygon(img_bgr, api_key, classes)
+    contour = smooth_contour(contour_raw, n=SEG_RESAMPLE_N, sigma=sigma).astype(np.float32)
+    # quad drives the perspective warp. "circumscribe" = supporting-line quad that HUGS the contour and cannot
+    # cut the card (recommended); "edges" = edge_intersection (regression lines, can cut corners); "corners" =
+    # legacy approxPolyDP. Smoothed `contour` stays the display outline (cw).
+    cropped = False
+    if SEG_QUAD_MODE == "circumscribe":
+        _H, _W = img_bgr.shape[:2]
+        if SEG_CROP_BYPASS and is_cropped_to_border(contour_raw, _W, _H):
+            quad = np.array([[0, 0], [_W, 0], [_W, _H], [0, _H]], np.float32)   # already cropped → identity warp
+            cropped = True                                                       # → grade path skips padding + mask
+        else:
+            quad = circumscribing_quad(contour_raw)
+    elif SEG_QUAD_MODE == "edges":
+        quad = edge_intersection_quad(contour_raw)
+    else:
+        quad = quad_from_contour(contour)
+    # SEG_REFINE=1: snap each quad side to the sub-pixel photometric card edge (SAM3's mask is conservative on
+    # low-contrast edges — see quad_refine.py). The contours are mapped through the old→new quad homography so
+    # the mask/display outline moves WITH the refined edges (else the mask would blacken the recovered border).
+    try:                                            # non-fatal: refinement must never break segmentation itself
+        import quad_refine
+        if quad_refine.ENABLED and SEG_QUAD_MODE == "edges":
+            q2, _ri = quad_refine.refine_quad(img_bgr, quad)
+            if _ri.get("accepted"):
+                _H = cv2.getPerspectiveTransform(np.asarray(quad, np.float32), np.asarray(q2, np.float32))
+                contour     = cv2.perspectiveTransform(contour.reshape(-1, 1, 2).astype(np.float32), _H).reshape(-1, 2)
+                contour_raw = cv2.perspectiveTransform(
+                    np.asarray(contour_raw, np.float32).reshape(-1, 1, 2), _H).reshape(-1, 2)
+                quad = q2
+    except Exception as _qe:
+        print(f"[seg] quad_refine skipped: {type(_qe).__name__}: {_qe}", flush=True)
     return {
         "contour_raw": contour_raw,
         "contour":     contour,
         "quad":        quad,
-        "conf":        float(best.get("confidence", 0.0)),
-        "n_segments":  len(preds),
+        "conf":        float(conf),
+        "n_segments":  int(n),
+        "cropped":     bool(cropped),
     }

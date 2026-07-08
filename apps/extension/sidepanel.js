@@ -166,8 +166,9 @@ function renderGallery(listing) {
     img.onerror = () => { cell.style.display = "none"; };
     cell.appendChild(img);
 
-    // Hover to see the photo large (so front vs back is easy to tell apart).
-    cell.addEventListener("mouseenter", () => showGalleryPreview(url));
+    // Hover to see the photo large (so front vs back is easy to tell apart). Delayed so a normal
+    // hover-to-click to (un)select never triggers it; anchored below the strip so it can't cover the row.
+    cell.addEventListener("mouseenter", () => scheduleGalleryPreview(url, cell));
     cell.addEventListener("mouseleave", hideGalleryPreview);
 
     if (i === selFront || i === selBack) {
@@ -180,21 +181,36 @@ function renderGallery(listing) {
   });
 }
 
-// Large hover preview so small thumbnails are legible (front vs back).
-function showGalleryPreview(url) {
+// Hover preview so small thumbnails are legible (front vs back). Delayed (a quick hover-to-click to
+// (un)select never shows it) and anchored BELOW the gallery strip (never covers the thumbnails).
+let galleryPreviewTimer = null;
+function scheduleGalleryPreview(url, cell) {
+  clearTimeout(galleryPreviewTimer);
+  galleryPreviewTimer = setTimeout(() => showGalleryPreview(url, cell), 400);
+}
+function showGalleryPreview(url, cell) {
   let el = document.getElementById("gallery-preview");
   if (!el) {
     el = document.createElement("div");
     el.id = "gallery-preview";
     el.className = "gallery-preview";
-    const img = document.createElement("img");
-    el.appendChild(img);
+    el.appendChild(document.createElement("img"));
     document.body.appendChild(el);
   }
   el.querySelector("img").src = url;
-  el.classList.add("visible");
+  el.classList.add("visible");                 // display:block so we can measure it
+  const gal = document.getElementById("listing-gallery");
+  const gr = (gal || cell).getBoundingClientRect();
+  const cr = cell.getBoundingClientRect();
+  const pw = el.offsetWidth || 208, ph = el.offsetHeight || 208;
+  const left = Math.max(6, Math.min(cr.left, window.innerWidth - pw - 6));
+  let top = gr.bottom + 6;                      // below the whole strip → thumbnails stay visible & clickable
+  if (top + ph > window.innerHeight - 6) top = Math.max(6, gr.top - ph - 6);   // flip above if no room below
+  el.style.left = `${left}px`;
+  el.style.top = `${top}px`;
 }
 function hideGalleryPreview() {
+  clearTimeout(galleryPreviewTimer);
   document.getElementById("gallery-preview")?.classList.remove("visible");
 }
 
@@ -203,6 +219,7 @@ function hideGalleryPreview() {
 function onGalleryClick(e) {
   const cell = e.target.closest(".thumb-cell");
   if (!cell || !currentListing) return;
+  hideGalleryPreview();                         // dismiss the preview the moment a selection is made
   const i = Number(cell.dataset.idx);
 
   if (i === selFront)        selFront = null;
@@ -258,6 +275,8 @@ function wireEvents() {
   $("upload-input").addEventListener("change", onUpload);
   $("btn-feedback-good").addEventListener("click", () => sendFeedback(true));
   $("btn-feedback-bad").addEventListener("click",  () => sendFeedback(false));
+  $("btn-close-panel").addEventListener("click", () => window.close());          // done grading → close the panel
+  $("btn-adjust-borders").addEventListener("click", () => openPillarDetail("centering"));  // manual centering correction
 
   // Pillar drill-down — event delegation so it survives re-renders
   document.addEventListener("click", (e) => {
@@ -405,7 +424,11 @@ function renderResults(r, listing) {
     wrap.appendChild(img); wrap.appendChild(lbl); imgContainer.appendChild(wrap);
   });
 
-  // Grade estimate
+  // Grade estimate (legacy path — hide the PSA reveal elements, show the classic band row)
+  $("grade-reveal").classList.add("hidden");
+  $("verdict-banner").classList.add("hidden");
+  $("btn-adjust-borders").classList.add("hidden");
+  document.querySelector(".grade-row").classList.remove("hidden");
   const ge = r.grade_estimate ?? {};
   $("grade-band").textContent     = ge.grade_range ?? "—";
   const conf = ge.confidence ?? "low";
@@ -582,10 +605,12 @@ function renderPSAResult(r, listing) {
     $("decision-reason").textContent = r.summary ?? "";
   }
 
-  // Trust anchors — show the perspective-corrected card(s) that were graded.
+  // Trust anchors — show the perspective-corrected card(s) that were graded. The FIRST warp carries
+  // the grade badge overlay (slab-label style), consistent with the web reveal.
   const imgContainer = $("result-images");
   imgContainer.innerHTML = "";
-  const addWarped = (b64, label) => {
+  const gradeNum = Math.max(1, Math.min(10, Math.round(overall || 0)));
+  const addWarped = (b64, label, withBadge) => {
     if (!b64) return;
     const wrap = document.createElement("div"); wrap.className = "img-wrap";
     const img  = document.createElement("img"); img.className = "result-img";
@@ -593,23 +618,51 @@ function renderPSAResult(r, listing) {
     img.alt = label;
     const lbl = document.createElement("div"); lbl.className = "result-img-label";
     lbl.textContent = label;
-    wrap.appendChild(img); wrap.appendChild(lbl); imgContainer.appendChild(wrap);
+    wrap.appendChild(img); wrap.appendChild(lbl);
+    if (withBadge && overall) {
+      const badge = document.createElement("div");
+      badge.className = `grade-badge-overlay ${psaScoreClass(overall)}`;
+      badge.innerHTML = `<span class="gb-num">${gradeNum}</span><span class="gb-word">${badgeWord(gradeNum)}</span>`;
+      wrap.appendChild(badge);
+    }
+    imgContainer.appendChild(wrap);
   };
-  addWarped(r._warped_jpeg_b64, r._back ? "Front" : "Warped");
-  if (r._back) addWarped(r._back._warped_jpeg_b64, "Back");
+  addWarped(r._warped_jpeg_b64, r._back ? "Front" : "Warped", true);
+  if (r._back) addWarped(r._back._warped_jpeg_b64, "Back", false);
+  $("btn-adjust-borders").classList.toggle("hidden", !r._warped_jpeg_b64);
 
-  // Grade estimate block — overall score + PSA equivalent
-  $("grade-band").textContent = overall ? overall.toFixed(1) : "—";
-  $("grade-conf").textContent = psaEquiv ? psaEquiv.replace(/^PSA\s*/i, "PSA ") : "AI";
-  $("grade-conf").className   = `grade-conf ${psaScoreClass(overall)}`;
-  let nameParts = [];
-  if (r._back) nameParts.push("Front + Back");
-  else if (r._back_error) nameParts.push("Front only (back: no card)");
-  if (r._border_type && r._border_type !== "uniform_fallback") nameParts.push(`${r._border_type} border`);
-  if (r._adjusted) nameParts.unshift("✎ adjusted");
-  $("card-name").textContent = nameParts.join(" · ");
+  // Grade reveal — "PSA 9 likely · high confidence", consistent with the web. The legacy
+  // grade-band row stays for the non-PSA path and is hidden here.
+  const psaShort = psaEquiv ? psaEquiv.replace(/^PSA\s*/i, "PSA ").split(" ").slice(0, 2).join(" ") : `Grade ${gradeNum}`;
+  const confP = confidencePhrase(cen0Conf(r), r.centering?.reliable);
+  $("grade-reveal").classList.remove("hidden");
+  $("grade-headline").textContent = `${psaShort} likely`;
+  $("grade-headline").className = `grade-headline ${psaScoreClass(overall)}`;
+  const subBits = [confP, `overall ${overall ? overall.toFixed(1) : "—"}/10`];
+  if (r._back) subBits.push("front + back");
+  else if (r._back_error) subBits.push("front only");
+  if (r._adjusted) subBits.unshift("✎ adjusted");
+  $("grade-sub").textContent = subBits.join(" · ");
+  // Phase-1 rectification observation — a colored chip so the refine/slab/rectified cases are spottable
+  // while grading many cards. Observation-only; never changes the served grade (see rectSummary).
+  const rs = rectSummary(r);
+  if (rs) {
+    const chip = document.createElement("span");
+    chip.className = rectTone(rs.tone);
+    chip.style.marginLeft = "6px";
+    chip.textContent = "· " + rs.text;
+    $("grade-sub").appendChild(chip);
+  }
+  document.querySelector(".grade-row").classList.add("hidden");
   $("grade-dist").innerHTML   = "";
   $("grade-limiting").classList.add("hidden");
+
+  // Verdict — should you grade it? Qualitative (dollar figures arrive with the comps source).
+  const vb = $("verdict-banner");
+  vb.classList.remove("hidden");
+  if (gradeNum >= 9) { vb.className = "verdict-banner good"; vb.textContent = "✓ Strong grading candidate — high grade, cards like this usually clear the fee."; }
+  else if (gradeNum >= 7) { vb.className = "verdict-banner mid"; vb.textContent = "≈ Borderline — at this grade the fee may outweigh the value bump."; }
+  else { vb.className = "verdict-banner bad"; vb.textContent = "✕ Skip grading — condition caps the grade; fees likely exceed the bump."; }
 
   // Pillar summary cards — score badge (combined/worst-side when both sides
   // graded) + descriptor from the front reading.
@@ -620,13 +673,19 @@ function renderPSAResult(r, listing) {
   const C = combined;
 
   renderPsaPillar("centering", C ? C.centering_score : cen.score,
-    `${cen.left_right ?? "—"} L/R · ${cen.top_bottom ?? "—"} T/B`);
+    centeringPhrase(cen.left_right, cen.top_bottom));
   renderPsaPillar("corners", C ? C.corners_score : cor.score,
-    worstSeverityLabel([cor.top_left, cor.top_right, cor.bottom_right, cor.bottom_left]));
+    plainPillarNote("corners", r, C ? C.corners_score : cor.score,
+      worstSeverityLabel([cor.top_left, cor.top_right, cor.bottom_right, cor.bottom_left])));
   renderPsaPillar("edges", C ? C.edges_score : edg.score,
-    worstSeverityLabel([edg.top, edg.right, edg.bottom, edg.left]));
+    plainPillarNote("edges", r, C ? C.edges_score : edg.score,
+      worstSeverityLabel([edg.top, edg.right, edg.bottom, edg.left])));
   renderPsaPillar("surface", C ? C.surface_score : surf.score,
-    worstSeverityLabel([surf.scratches, surf.print_lines, surf.stains, surf.creases]));
+    plainPillarNote("surface", r, C ? C.surface_score : surf.score,
+      worstSeverityLabel([surf.scratches, surf.print_lines, surf.stains, surf.creases])));
+
+  // RF-DETR defect boxes (surface / edges & corners) over the warped card — mirrors the web DefectsPanel.
+  renderDefects(r);
 
   // Economics — shown when the server attached eBay comps + ROI.
   if (r.economics) {
@@ -666,6 +725,223 @@ function renderPsaPillar(name, score, descriptor) {
   $(`issues-${name}`).innerHTML =
     `<span class="${cls}" style="font-weight:700">${scoreText}</span>` +
     `<span class="pillar-count">${descriptor}</span>`;
+}
+
+// ── Defects panel — RF-DETR defect boxes over the warped card + a Surface / Edges&Corners toggle + a table
+//    (hover/click a row to highlight its box). Vanilla-JS port of the web DefectsPanel; colors + inflateBox match. ──
+const DEFECT_COLORS = { edge: "#06b6d4", corner: "#f97316", surface: "#ef4444" };
+const DEFECT_LABEL  = { edge: "Edge",    corner: "Corner",  surface: "Surface" };
+
+// Grow a box [x,y,w,h] (0..1) outward + floor tiny ones, clamped inside the card — mirrors lib/grading/defects.ts.
+function defectInflate(box, min = 0.045, pad = 0.01) {
+  let [x, y, w, h] = box;
+  x -= pad; y -= pad; w += 2 * pad; h += 2 * pad;
+  if (w < min) { x -= (min - w) / 2; w = min; }
+  if (h < min) { y -= (min - h) / 2; h = min; }
+  w = Math.min(w, 1); h = Math.min(h, 1);
+  x = Math.max(0, Math.min(x, 1 - w));
+  y = Math.max(0, Math.min(y, 1 - h));
+  return [x, y, w, h];
+}
+
+function renderDefects(r) {
+  const block = $("defects-block");
+  if (!block) return;
+  block.innerHTML = "";
+  const db = r.defect_boxes || {};
+  const valid = (d) => Array.isArray(d.box) && d.box.length === 4;
+  const mk = (arr, pillar) => (arr || []).filter(valid).map((d) => ({ d, pillar }));
+  const groups = {
+    surface: mk(db.surface, "surface"),
+    ec: [...mk(db.edges, "edge"), ...mk(db.corners, "corner")],
+  };
+  const warp = r._warped_jpeg_b64;
+  if (!warp) { block.style.display = "none"; return; }
+  block.style.display = "";   // ALWAYS show after a grade (web parity): tabs with counts + empty message when clean
+
+  let tab = (groups.surface.length === 0 && groups.ec.length > 0) ? "ec" : "surface";
+
+  const head = document.createElement("div"); head.className = "defects-head";
+  head.innerHTML = `<span class="defects-title">Defects</span>`;
+  const toggle = document.createElement("div"); toggle.className = "defects-toggle";
+  const tabBtns = {};
+  [["surface", "Surface"], ["ec", "Edges & Corners"]].forEach(([key, label]) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "defects-tab";
+    b.innerHTML = `${label} <span class="defects-count">${groups[key].length}</span>`;
+    b.onclick = () => { tab = key; draw(); };
+    tabBtns[key] = b; toggle.appendChild(b);
+  });
+  head.appendChild(toggle); block.appendChild(head);
+  const body = document.createElement("div"); body.className = "defects-body"; block.appendChild(body);
+
+  function draw() {
+    Object.entries(tabBtns).forEach(([k, b]) => b.classList.toggle("active", k === tab));
+    body.innerHTML = "";
+    const items = groups[tab].slice().sort((a, b) => (b.d.conf ?? 0) - (a.d.conf ?? 0));
+
+    const wrap = document.createElement("div"); wrap.className = "image-overlay-wrap defects-card";
+    const img = document.createElement("img"); img.className = "overlay-img"; img.src = `data:image/jpeg;base64,${warp}`;
+    wrap.appendChild(img);
+    const svg = document.createElementNS(NS_SVG, "svg");
+    svg.setAttribute("class", "overlay-svg"); svg.setAttribute("viewBox", "0 0 100 100"); svg.setAttribute("preserveAspectRatio", "none");
+    const rects = items.map((it) => {
+      const [x, y, w, h] = defectInflate(it.d.box);
+      const rect = document.createElementNS(NS_SVG, "rect");
+      rect.setAttribute("x", x * 100); rect.setAttribute("y", y * 100);
+      rect.setAttribute("width", w * 100); rect.setAttribute("height", h * 100);
+      rect.setAttribute("fill", "none"); rect.setAttribute("stroke", DEFECT_COLORS[it.pillar]);
+      rect.setAttribute("stroke-width", "0.4"); rect.setAttribute("vector-effect", "non-scaling-stroke");
+      svg.appendChild(rect); return rect;
+    });
+    wrap.appendChild(svg);
+    const confLbl = document.createElement("div");           // conf label above the active box (web parity)
+    confLbl.className = "defects-conf-label"; confLbl.style.display = "none";
+    wrap.appendChild(confLbl);
+    body.appendChild(wrap);
+    attachZoomPan(wrap);                                     // scroll-zoom / drag-pan / dbl-click reset
+
+    const legend = document.createElement("div"); legend.className = "defects-legend";
+    (tab === "surface" ? ["surface"] : ["edge", "corner"]).forEach((p) => {
+      const s = document.createElement("span"); s.className = "defects-legend-item";
+      s.innerHTML = `<span class="defects-swatch" style="background:${DEFECT_COLORS[p]}"></span>${DEFECT_LABEL[p].toLowerCase()}`;
+      legend.appendChild(s);
+    });
+    body.appendChild(legend);
+
+    if (items.length === 0) {
+      const p = document.createElement("p"); p.className = "defects-empty";
+      p.textContent = `No ${tab === "surface" ? "surface" : "edge or corner"} defects detected.`;
+      body.appendChild(p); return;
+    }
+    const table = document.createElement("table"); table.className = "defects-table";
+    table.innerHTML = `<thead><tr><th>Defect</th><th>Type</th><th class="r">Conf</th></tr></thead>`;
+    const tbody = document.createElement("tbody");
+    const setActive = (idx) => {
+      rects.forEach((rc, j) => {
+        const on = idx === j, dim = idx !== null && !on;
+        rc.setAttribute("stroke-width", on ? "1" : "0.4");
+        rc.setAttribute("stroke-opacity", dim ? "0.25" : "1");
+        rc.setAttribute("fill", on ? DEFECT_COLORS[items[j].pillar] + "22" : "none");
+      });
+      Array.from(tbody.children).forEach((row, j) => row.classList.toggle("active", idx === j));
+      if (idx !== null && items[idx] && items[idx].d.conf != null) {   // conf label above the active box
+        const [bx, by] = defectInflate(items[idx].d.box);
+        confLbl.textContent = items[idx].d.conf.toFixed(2);
+        confLbl.style.color = DEFECT_COLORS[items[idx].pillar];
+        confLbl.style.left = `${bx * 100}%`;
+        confLbl.style.top = `${by * 100}%`;
+        confLbl.style.display = "";
+      } else {
+        confLbl.style.display = "none";
+      }
+    };
+    let pinned = null;
+    items.forEach((it, i) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        `<td><span class="defects-swatch" style="background:${DEFECT_COLORS[it.pillar]}"></span>${DEFECT_LABEL[it.pillar]}</td>` +
+        `<td class="muted">${it.d.type ?? "—"}</td>` +
+        `<td class="r">${it.d.conf != null ? Math.round(it.d.conf * 100) + "%" : "—"}</td>`;
+      tr.onmouseenter = () => setActive(i);
+      tr.onmouseleave = () => setActive(pinned);
+      tr.onclick = () => {
+        pinned = (pinned === i ? null : i);
+        setActive(pinned);
+        if (pinned !== null) {                               // zoom the card to the pinned defect
+          const [bx, by, bw, bh] = defectInflate(items[i].d.box);
+          wrap._zoomTo(bx + bw / 2, by + bh / 2, 3);
+        } else {
+          wrap._zoomReset();
+        }
+      };
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody); body.appendChild(table);
+    const hint = document.createElement("p"); hint.className = "defects-hint"; hint.textContent = "tap a row to zoom to it · tap again to reset";
+    body.appendChild(hint);
+  }
+  draw();
+}
+
+// ── Plain-language helpers (mirror apps/web lib/grading/plain.ts so both surfaces speak the same) ──
+
+// "45/55" + "48/52" → a human read of how centered the card is.
+function centeringPhrase(leftRight, topBottom) {
+  const dev = (s) => {
+    const p = (s ?? "").split("/").map((n) => parseInt(n, 10));
+    return p.length === 2 && !p.some(Number.isNaN) ? Math.abs(p[0] - 50) : 0;
+  };
+  const d = Math.max(dev(leftRight), dev(topBottom));
+  if (d <= 3)  return "dead centered";
+  if (d <= 7)  return "near perfect";
+  if (d <= 12) return "slightly off-center";
+  if (d <= 20) return "noticeably off-center";
+  return "heavily off-center";
+}
+
+// Selector confidence float → the label the reveal shows.
+function confidencePhrase(conf, reliable) {
+  if (reliable === false || (conf != null && conf < 0.6)) return "low confidence — try a brighter photo";
+  if (conf != null && conf < 0.85) return "medium confidence";
+  return "high confidence";
+}
+function cen0Conf(r) { return r?.centering?.confidence ?? null; }
+
+// Phase-1 rectification observation → one short chip. Reads the backend's optional debug keys
+// (_rect_check = the confidence veto's geometry measurement; _rect_correct = the SEG_RECT_CORRECT=shadow
+// decision — what the tapered warp-correction WOULD do). Null-safe: returns null when absent (cropped
+// cards, or backend flags off), so the normal UI is untouched. These are observation-only — the shadow
+// decision does NOT change the served grade.
+function rectSummary(r) {
+  const rc = r?._rect_check, rcor = r?._rect_correct;
+  if (!rc && !rcor) return null;
+  const ang = rc?.max_ang, g = rc?.g_geom, dec = rcor?.decision;
+  if (dec === "corrected")   // mode "on" = the warp WAS refined (rc/_rect_check reflect the corrected warp);
+    return rcor.mode === "on"   // mode "shadow" = log-only, the served warp is uncorrected.
+      ? { text: `geometry: refined → ${ang}° (×${rcor.w})`, tone: "clean" }
+      : { text: `geometry: would refine ${ang}°→${rcor.rc1_max_ang}° (×${rcor.w})`, tone: "warn" };
+  if (typeof dec === "string" && dec.startsWith("flag-only:slab"))
+    return { text: `geometry: slab/sleeve — flagged, not refined`, tone: "bad" };
+  if (dec === "pass" || dec === "micro-skip")
+    return { text: `geometry: rectified (tilt ${ang}°)`, tone: "clean" };
+  if (typeof dec === "string" && dec.startsWith("flag-only"))
+    return { text: `geometry: uncertain — ${dec.replace("flag-only:", "")}`, tone: "warn" };
+  if (ang != null)  // shadow mode off — surface the veto measurement alone
+    return { text: `geometry tilt ${ang}° · g=${g ?? "—"}`, tone: (g != null && g < 0.5) ? "bad" : "clean" };
+  return null;
+}
+function rectTone(t) { return t === "bad" ? "issue-bad" : t === "warn" ? "issue-warn" : "issue-clean"; }
+
+// One short note per pillar from what the detectors actually found (defect_boxes), else the
+// legacy severity words, else a score-based read.
+function plainPillarNote(pillar, r, score, fallback) {
+  const boxes = (r.defect_boxes ?? {})[pillar === "surface" ? "surface" : pillar] ?? [];
+  const n = boxes.length;
+  if (pillar === "corners") {
+    if (n > 0) return n === 1 ? "wear on one corner" : `wear on ${n} corners`;
+    if (score >= 9) return "sharp, all four";
+  }
+  if (pillar === "edges") {
+    if (n > 0) return n === 1 ? "light wear, one spot" : `light wear, ${n} spots`;
+    if (score >= 9) return "clean all around";
+  }
+  if (pillar === "surface") {
+    if (n > 0) return n === 1 ? "one faint mark" : `${n} faint marks`;
+    if (score >= 9) return "clean";
+  }
+  return fallback || (score >= 8 ? "minor wear" : "wear visible");
+}
+
+// PSA-style word under the big badge number.
+function badgeWord(grade) {
+  if (grade >= 10) return "GEM MINT";
+  if (grade >= 9)  return "MINT";
+  if (grade >= 8)  return "NM-MT";
+  if (grade >= 7)  return "NEAR MINT";
+  if (grade >= 6)  return "EX-MT";
+  if (grade >= 5)  return "EXCELLENT";
+  return "PLAYED";
 }
 
 // Reduce a list of severity words to the single worst-case descriptor.
@@ -884,6 +1160,12 @@ function buildCenteringAuditCard(src, label = null) {
   readout.className = "centering-readout";
   card.appendChild(readout);
 
+  // Phase-1 rectification readout (below the L/R·T/B readout) — the geometry veto + shadow-correction chip.
+  const rectReadout = document.createElement("div");
+  rectReadout.className = "centering-readout";
+  rectReadout.style.marginTop = "2px";
+  card.appendChild(rectReadout);
+
   const actions = document.createElement("div");
   actions.className = "cen-actions";
   // Manual adjustment is opt-in. Two scopes:
@@ -928,12 +1210,9 @@ function buildCenteringAuditCard(src, label = null) {
         x2: seedOuter.x2 - (seedOuter.x2-seedOuter.x1)*0.10,
         y2: seedOuter.y2 - (seedOuter.y2-seedOuter.y1)*0.10 };
 
-  // Cyan is the real boundary — seed the editable outer edge from its exact box
-  // so the green rectangle (only shown when overriding the edge) overlays the cyan.
-  if (contourPts && contourPts.length > 2) {
-    const xs = contourPts.map((p) => p[0]*100), ys = contourPts.map((p) => p[1]*100);
-    seedOuter = { x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) };
-  }
+  // seedOuter stays = _card_boundary (a straight rectangle), matching the web /grade centering view. We do NOT
+  // seed from the raw contour bbox — the outer boundary is drawn as a clean rectangle, not the wiggly contour.
+  void contourPts;
 
   let outer = { ...seedOuter };
   let inner = { ...seedInner };
@@ -947,18 +1226,13 @@ function buildCenteringAuditCard(src, label = null) {
     const T = inner.y1 - outer.y1, B = outer.y2 - inner.y2;
     const midX = (inner.x1+inner.x2)/2, midY = (inner.y1+inner.y2)/2;
 
-    // Cyan = the real card boundary (seg). Shown except while overriding the edge,
-    // where the editable green rectangle stands in for it.
-    if (contourPts && contourPts.length > 2 && editMode !== "outer") {
-      const poly = document.createElementNS(NS_SVG, "polygon");
-      poly.setAttribute("points", contourPts.map((p) => `${p[0]*100},${p[1]*100}`).join(" "));
-      poly.setAttribute("fill", "none");
-      poly.setAttribute("stroke", "#22d3ee");          // cyan = card boundary
-      poly.setAttribute("stroke-width", "0.7");
-      poly.setAttribute("stroke-linejoin", "round");
-      poly.setAttribute("pointer-events", "none");
-      poly.setAttribute("class", "sv-contour");
-      svg.appendChild(poly);
+    // Cyan = the card boundary, drawn as a STRAIGHT rectangle (consistent with the web /grade view — the card
+    // IS a rectangle; we don't render the raw wiggly contour). Shown except while overriding the edge, where the
+    // editable green rectangle stands in for it.
+    if (editMode !== "outer") {
+      addRect(svg, outer.x1, outer.y1, outer.x2 - outer.x1, outer.y2 - outer.y1,
+              "sv-contour", { fill: "none", "stroke-width": "0.35", stroke: "#22d3ee" });   // fill:none — a bare
+      // SVG <rect> defaults to fill:black and would cover the card image (.sv-contour has no CSS fill rule).
     }
 
     // Outer card edge — editable green rectangle ONLY while adjusting the edge.
@@ -982,9 +1256,28 @@ function buildCenteringAuditCard(src, label = null) {
         [inner.x1,midY,"inner","left"], [inner.x2,midY,"inner","right"],
         [midX,inner.y1,"inner","top"],  [midX,inner.y2,"inner","bottom"],
       ].forEach(([hx,hy,rect,side]) => addHandle(hx,hy,rect,side));
-    } else if (editMode === "outer") {
+    } else {   // "outer" edit OR view mode → static inner content rect so the margins are visible (like the web)
       addRect(svg, inner.x1, inner.y1, inner.x2-inner.x1, inner.y2-inner.y1,
-              "sv-content", { "stroke-width": "0.5" });
+              "sv-content", { "stroke-width": "0.3" });
+    }
+
+    // ── Phase-1 rectification overlay (view mode only) ──
+    // 🟡 the MEASURED physical card edges (photometric line fit, from _rect_check.sides, warp px 630×880)
+    // vs 🟦 where the warp promises they should be (the output-inset rect at [3,97]%). Yellow off the cyan
+    // dashed rect = residual keystone/offset — exactly what the grader's confidence veto reacts to and what
+    // the shadow correction would straighten. Absent (no _rect_check) → nothing drawn.
+    const rchk = src._rect_check;
+    if (editMode === null && rchk && rchk.sides) {
+      addRect(svg, 3, 3, 94, 94, "sv-expected",
+              { fill: "none", stroke: "#22d3ee", "stroke-width": "0.25",
+                "stroke-dasharray": "1.5 1.5", opacity: "0.65" });
+      for (const s of ["top", "right", "bottom", "left"]) {
+        const sv = rchk.sides[s];
+        if (!sv || !Array.isArray(sv.line)) continue;
+        const [x0, y0, dx, dy] = sv.line, t = 700;      // extend the fitted line across the card
+        addLine(svg, (x0 - t*dx)/6.3, (y0 - t*dy)/8.8, (x0 + t*dx)/6.3, (y0 + t*dy)/8.8,
+                { stroke: "#facc15", "stroke-width": "0.45", opacity: "0.9" });   // /6.3=/630*100, /8.8=/880*100
+      }
     }
 
     // Border-width labels while editing either box
@@ -1004,6 +1297,11 @@ function buildCenteringAuditCard(src, label = null) {
       `<span>L/R <b>${lr}/${100-lr}</b></span>` +
       `<span>T/B <b>${tb}/${100-tb}</b></span>` +
       `<span>score <b class="${sc}">${score}</b></span>`;
+
+    // Phase-1 rectification chip (🟡 measured edges vs 🟦 expected). View mode only — hidden while adjusting.
+    const rs = (editMode === null) ? rectSummary(src) : null;
+    rectReadout.innerHTML = rs ? `<span class="${rectTone(rs.tone)}">${rs.text}</span>` : "";
+    rectReadout.style.display = rs ? "" : "none";
   }
 
   function addHandle(cx, cy, rect, side) {
@@ -1328,6 +1626,14 @@ function addRect(svg, x, y, w, h, cls, attrs = {}) {
   svg.appendChild(rect);
 }
 
+function addLine(svg, x1, y1, x2, y2, attrs = {}) {
+  const line = document.createElementNS(NS_SVG, "line");
+  line.setAttribute("x1", x1); line.setAttribute("y1", y1);
+  line.setAttribute("x2", x2); line.setAttribute("y2", y2);
+  for (const [k, v] of Object.entries(attrs)) line.setAttribute(k, v);
+  svg.appendChild(line);
+}
+
 // ── Stage-B aggregator (client-side, no Claude) ────────────────────────────
 // Combines the 4 pillar scores into an overall PSA grade using the linear model
 // in grade_model.js (generated by grading_server/train_aggregator.py). Falls back
@@ -1464,6 +1770,23 @@ function attachZoomPan(wrap) {
   wrap.addEventListener("pointerup", endPan);
   wrap.addEventListener("pointercancel", endPan);
   wrap.addEventListener("dblclick", () => { scale = 1; tx = 0; ty = 0; apply(); });
+
+  // Programmatic zoom (smooth) — e.g. "tap a defect row → zoom to its box".
+  // (fx, fy) = fractional point on the image to center; s = target scale.
+  const animate = (fn) => {
+    layer.style.transition = "transform 0.28s ease";
+    fn();
+    setTimeout(() => { layer.style.transition = ""; }, 300);
+  };
+  wrap._zoomTo = (fx, fy, s) => animate(() => {
+    scale = Math.min(MAX, Math.max(MIN, s));
+    const w = wrap.clientWidth, h = wrap.clientHeight;
+    tx = w / 2 - fx * w * scale;
+    ty = h / 2 - fy * h * scale;
+    if (scale === MIN) { tx = 0; ty = 0; }
+    clampPan(); apply();
+  });
+  wrap._zoomReset = () => animate(() => { scale = 1; tx = 0; ty = 0; apply(); });
 
   const hint = document.createElement("div");
   hint.className = "zoom-hint";

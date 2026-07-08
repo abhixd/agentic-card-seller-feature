@@ -27,7 +27,40 @@ _MODEL_PATH = os.path.join(_HERE, "models", "cv_xgb_raw.pkl")
 # ── per-side inner-frame selector (flag-guarded; falls back to coherence on ANY failure) ────────────
 # Activate by setting env PERSIDE_CENTERING=1 (Railway). Default OFF = production behaviour unchanged.
 _PERSIDE_ENABLED = os.environ.get("PERSIDE_CENTERING", "").strip().lower() in ("1", "true", "yes", "on")
+# Plausibility guard: re-pick a side that locked onto a physically-impossible near-zero border. Default ON;
+# set PERSIDE_REPICK=0 to disable.
+_REPICK_ENABLED = os.environ.get("PERSIDE_REPICK", "1").strip().lower() in ("1", "true", "yes", "on")
 _perside_cache = {}
+
+
+def _plausibility_repick(ctx, cand, sel, chosen):
+    """A card always has a border, so an inner-edge inset at ~0 is a detection failure, not real centering
+    (e.g. vintage cards with evolution text ON the top border fool the variance detector into locking to the
+    card edge). If a side's inset is both essentially zero (<1.2% of the card) AND a severe outlier vs the
+    other three, re-pick that side's best-scoring candidate within a plausible inset band derived from them.
+    Real off-centering (thin but nonzero border) never trips this."""
+    import per_side_selector as PS
+    try:
+        ins = {s: PS.inset_frac(ctx, s, chosen[s][1]) for s in "LRTB"}
+    except Exception:
+        return chosen
+    for s in "LRTB":
+        others = [ins[o] for o in "LRTB" if o != s]
+        med = float(np.median(others)) if others else 0.0
+        if med <= 0 or not (ins[s] < 0.012 and ins[s] < 0.4 * med):
+            continue
+        lo, hi = 0.4 * med, 2.5 * med
+        try:
+            scores = sel.score([fv for _, _, fv in cand[s]])
+        except Exception:
+            continue
+        best = None
+        for (dname, pos, fv), sc in zip(cand[s], scores):
+            if lo <= PS.inset_frac(ctx, s, pos) <= hi and (best is None or sc > best[2]):
+                best = (dname, pos, float(sc))
+        if best is not None:
+            chosen[s] = best
+    return chosen
 
 def _perside_selector():
     if "sel" not in _perside_cache:
@@ -84,9 +117,12 @@ def _perside_inner_frame(warped_cen, cb_center):
         ctx = PS.make_ctx(warped_cen, None, cb_center)        # already masked; cb_center is fractional
         if ctx is None:
             return None
-        chosen = sel.select(PS.candidates(ctx))
+        cand = PS.candidates(ctx)
+        chosen = sel.select(cand)
         if not all(s in chosen for s in "LRTB"):
             return None
+        if _REPICK_ENABLED:
+            chosen = _plausibility_repick(ctx, cand, sel, chosen)
         L, T, R, B = (chosen["L"][1], chosen["T"][1], chosen["R"][1], chosen["B"][1])
         x1, y1, x2, y2 = ctx["cb"]
         iL, iR, iT, iB = L - x1, x2 - R, T - y1, y2 - B
@@ -317,7 +353,7 @@ def extract_pillar_zooms(img_bgr, quad_padded, raw, corner_crops_b64):
     return out
 
 
-def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=False, **_ignore) -> dict:
+def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=False, cropped=False, **_ignore) -> dict:
     """Grade a card with the classical-CV pipeline. Same signature/return shape as
     grader.grade_card() (minus the api_key — no VLM call)."""
     if quad_padded is None and quad_raw is not None:
@@ -365,8 +401,43 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
     # Mask table background to the card contour so no remnant (corner wedges, edge
     # slivers) contaminates the centering read. Metric-safe (validated identical on GT);
     # masked copy is centering-only — grading features above used the un-masked warp.
-    warped_cen = grader.mask_background_to_contour(warped, cw)
+    # Cropped inputs fill the frame (no background to mask) → skip masking so the displayed warp has no black
+    # ring. Non-cropped: mask the table background to the card contour so remnants don't contaminate the read.
+    warped_cen = warped if cropped else grader.mask_background_to_contour(warped, cw)
     inn = _perside_inner_frame(warped_cen, cb_center) or IF.find_inner_frame(warped_cen, cb_center)
+    # ── RECT_CHECK=1: post-warp rectification check — a MIN-only geometric veto on centering confidence. ──
+    # Measures the physical die-cut edge in the UNMASKED warp against the output-inset invariant (card must sit
+    # at [PF,1-PF] with zero tilt). Can only LOWER confidence / clear reliable; never moves a ratio or grade.
+    # Structurally blind to true print off-centering (a real miscut still has a rectangular die-cut → passes).
+    _rc = None
+    _rcor = None
+    if not cropped:
+        try:
+            import rect_check as RC
+            if RC.ENABLED:
+                _rc = RC.check(warped, grader.PADDING_FRAC)     # `warped` = unmasked padded warp
+                g = float(_rc["g_geom"])
+                if inn.get("confidence") is not None:
+                    inn["confidence"] = round(min(float(inn["confidence"]), g), 3)
+                if g < 0.5:
+                    inn["reliable"] = False                     # fires the product's low-confidence note
+        except Exception:
+            _rc = None                                          # the check must never break a grade
+        # ── SEG_RECT_CORRECT=shadow: run the tapered-correction DECISION pipeline, log it, serve nothing. ──
+        # Measures decision mix / verify-failure / slab rates on real traffic before any flip. The served
+        # grade is untouched by construction (no output of this block feeds the response ratios).
+        try:
+            import rect_correct as RCOR
+            if RCOR.MODE == "shadow" and quad_raw is not None:
+                o = RCOR.correct_quad_tapered(img_bgr, quad_raw, grader.PADDING_FRAC,
+                                              warp0=warped, qp=quad_padded, rc0=_rc)
+                _rcor = {"mode": "shadow", "decision": o.get("decision"), "w": o.get("w"),
+                         "end_dev": o.get("end_dev"), "shift_full": o.get("shift_full"),
+                         "rc1_max_ang": (o.get("rc1") or {}).get("max_ang"),
+                         "slab_sides": (o.get("slab") or {}).get("n_coherent")}
+                print(f"[rect_correct shadow] {_rcor}", flush=True)
+        except Exception as _e:
+            print(f"[rect_correct shadow] skipped: {type(_e).__name__}: {_e}", flush=True)
     lr, tb = inn["left_right"], inn["top_bottom"]
     H, W = warped.shape[:2]
     L, T, R, Bx = inn["frame_px"]
@@ -420,6 +491,10 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
     # ── visual payload (same keys the extension already consumes) ──
     # Show the background-masked warp so the extension UI has no table remnants either.
     result["_card_boundary"] = list(cb_center)
+    if _rc is not None:
+        result["_rect_check"] = _rc        # per-side ang/pos + g_geom (debug; RECT_CHECK=1 only)
+    if _rcor is not None:
+        result["_rect_correct"] = _rcor    # shadow-mode decision log (SEG_RECT_CORRECT=shadow only)
     try:
         result["_warped_jpeg_b64"] = grader.encode_image(warped_cen)["data"]
         if quad_raw is not None:
@@ -428,7 +503,16 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
                                            for k in ("TL", "TR", "BR", "BL")}
     except Exception:
         pass
-    if contour is not None and quad_padded is not None:
+    if cropped:
+        # Cropped cards fill the frame → the true OUTER boundary is the frame (cb_center). The SAM3 contour
+        # undershoots ~5% inward on cropped inputs (traces inside the yellow border, landing on the content
+        # border), so emitting it would make consumers draw the outer edge ON TOP of the inner border. Emit a
+        # frame rectangle instead so the card boundary renders at the true outer edge.
+        x1, y1, x2, y2 = cb_center
+        result["_card_contour_warped"] = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+        H0, W0 = img_bgr.shape[:2]
+        result["_card_contour_orig"]   = [[0.0, 0.0], [float(W0), 0.0], [float(W0), float(H0)], [0.0, float(H0)]]
+    elif contour is not None and quad_padded is not None:
         wc = grader._contour_to_warped_norm(contour, quad_padded)
         if wc is not None:
             result["_card_contour_warped"] = np.asarray(wc, float).round(5).tolist()
@@ -452,4 +536,21 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
                 img_bgr, quad_padded, raw, result.get("_corner_crops_b64"))
         except Exception:
             pass
+
+    # ── RF-DETR defect boxes — the primary defect detectors for all 3 pillars. Non-fatal. ──
+    #    scratch model → surface ;  edge/corner model → edges + corners.  (scores still come from CV for now)
+    #    DETECT_BACKEND=modal offloads the (CPU-slow) inference to the Modal GPU /detect endpoint; the result
+    #    shape is identical, so the contract is unchanged either way.
+    try:
+        if os.environ.get("DETECT_BACKEND", "local").lower() == "modal":
+            import remote_detect
+            result["defect_boxes"] = remote_detect.defect_boxes(warped_cen)
+        else:
+            import scratch_detect, ec_detect
+            db = scratch_detect.defect_boxes(warped_cen)       # {edges:[], corners:[], surface:[scratches]}
+            ec = ec_detect.defect_boxes(warped_cen)            # {edges:[...], corners:[...], surface:[]}
+            db["edges"], db["corners"] = ec["edges"], ec["corners"]
+            result["defect_boxes"] = db
+    except Exception:
+        pass
     return result

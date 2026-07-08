@@ -102,12 +102,17 @@
     <div id="decision-reason" class="decision-reason"></div>
   </div>
 
-  <!-- Card identity + images -->
+  <!-- Card identity + images (the grade badge is injected onto the first warp by addWarped) -->
   <div class="result-images" id="result-images"></div>
+  <button id="btn-adjust-borders" class="adjust-borders-link hidden">Centering off? ✏️ Adjust borders</button>
 
   <!-- Grade estimate -->
   <div class="result-block">
-    <div class="block-header">Grade Estimate</div>
+    <div class="block-header">Grade estimate</div>
+    <div id="grade-reveal" class="grade-reveal hidden">
+      <div id="grade-headline" class="grade-headline"></div>
+      <div id="grade-sub" class="grade-sub"></div>
+    </div>
     <div class="grade-row">
       <div class="grade-band-wrap">
         <span id="grade-band" class="grade-band"></span>
@@ -115,32 +120,37 @@
       </div>
       <div id="card-name" class="card-name"></div>
     </div>
+    <div id="verdict-banner" class="verdict-banner hidden"></div>
     <div id="grade-dist" class="grade-dist"></div>
     <div id="grade-limiting" class="grade-limiting hidden"></div>
   </div>
 
-  <!-- 4 Pillars -->
+  <!-- 4 Pillars — only centering is clickable (opens the audit); corners/edges/surface details
+       live in the Defects panel below, same as the web app. -->
   <div class="result-block">
-    <div class="block-header">Grading Pillars <span class="block-hint">▸ tap for visual breakdown</span></div>
+    <div class="block-header">Grading pillars <span class="block-hint">▸ defect details below</span></div>
     <div class="pillars-grid">
       <div class="pillar pillar-clickable" data-pillar="centering">
         <div class="pillar-name">Centering <span class="pillar-arrow">›</span></div>
         <div class="pillar-issues" id="issues-centering"></div>
       </div>
-      <div class="pillar pillar-clickable" data-pillar="corners">
-        <div class="pillar-name">Corners <span class="pillar-arrow">›</span></div>
+      <div class="pillar" data-pillar="corners">
+        <div class="pillar-name">Corners</div>
         <div class="pillar-issues" id="issues-corners"></div>
       </div>
-      <div class="pillar pillar-clickable" data-pillar="edges">
-        <div class="pillar-name">Edges <span class="pillar-arrow">›</span></div>
+      <div class="pillar" data-pillar="edges">
+        <div class="pillar-name">Edges</div>
         <div class="pillar-issues" id="issues-edges"></div>
       </div>
-      <div class="pillar pillar-clickable" data-pillar="surface">
-        <div class="pillar-name">Surface <span class="pillar-arrow">›</span></div>
+      <div class="pillar" data-pillar="surface">
+        <div class="pillar-name">Surface</div>
         <div class="pillar-issues" id="issues-surface"></div>
       </div>
     </div>
   </div>
+
+  <!-- Defects (RF-DETR boxes over the warped card) — populated by renderDefects() -->
+  <div class="result-block" id="defects-block" style="display:none"></div>
 
   <!-- Economics -->
   <div class="result-block" id="economics-block">
@@ -160,9 +170,10 @@
 
   <!-- Actions -->
   <div class="results-actions">
-    <button id="btn-new" class="btn btn-ghost">← New analysis</button>
+    <button id="btn-new" class="btn btn-ghost">Grade another</button>
     <button id="btn-feedback-good" class="btn btn-icon" title="Grade was accurate">👍</button>
     <button id="btn-feedback-bad"  class="btn btn-icon" title="Grade was off">👎</button>
+    <button id="btn-close-panel" class="btn btn-ghost btn-close" title="Done — close the panel">✕ Close</button>
   </div>
 
 </section>

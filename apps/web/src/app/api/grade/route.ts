@@ -3,6 +3,11 @@ import { createClient } from '@/lib/supabase/server'
 import { proxyGrade } from '@/lib/grading/client'
 
 export const runtime = 'nodejs'
+// Grading goes through the Modal SAM3 vision pipeline; a grade after Modal has scaled to zero cold-starts the
+// GPU container (~40s to load SAM3's 3GB). Give the function room so that first-after-idle grade SUCCEEDS (slow)
+// instead of the default ~10-15s function timeout killing it → "Grading service returned an error". 60 = the
+// Vercel Hobby ceiling (covers typical ~40s cold starts); on Pro, raise toward 120 for margin on very-cold ones.
+export const maxDuration = 60
 
 /**
  * POST /api/grade — PSA grade a card image via the grading microservice.

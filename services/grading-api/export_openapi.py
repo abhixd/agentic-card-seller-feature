@@ -36,6 +36,9 @@ sample = {
     "pillar_zooms": {"edges": {"top": {"crop_b64": "<b64>", "flagged": ["white"]}},
                      "surface": {"scratches": {"crop_b64": "<b64>", "count": 2}},
                      "corners": {"TL": "<b64>", "TR": "<b64>", "BR": "<b64>", "BL": "<b64>"}},
+    "defect_boxes": {"edges": [], "corners": [],
+                     "surface": [{"area": "surface", "type": "scratch", "category": "minor",
+                                  "box": [0.31, 0.42, 0.12, 0.03], "conf": 0.86}]},
     "_warped_jpeg_b64": "…", "_tier": 2,                    # internal extras must pass through, not fail
 }
 GradeResponse.model_validate(sample)

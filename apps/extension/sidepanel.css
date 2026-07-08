@@ -161,19 +161,18 @@ body {
 .thumb-badge.tb-front { background: rgba(56,139,253,0.92); }
 .thumb-badge.tb-back  { background: rgba(63,185,80,0.92); }
 
-/* Large hover preview of a thumbnail */
+/* Hover preview of a thumbnail — JS anchors it BELOW the gallery strip (top/left set inline) so it never
+   covers the thumbnails you're selecting from. pointer-events:none = clicks pass straight through. */
 .gallery-preview {
-  position: fixed; top: 50%; left: 50%;
-  transform: translate(-50%, -50%) scale(0.96);
-  z-index: 50; pointer-events: none;
-  padding: 6px; background: var(--surface); border: 1px solid var(--border);
-  border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,0.55);
-  opacity: 0; transition: opacity 0.12s, transform 0.12s; display: none;
+  position: fixed; z-index: 50; pointer-events: none;
+  padding: 4px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  opacity: 0; transform: scale(0.98); transition: opacity 0.1s, transform 0.1s; display: none;
 }
-.gallery-preview.visible { opacity: 1; transform: translate(-50%, -50%) scale(1); display: block; }
+.gallery-preview.visible { opacity: 1; transform: scale(1); display: block; }
 .gallery-preview img {
-  display: block; max-width: 78vw; max-height: 70vh;
-  width: auto; height: auto; border-radius: 6px;
+  display: block; max-width: 200px; max-height: 50vh;
+  width: auto; height: auto; border-radius: 5px;
 }
 
 /* ── Loading ── */
@@ -579,4 +578,83 @@ body {
   border-radius: 3px; padding: 2px 6px;
   font-family: 'SF Mono', Consolas, monospace; font-size: 11px;
   color: var(--accent2);
+}
+
+/* ── Defects panel (RF-DETR boxes over the warped card) — mirrors the web DefectsPanel ── */
+.defects-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.defects-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.defects-toggle { display: flex; gap: 2px; padding: 2px; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.defects-tab { border: none; background: none; cursor: pointer; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; color: var(--sub); font-family: var(--font); }
+.defects-tab:hover { color: var(--text); }
+.defects-tab.active { background: var(--accent); color: #fff; }
+.defects-count { opacity: .7; font-variant-numeric: tabular-nums; margin-left: 2px; }
+
+/* the warp is always 630x880 (63:88), so a fixed aspect keeps the SVG boxes aligned AND keeps the
+   wrap's height when attachZoomPan moves the children into the absolutely-positioned zoom layer */
+.defects-card { aspect-ratio: 63/88; max-width: 230px; margin: 0 auto 8px; border: 1px solid var(--border); }
+.defects-card { cursor: zoom-in; }
+.defects-card[data-zoomable] .zoom-layer { will-change: transform; }
+
+.defects-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; font-size: 11px; color: var(--sub); margin-bottom: 8px; }
+.defects-legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.defects-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: 0 0 auto; }
+
+.defects-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.defects-table thead th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--sub); font-weight: 600; padding-bottom: 4px; }
+.defects-table th.r, .defects-table td.r { text-align: right; }
+.defects-table td { padding: 5px 0; border-bottom: 1px solid var(--border); color: var(--text); }
+.defects-table tbody tr:last-child td { border-bottom: none; }
+.defects-table td.muted { color: var(--sub); }
+.defects-table td .defects-swatch { margin-right: 5px; vertical-align: -1px; }
+.defects-table td.r { font-variant-numeric: tabular-nums; font-weight: 600; }
+.defects-table tbody tr { cursor: pointer; }
+.defects-table tbody tr:hover, .defects-table tbody tr.active { background: var(--surface2); }
+.defects-empty { color: var(--sub); font-size: 12px; }
+.defects-hint { color: var(--sub); opacity: .7; font-size: 10px; margin-top: 6px; text-align: center; }
+
+/* ── B2C reveal (badge · verdict · plain language) — consistent with the web /grade design ── */
+.img-wrap { position: relative; }
+.grade-badge-overlay {
+  position: absolute; right: -6px; bottom: 14px;
+  width: 54px; height: 54px; border-radius: 50%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  border: 2px solid var(--surface);
+  background: rgba(63,185,80,0.22); color: var(--green);
+}
+.grade-badge-overlay.medium { background: rgba(210,153,34,0.22); color: var(--yellow); }
+.grade-badge-overlay.low    { background: rgba(248,81,73,0.20);  color: var(--red); }
+.grade-badge-overlay .gb-num  { font-size: 22px; font-weight: 800; line-height: 1; }
+.grade-badge-overlay .gb-word { font-size: 7px; font-weight: 700; letter-spacing: 0.04em; margin-top: 2px; }
+
+.adjust-borders-link {
+  display: block; width: 100%; margin: 6px 0 2px;
+  background: none; border: none; cursor: pointer;
+  font-family: var(--font); font-size: 11px; color: var(--sub);
+  text-decoration: underline; text-underline-offset: 2px; text-align: center;
+}
+.adjust-borders-link:hover { color: var(--text); }
+
+.grade-reveal { margin-bottom: 8px; }
+.grade-headline { font-size: 18px; font-weight: 700; color: var(--green); }
+.grade-headline.medium { color: var(--yellow); }
+.grade-headline.low    { color: var(--red); }
+.grade-sub { font-size: 11.5px; color: var(--sub); margin-top: 2px; }
+
+.verdict-banner {
+  margin-top: 8px; padding: 8px 10px; border-radius: var(--radius-sm);
+  font-size: 12px; line-height: 1.45;
+}
+.verdict-banner.good { background: rgba(63,185,80,0.12);  color: var(--green); }
+.verdict-banner.mid  { background: rgba(210,153,34,0.12); color: var(--yellow); }
+.verdict-banner.bad  { background: rgba(248,81,73,0.10);  color: var(--red); }
+
+.btn-close { margin-left: auto; }
+
+/* conf label above the active defect box (web parity) */
+.defects-conf-label {
+  position: absolute; transform: translateY(-110%);
+  padding: 0 4px; border-radius: 3px;
+  background: rgba(13,17,23,0.85);
+  font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums;
+  pointer-events: none; z-index: 2;
 }
