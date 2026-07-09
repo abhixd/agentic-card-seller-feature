@@ -32,6 +32,9 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# the key template is secret-free and SHOULD be committed
+!.env.example
+!apps/web/.env.example
 
 # vercel
 .vercel

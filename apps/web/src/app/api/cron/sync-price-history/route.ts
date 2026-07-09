@@ -17,8 +17,13 @@ import { fetchJustTcgPriceHistory, type JustTcgPoint } from '@/lib/justtcg/justT
 
 export const maxDuration = 300
 
-const BATCH_LIMIT   = 60    // max cards per run
+// Cards per run. Default is FREE-TIER-SAFE for JustTCG (1,000 calls/mo, 100/day):
+// 25/day ≈ 750/mo, leaving headroom for on-demand card-page views. On a paid
+// JustTCG tier, raise via env: JUSTTCG_CRON_BATCH=60 (Starter 10k/mo supports
+// 60-per-run even at a 6-hour cadence).
+const BATCH_LIMIT   = Math.max(1, Number(process.env.JUSTTCG_CRON_BATCH ?? 25))
 const DELAY_MS      = 500   // ms between JustTCG requests
+const MAX_CONSECUTIVE_ERRORS = 3  // stop the run early if the quota is exhausted
 const CACHE_TTL_MS  = 23 * 60 * 60 * 1000   // skip cards refreshed in last 23h
 const TOP_MARKET    = 300   // also refresh the top-N catalog cards by market value
 const PAGE_SIZE     = 1000  // catalog ranking page size
@@ -133,9 +138,17 @@ export async function GET(req: NextRequest) {
   let processed = 0
   let skipped   = 0
   let errors    = 0
+  let consecutiveErrors = 0
+  let stoppedEarly = false
   const now     = Date.now()
 
   for (const card of cards) {
+    // A run of straight failures almost always means the daily/monthly quota
+    // is exhausted — stop instead of burning more calls on errors.
+    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+      stoppedEarly = true
+      break
+    }
     const meta        = (card.metadata_json ?? {}) as Record<string, any>
     const cached      = meta['tcg_history'] as { fetched_at?: string; points?: JustTcgPoint[] } | undefined
     const lastFetched = cached?.fetched_at ? new Date(cached.fetched_at).getTime() : 0
@@ -156,7 +169,8 @@ export async function GET(req: NextRequest) {
         knownPrinting,
       )
 
-      if (result.apiError) { errors++; continue }
+      if (result.apiError) { errors++; consecutiveErrors++; continue }
+      consecutiveErrors = 0
 
       const existingPoints: JustTcgPoint[] = cached?.points ?? []
       const mergedPoints = mergePoints(existingPoints, result.points)
@@ -178,6 +192,7 @@ export async function GET(req: NextRequest) {
     } catch (err) {
       console.error(`[cron/sync-price-history] Error for ${card.card_name}:`, err)
       errors++
+      consecutiveErrors++
     }
 
     await sleep(DELAY_MS)
@@ -188,6 +203,8 @@ export async function GET(req: NextRequest) {
     processed,
     skipped,
     errors,
+    stoppedEarly,
+    batchLimit: BATCH_LIMIT,
     total: cards.length,
   })
 }
