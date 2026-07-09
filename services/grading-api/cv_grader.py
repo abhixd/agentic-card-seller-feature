@@ -440,6 +440,7 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
             Lm, Tm = float(cwp[:, 0].min()), float(cwp[:, 1].min())
             Rm, Bm = float(1 - cwp[:, 0].max()), float(1 - cwp[:, 1].max())
             Hw, Ww = warped.shape[:2]
+
             def _margin_is_card(m, side):                                              # margin strip ≈ card border?
                 b = max(int(m * (Hw if side in "TB" else Ww)), 1)
                 if   side == "T": o, i = warped[:b],         warped[b:2 * b]
@@ -449,8 +450,16 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
                 if o.size == 0 or i.size == 0:
                     return False
                 return float(np.abs(o.reshape(-1, 3).mean(0) - i.reshape(-1, 3).mean(0)).sum()) < 25.0
-            n_card = sum(_margin_is_card(m, s) for m, s in ((Lm, "L"), (Tm, "T"), (Rm, "R"), (Bm, "B")))
-            cb_center = [0.0, 0.0, 1.0, 1.0] if n_card >= 2 else [Lm, Tm, 1 - Rm, 1 - Bm]
+
+            if max(Lm, Tm, Rm, Bm) < 0.015:
+                # ALL margins tiny → no room for a real backdrop; a tight crop where SAM3 undershot a few px
+                # (card_37: contour bottom 7px inside the true edge). The content-vote is unreliable here — its
+                # reference strip is only ~margin-wide → lands on the border/art transition → false 'backdrop'
+                # (card_37's silver bottom). Trust the frame edge. Real-backdrop cards carry a ≥~2.5% margin.
+                cb_center = [0.0, 0.0, 1.0, 1.0]
+            else:
+                n_card = sum(_margin_is_card(m, s) for m, s in ((Lm, "L"), (Tm, "T"), (Rm, "R"), (Bm, "B")))
+                cb_center = [0.0, 0.0, 1.0, 1.0] if n_card >= 2 else [Lm, Tm, 1 - Rm, 1 - Bm]
         else:
             cb_center = grader.refine_cb_in_warped(warped, cb0, balance=True,          # centering: balance + contour-expand
                                                    cw=(cw if contour is not None else None))
