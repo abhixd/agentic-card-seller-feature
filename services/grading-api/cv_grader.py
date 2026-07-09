@@ -373,18 +373,30 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
               if (contour is not None and quad_padded is not None) else N._FULL_FRAME_CW)
         cb_feat   = grader.refine_cb_in_warped(warped, cb0, balance=False)            # grading features (model-matched; no expand)
         if cropped:
-            # Crop-bypass: the outer die-cut edge = the SAM3 contour's bbox. The image may carry a uniform
-            # background margin (card_003/008 sit ~3% inside a solid backdrop → the image edge is NOT the card
-            # edge), so [0,0,1,1] overshoots; and refine_cb_in_warped searches INWARD and latches onto a content
-            # edge → undershoot (card_030 top). Use the contour bbox, and fix a single-side SAM3 undershoot by
-            # clamping an OUTLIER margin (≫ the other three) to their median — a card is a uniform rectangle.
-            # (cb_feat is left untouched, so pillar grades are unaffected.)
+            # Two crop-bypass inputs are geometrically identical (card ~fills the frame) but need different outers:
+            #   (a) TIGHT CROP / catalog (card_030): NO background — the true die-cut = the IMAGE edge; SAM3
+            #       undershoots, leaving a thin CARD-coloured margin → outer must be [0,0,1,1].
+            #   (b) SOLID BACKDROP (card_003/008): the card sits ~3% inside a uniform backdrop → the true die-cut =
+            #       the SAM3 contour; extending to the image edge OVERSHOOTS into the backdrop.
+            # Discriminate by CONTENT: per side, compare the margin strip (image-edge→contour) to the card border
+            # just inside it — similar colour = SAM3 undershot into the card (no backdrop that side); different =
+            # backdrop. Vote GLOBALLY (a single dark card edge, e.g. card_030's top, is outvoted): ≥2 "no-backdrop"
+            # sides ⇒ tight crop ⇒ [0,0,1,1]; else trust the SAM3 contour bbox. (cb_feat untouched → grades unmoved.)
             cwp = np.asarray(cw, np.float32).reshape(-1, 2)
-            mg = [float(cwp[:, 0].min()), float(cwp[:, 1].min()),
-                  float(1 - cwp[:, 0].max()), float(1 - cwp[:, 1].max())]              # L, T, R, B margins
-            med = float(np.median(mg))
-            mg = [med if v > med + 0.012 else v for v in mg]                           # clamp single-side undershoot
-            cb_center = [mg[0], mg[1], 1 - mg[2], 1 - mg[3]]
+            Lm, Tm = float(cwp[:, 0].min()), float(cwp[:, 1].min())
+            Rm, Bm = float(1 - cwp[:, 0].max()), float(1 - cwp[:, 1].max())
+            Hw, Ww = warped.shape[:2]
+            def _margin_is_card(m, side):                                              # margin strip ≈ card border?
+                b = max(int(m * (Hw if side in "TB" else Ww)), 1)
+                if   side == "T": o, i = warped[:b],         warped[b:2 * b]
+                elif side == "B": o, i = warped[Hw - b:],    warped[Hw - 2 * b:Hw - b]
+                elif side == "L": o, i = warped[:, :b],      warped[:, b:2 * b]
+                else:             o, i = warped[:, Ww - b:], warped[:, Ww - 2 * b:Ww - b]
+                if o.size == 0 or i.size == 0:
+                    return False
+                return float(np.abs(o.reshape(-1, 3).mean(0) - i.reshape(-1, 3).mean(0)).sum()) < 25.0
+            n_card = sum(_margin_is_card(m, s) for m, s in ((Lm, "L"), (Tm, "T"), (Rm, "R"), (Bm, "B")))
+            cb_center = [0.0, 0.0, 1.0, 1.0] if n_card >= 2 else [Lm, Tm, 1 - Rm, 1 - Bm]
         else:
             cb_center = grader.refine_cb_in_warped(warped, cb0, balance=True,          # centering: balance + contour-expand
                                                    cw=(cw if contour is not None else None))
