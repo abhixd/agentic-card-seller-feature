@@ -353,6 +353,60 @@ def extract_pillar_zooms(img_bgr, quad_padded, raw, corner_crops_b64):
     return out
 
 
+def _crop_display_to_card(result, cb):
+    """PRESENTATIONAL ONLY: crop the DISPLAY warp + its warp-frame overlays to the card boundary `cb`, so EVERY
+    card renders as a tight cropped-and-warped image. Backdrop-cropped inputs (a card on a coloured surface) hit
+    crop-bypass and their warp is the full frame incl. the backdrop ring → they look 'not warped' next to normal
+    cards whose perspective warp is already tight. Grades and the centering RATIOS are computed upstream on the
+    full warp and are INVARIANT under this linear (crop+rescale) remap — left/(left+right) is unchanged — so only
+    the displayed pixels and the overlay coordinates move; no score changes. No-op unless the boundary is
+    meaningfully inset (>1.2% on some side), so normal + tight-crop cards (cb≈[0,0,1,1]) are byte-identical."""
+    x1, y1, x2, y2 = cb
+    dx, dy = (x2 - x1), (y2 - y1)
+    if dx <= 0 or dy <= 0 or max(x1, y1, 1 - x2, 1 - y2) <= 0.012:
+        return
+    import base64
+    _rx = lambda v: (v - x1) / dx
+    _ry = lambda v: (v - y1) / dy
+
+    def _crop_b64(b64):                                    # crop a 630x880 warp image to `cb`, resize back
+        try:
+            im = cv2.imdecode(np.frombuffer(base64.b64decode(b64), np.uint8), cv2.IMREAD_COLOR)
+            if im is None:
+                return b64
+            H, W = im.shape[:2]
+            a, b_, c, d = max(int(round(x1 * W)), 0), max(int(round(y1 * H)), 0), \
+                          min(int(round(x2 * W)), W), min(int(round(y2 * H)), H)
+            if c - a < 2 or d - b_ < 2:
+                return b64
+            return grader.encode_image(cv2.resize(im[b_:d, a:c], (W, H)))["data"]
+        except Exception:
+            return b64
+
+    if result.get("_warped_jpeg_b64"):
+        result["_warped_jpeg_b64"] = _crop_b64(result["_warped_jpeg_b64"])
+    pv = result.get("pillar_visuals")
+    if isinstance(pv, dict):                               # centering/edges/surface are baked warp overlays
+        for k in ("centering", "edges", "surface"):        # (corners = original-frame crops → leave as-is)
+            if isinstance(pv.get(k), str):
+                pv[k] = _crop_b64(pv[k])
+    result["_card_boundary"] = [0.0, 0.0, 1.0, 1.0]        # outer die-cut now sits at the frame edge
+    cwp = result.get("_card_contour_warped")               # remap the warp-frame outline (contour or rect)
+    if cwp:
+        result["_card_contour_warped"] = [[round(_rx(px), 5), round(_ry(py), 5)] for px, py in cwp]
+    cr = (result.get("centering") or {}).get("content_region")
+    if cr:
+        cr["x1"], cr["x2"] = _rx(cr["x1"]), _rx(cr["x2"])
+        cr["y1"], cr["y2"] = _ry(cr["y1"]), _ry(cr["y2"])
+    db = result.get("defect_boxes")
+    if isinstance(db, dict):                               # boxes are [x, y, w, h] fractional
+        for cat in db.values():
+            for bx in (cat or []):
+                v = bx.get("box")
+                if v and len(v) == 4:
+                    bx["box"] = [round(_rx(v[0]), 5), round(_ry(v[1]), 5), round(v[2] / dx, 5), round(v[3] / dy, 5)]
+
+
 def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=False, cropped=False, **_ignore) -> dict:
     """Grade a card with the classical-CV pipeline. Same signature/return shape as
     grader.grade_card() (minus the api_key — no VLM call)."""
@@ -577,6 +631,12 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
             ec = ec_detect.defect_boxes(warped_cen)            # {edges:[...], corners:[...], surface:[]}
             db["edges"], db["corners"] = ec["edges"], ec["corners"]
             result["defect_boxes"] = db
+    except Exception:
+        pass
+    # Presentational: unify the DISPLAY warp so backdrop-cropped cards render tight like every other card
+    # (grade-neutral — see _crop_display_to_card; no-op for cb≈[0,0,1,1]).
+    try:
+        _crop_display_to_card(result, cb_center)
     except Exception:
         pass
     return result
