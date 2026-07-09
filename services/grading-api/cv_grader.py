@@ -568,7 +568,8 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
         "centering": {"score": cen_score, "left_right": lr, "top_bottom": tb,
                       "content_region": content_region, "reliable": bool(inn["reliable"]),
                       "confidence": inn.get("confidence"),   # graded 0..1 (perside only; None on coherentframe fallback)
-                      "notes": cen_note, "_source": inn.get("_source", "coherentframe")},
+                      "notes": cen_note, "_source": inn.get("_source", "coherentframe"),
+                      "_inner_corrected": bool(inn.get("_inner_corrected", False))},
         "corners": {"score": corners_s, "worst_severity": corners_w},
         "edges":   {"score": edges_s,   "worst_severity": edges_w},
         "surface": {"score": surface_s, "worst_severity": surface_w},

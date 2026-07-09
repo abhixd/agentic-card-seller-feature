@@ -104,6 +104,8 @@ def correct(warp_bgr, cb, inn):
         out["left_right"] = f"{lr}/{100 - lr}"
         out["top_bottom"] = f"{tb}/{100 - tb}"
         out["_inner_corrected"] = True
+        print(f"[inner-correct] MOVED {inn.get('left_right')}/{inn.get('top_bottom')} "
+              f"-> {out['left_right']}/{out['top_bottom']}", flush=True)
         return out
     except Exception as e:
         print(f"[inner-correct] skipped: {type(e).__name__}: {e}", flush=True)
