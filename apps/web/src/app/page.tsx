@@ -115,7 +115,7 @@ export default function LandingPage() {
       {/* ── Nav ── */}
       <nav className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-6 py-4 border-b border-border/20 bg-background/80 backdrop-blur-md">
         <span className="font-bold text-sm tracking-tight">
-          Card Seller <span className="text-primary">OS</span>
+          <span className="text-white">Scan</span><span className="text-primary">Dex</span>
         </span>
         <div className="flex items-center gap-3">
           <Link href="/analyze"
@@ -267,7 +267,7 @@ export default function LandingPage() {
 
       {/* ── Footer ── */}
       <footer className="border-t border-border/20 px-6 py-8 text-center text-xs text-muted-foreground/40">
-        Card Seller OS · Price data sourced from eBay completed listings and TCGPlayer market prices.
+        ScanDex · Price data sourced from eBay completed listings and TCGPlayer market prices.
         Not affiliated with eBay, TCGPlayer, Pokémon, or any card manufacturer.
       </footer>
     </div>

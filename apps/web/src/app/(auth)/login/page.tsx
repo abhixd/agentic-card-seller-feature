@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Layers } from 'lucide-react'
+import { ScanLine } from 'lucide-react'
 
 export default function LoginPage() {
   const [email, setEmail] = useState('')
@@ -46,10 +46,13 @@ export default function LoginPage() {
         <div className="flex flex-col items-center gap-3">
           <div className="logo-glow flex h-12 w-12 items-center justify-center rounded-2xl"
             style={{ background: 'linear-gradient(135deg, #4f46e5, #7c3aed)' }}>
-            <Layers className="h-6 w-6 text-white" />
+            <ScanLine className="h-6 w-6 text-white" />
           </div>
           <div className="text-center">
-            <span className="text-2xl font-extrabold tracking-tight text-gradient">Card Seller OS</span>
+            <span className="text-3xl font-extrabold tracking-tight">
+              <span className="text-white">Scan</span>
+              <span className="text-gradient">Dex</span>
+            </span>
             <p className="mt-1 text-xs text-muted-foreground">The decision engine for card investors</p>
           </div>
         </div>

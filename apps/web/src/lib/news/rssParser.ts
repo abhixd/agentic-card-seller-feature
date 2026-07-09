@@ -100,7 +100,7 @@ async function fetchFeed(url: string, sourceName: string): Promise<RssItem[]> {
   try {
     const res = await fetch(url, {
       next: { revalidate: 3600 },
-      headers: { 'User-Agent': 'CardSellerOS/1.0 (RSS reader)' },
+      headers: { 'User-Agent': 'ScanDex/1.0 (RSS reader)' },
     })
     if (!res.ok) {
       console.warn(`[RSS] Failed to fetch ${url}: ${res.status}`)

@@ -56,7 +56,7 @@ async function geocodeLocation(query: string): Promise<GeoResult | null> {
 
     const res = await fetch(
       `https://nominatim.openstreetmap.org/search?${q}&format=json&limit=1&addressdetails=1`,
-      { headers: { 'Accept-Language': 'en', 'User-Agent': 'CardSellerOS/1.0' } }
+      { headers: { 'Accept-Language': 'en', 'User-Agent': 'ScanDex/1.0' } }
     )
     const data = await res.json()
     if (!data?.[0]) return null

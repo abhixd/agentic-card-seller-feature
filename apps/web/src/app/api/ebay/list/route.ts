@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
     cat.card_number ? `Card Number: #${cat.card_number}` : null,
     cat.variant  ? `Variant: ${cat.variant}` : null,
     conditionDesc || null,
-    'Listed via Card Seller OS.',
+    'Listed via ScanDex.',
   ].filter(Boolean).join('\n')
 
   const aspects: Record<string, string[]> = {

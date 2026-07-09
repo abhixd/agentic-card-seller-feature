@@ -234,7 +234,7 @@ export default async function MarketPage() {
             <div className="flex items-center gap-2 mb-1">
               <span className={`flex h-1.5 w-1.5 rounded-full shrink-0 ${isUp ? 'bg-emerald-400 shadow-[0_0_6px_#4ade80]' : 'bg-red-400 shadow-[0_0_6px_#f87171]'}`} />
               <span className="text-[10px] font-bold uppercase tracking-widest text-white/30">
-                CSOI 100 · Card Seller OS Index · Top 100 by TCGPlayer Market
+                SDX 100 · The ScanDex Index · Top 100 by TCGPlayer Market
               </span>
             </div>
 
@@ -379,13 +379,13 @@ export default async function MarketPage() {
         </div>
       </div>
 
-      {/* ══ CSOI 100 Full Table ═══════════════════════════════════════════════ */}
+      {/* ══ SDX 100 Full Table ═══════════════════════════════════════════════ */}
       <div className="rounded-xl border border-white/8 overflow-hidden" style={{ background: '#080c10' }}>
         {/* Table header */}
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-white/[0.06]">
           <div className="flex items-center gap-2">
             <BarChart2 className="h-3.5 w-3.5 text-amber-400/60" />
-            <span className="text-[10px] font-bold uppercase tracking-widest text-white/30">CSOI 100 · Full Index</span>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-white/30">SDX 100 · Full Index</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-white/15 flex items-center gap-1">
@@ -500,7 +500,7 @@ export default async function MarketPage() {
 
       {/* ── Footer note ─────────────────────────────────────────────────────── */}
       <p className="text-[10px] text-white/15 text-center">
-        CSOI 100 — top 100 unique cards by TCGPlayer market price · drawn from the entire catalog ({processed.length.toLocaleString()} priced cards) ·
+        SDX 100 — top 100 unique cards by TCGPlayer market price · drawn from the entire catalog ({processed.length.toLocaleString()} priced cards) ·
         one entry per card name (highest-priced variant shown) ·
         7d / 30d changes use real price history from tcg_history ·
         signals: 🚀 +20% in 7d · 📉 −20% in 7d · 👑 near ATH · 🔥 +12% in 30d · ❄️ −12% in 30d

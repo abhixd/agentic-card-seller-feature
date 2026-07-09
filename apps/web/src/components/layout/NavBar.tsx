@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
-  LayoutDashboard, ScanLine, Archive, LogOut, Layers,
+  LayoutDashboard, ScanLine, Archive, LogOut,
   TrendingUp, Settings, Award, Target, Newspaper,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -127,25 +127,51 @@ export function NavBar() {
         <div className="absolute bottom-0 right-0 w-32 h-32 rounded-full pointer-events-none"
           style={{ background: 'radial-gradient(circle, rgba(139,92,246,0.07) 0%, transparent 70%)' }} />
 
-        {/* Logo */}
-        <div className="flex items-center gap-3 mb-7 px-2 pt-1">
+        {/* ── ScanDex wordmark: the logo scans itself ── */}
+        <style>{`
+          @keyframes sdxBeam {
+            0%       { left: -18%; opacity: 0; }
+            6%       { opacity: 1; }
+            42%      { left: 104%; opacity: 1; }
+            48%,100% { left: 104%; opacity: 0; }
+          }
+          @keyframes sdxTileScan {
+            0%, 100% { top: 12%; opacity: .0; }
+            15%      { opacity: .95; }
+            50%      { top: 82%; opacity: .95; }
+            85%      { opacity: 0; }
+          }
+        `}</style>
+        <div className="flex items-center gap-3 mb-7 px-2 pt-1 select-none">
+          {/* Icon tile — a card being scanned */}
           <div
-            className="logo-glow relative flex items-center justify-center w-8 h-8 rounded-lg flex-shrink-0 transition-transform duration-300 hover:scale-110"
+            className="logo-glow relative flex items-center justify-center w-8 h-8 rounded-lg flex-shrink-0 overflow-hidden transition-transform duration-300 hover:scale-110"
             style={{ background: 'linear-gradient(135deg, #4f46e5, #7c3aed)' }}
           >
-            <Layers className="h-4 w-4 text-white" />
+            <ScanLine className="h-4 w-4 text-white" />
+            <span aria-hidden className="absolute left-1 right-1 h-[1.5px] rounded-full"
+              style={{ background: 'rgba(255,255,255,0.9)', boxShadow: '0 0 6px 1px rgba(255,255,255,0.8)', animation: 'sdxTileScan 3.2s ease-in-out infinite' }} />
           </div>
+          {/* Wordmark — Scan (white) + Dex (gradient) with a sweeping scanner beam */}
           <div className="flex items-center gap-2 min-w-0">
-            <span
-              className="font-bold text-sm tracking-tight"
-              style={{
-                background: 'linear-gradient(90deg, #818cf8, #a78bfa)',
-                WebkitBackgroundClip: 'text',
-                WebkitTextFillColor: 'transparent',
-                backgroundClip: 'text',
-              }}
-            >
-              Card Seller OS
+            <span className="relative inline-block overflow-hidden font-extrabold text-[17px] tracking-tight leading-none">
+              <span className="text-white">Scan</span>
+              <span
+                style={{
+                  background: 'linear-gradient(90deg, #818cf8, #a78bfa, #c084fc)',
+                  WebkitBackgroundClip: 'text',
+                  WebkitTextFillColor: 'transparent',
+                  backgroundClip: 'text',
+                }}
+              >
+                Dex
+              </span>
+              <span aria-hidden className="pointer-events-none absolute top-[-15%] bottom-[-15%] w-[14px]"
+                style={{
+                  background: 'linear-gradient(90deg, transparent, rgba(196,181,253,0.85), transparent)',
+                  filter: 'blur(0.5px)',
+                  animation: 'sdxBeam 4.6s ease-in-out infinite',
+                }} />
             </span>
             <span className="beta-badge flex-shrink-0 text-[9px] font-semibold tracking-widest uppercase px-1.5 py-0.5 rounded-full border border-white/10 text-white/30 bg-white/5">
               BETA

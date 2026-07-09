@@ -17,8 +17,8 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Card Seller OS",
-  description: "Professional trading card analysis and inventory management",
+  title: "ScanDex — Card Market Intelligence",
+  description: "Scan any card. Know its worth. Trusted pricing, opportunity scores, and grading intelligence for card investors.",
 };
 
 export default function RootLayout({

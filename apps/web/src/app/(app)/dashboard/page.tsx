@@ -291,7 +291,7 @@ export default async function DashboardPage() {
             <div className="flex items-center gap-2 mb-1">
               <span className="flex h-1.5 w-1.5 rounded-full bg-green-400 shadow-[0_0_6px_#4ade80] shrink-0" />
               <span className="text-[10px] font-bold uppercase tracking-widest text-white/30">
-                Card Seller OS · Terminal
+                ScanDex · Terminal
               </span>
             </div>
             <h1 className="text-2xl font-black tracking-tight sm:text-3xl"

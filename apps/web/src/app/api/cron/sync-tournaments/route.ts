@@ -5,7 +5,7 @@ export const maxDuration = 120
 
 const BASE = 'https://limitlesstcg.com'
 const LIST_URL = `${BASE}/tournaments?game=PTCG&type=major&format=standard`
-const UA = 'CardSellerOS/1.0 research-scraper'
+const UA = 'ScanDex/1.0 research-scraper'
 const RATE_LIMIT_MS = 500
 const LOOKBACK_DAYS = 14
 

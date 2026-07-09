@@ -86,7 +86,7 @@ export async function GET(req: NextRequest) {
   const supabase = createServiceClient()
 
   // ── Build the refresh set: active inventory + the top cards by market value ──
-  // Previously ONLY inventory was covered, which is why the CSOI top-100 charts
+  // Previously ONLY inventory was covered, which is why the SDX-100 top-100 charts
   // stayed empty — nobody owns most of those cards.
   const { data: inventoryRows } = await supabase
     .from('inventory_items')
