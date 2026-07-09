@@ -27,6 +27,7 @@ SMALL      = float(os.environ.get("INNER_SMALL", "0.020"))     # "very close to 
 RATIO      = float(os.environ.get("INNER_RATIO", "2.2"))       # opposite side this many × the small side
 DELTA      = float(os.environ.get("INNER_DELTA", "0.015"))     # RF must disagree by at least this (else = miscut)
 BUFFER     = float(os.environ.get("INNER_BUFFER", "0.012"))    # skip this band near the (hijacked) selector edge
+SLACK      = float(os.environ.get("INNER_SLACK", "0.030"))     # extend the search past RF's (imprecise) inward estimate
 STRENGTH   = float(os.environ.get("INNER_STRENGTH", "55"))     # min perpendicular gradient for a real frame edge
 print(f"[inner_boundary_correct] loaded — model={_MODEL} small={SMALL} ratio={RATIO} strength={STRENGTH}", flush=True)
 
@@ -47,9 +48,10 @@ def _band_search(warp_bgr, idx, sel_px, rf_px):
         prof = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))[int(0.15 * H):int(0.85 * H), :].mean(0); N = W
     else:               # T/B → horizontal edges (Sobel-y), profile over interior cols
         prof = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))[:, int(0.15 * W):int(0.85 * W)].mean(1); N = H
-    buf = int(BUFFER * N)
-    inward = sel_px + buf if idx in (0, 1) else sel_px - buf    # L/T inward = larger px; R/B inward = smaller px
-    lo, hi = sorted([int(round(inward)), int(round(rf_px))])
+    sign = 1 if idx in (0, 1) else -1                          # inward direction: L/T = +px, R/B = -px
+    inward = sel_px + sign * int(BUFFER * N)                    # start just inward of the (hijacked) selector edge
+    rf_ext = rf_px + sign * int(SLACK * N)                      # extend PAST RF — its inward estimate is imprecise
+    lo, hi = sorted([int(round(inward)), int(round(rf_ext))])
     lo = max(lo, 1); hi = min(hi, N - 2)
     if hi - lo < 3:
         return None
@@ -79,15 +81,20 @@ def correct(warp_bgr, cb, inn):
             if rf is None:
                 rf = _rf_inner_box(warp_bgr)
                 if rf is None:
+                    print("[inner-correct] TRIGGER but RF-DETR returned no box", flush=True)
                     return inn
             rf_m = {0: rf[0] / W - cb[0], 2: cb[2] - rf[2] / W,
                     1: rf[1] / H - cb[1], 3: cb[3] - rf[3] / H}[small_idx]
             if rf_m < sm + DELTA:                               # RF agrees the margin is small → genuine miscut
+                print(f"[inner-correct] TRIGGER side={small_idx} sel_m={sm:.3f} rf_m={rf_m:.3f} "
+                      f"-> RF AGREES (miscut), keep", flush=True)
                 continue
             sel_px = fp[small_idx]
             rf_px  = {0: (cb[0] + rf_m) * W, 2: (cb[2] - rf_m) * W,
                       1: (cb[1] + rf_m) * H, 3: (cb[3] - rf_m) * H}[small_idx]
             new_px = _band_search(warp_bgr, small_idx, sel_px, rf_px)
+            print(f"[inner-correct] TRIGGER side={small_idx} sel_m={sm:.3f} rf_m={rf_m:.3f} "
+                  f"band_search={'MOVE '+str(round(new_px,1)) if new_px is not None else 'no strong edge'}", flush=True)
             if new_px is not None:
                 fp[small_idx] = new_px
                 moved = True
