@@ -494,6 +494,15 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
     # ring. Non-cropped: mask the table background to the card contour so remnants don't contaminate the read.
     warped_cen = warped if cropped else grader.mask_background_to_contour(warped, cw)
     inn = _perside_inner_frame(warped_cen, cb_center) or IF.find_inner_frame(warped_cen, cb_center)
+    # INNER_HIJACK_CORRECT: rescue extreme per-side selector hijacks (a full-art inner edge that latched onto the
+    # outer holo edge) via an RF-DETR-bounded photometric band search. Conservative + non-fatal; no-op unless a
+    # side is extremely asymmetric AND RF-DETR disagrees AND a strong inward frame edge exists. See the module.
+    if os.environ.get("INNER_HIJACK_CORRECT", "0").lower() in ("1", "true", "yes", "on"):
+        try:
+            import inner_boundary_correct as IBC
+            inn = IBC.correct(warped_cen, cb_center, inn)
+        except Exception as _ie:
+            print(f"[inner-correct] skipped: {type(_ie).__name__}: {_ie}", flush=True)
     # ── RECT_CHECK=1: post-warp rectification check — a MIN-only geometric veto on centering confidence. ──
     # Measures the physical die-cut edge in the UNMASKED warp against the output-inset invariant (card must sit
     # at [PF,1-PF] with zero tilt). Can only LOWER confidence / clear reliable; never moves a ratio or grade.
