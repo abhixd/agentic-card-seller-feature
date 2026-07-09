@@ -372,8 +372,14 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
         cw = (grader._contour_to_warped_norm(contour, quad_padded)
               if (contour is not None and quad_padded is not None) else N._FULL_FRAME_CW)
         cb_feat   = grader.refine_cb_in_warped(warped, cb0, balance=False)            # grading features (model-matched; no expand)
-        cb_center = grader.refine_cb_in_warped(warped, cb0, balance=True,             # centering: balance + contour-expand to true edge
-                                               cw=(cw if contour is not None else None))
+        # Crop-bypass: the image IS the card (fills the frame), so the outer die-cut edge = the image edge.
+        # refine_cb_in_warped searches inward and can latch onto a strong CONTENT edge (e.g. the title row) →
+        # undershoots the outer top (card_030: top pulled to ~3% → centering 43/57 vs the true ~55/45). On a
+        # cropped input, trust the image edge for the centering/display boundary. (cb_feat is left untouched so
+        # the grading-feature model is unaffected.)
+        cb_center = ([0.0, 0.0, 1.0, 1.0] if cropped
+                     else grader.refine_cb_in_warped(warped, cb0, balance=True,        # centering: balance + contour-expand
+                                                      cw=(cw if contour is not None else None)))
     else:
         warped = grader._warp_card(img_bgr, None) if False else img_bgr.copy()
         cb_feat = cb_center = [0.0, 0.0, 1.0, 1.0]

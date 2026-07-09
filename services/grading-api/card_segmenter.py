@@ -321,18 +321,24 @@ def is_cropped_to_border(contour_raw, W, H):
     (high coverage + tiny margins to the image edge), is axis-aligned, and the image aspect ≈ the card aspect.
     Such inputs need no segment+warp — the image already IS the (rectified) card — so the caller uses a full-frame
     quad (identity warp) instead of the circumscribing quad, avoiding the warp looseness that drifts centering.
-    Only fire when the card TRULY fills the frame: a card with even a ~3% background margin (e.g. a Mimikyu on a
+    Only fire when the card TRULY fills the frame: a card with even a ~5% background margin (e.g. a Mimikyu on a
     pink surface) must NOT bypass — the bypass would keep that margin and put the boundary at the image edge; the
-    normal circumscribing+mask path handles a background margin correctly. Thresholds separate the tight-crop case
-    (card_004: coverage 0.91, min-margin 0.018 → bypass) from the margin case (Mimikyu: 0.882, 0.026 → normal)."""
+    normal circumscribing+mask path handles a background margin correctly.
+
+    GATE = the WORST-side margin (does the card reach ALL 4 image edges?). This replaced the old
+    `coverage>0.90 AND min_margin<0.02` combo (2026-07-05): area-coverage is fragile to a ragged/rounded
+    contour and sat right at the boundary for true crops (card_004 flipped between SAM3 runs at coverage≈0.91),
+    while `min_margin` (BEST side) alone let slabs through (one edge reaches, the bezel side doesn't). The
+    worst-side margin directly encodes "card fills the frame on every side" and separates cleanly & robustly:
+    validated on 72 cards (34 slabs + crops + photos) → true crops max-margin 0.013–0.036, photos/slabs/sleeved
+    0.117–0.271 (huge gap), ZERO slab false-fires, and it recovers 4 boundary tight-crops the old gate missed."""
     pts = np.asarray(contour_raw, np.float32).reshape(-1, 2)
     x0, y0, x1, y1 = pts[:, 0].min(), pts[:, 1].min(), pts[:, 0].max(), pts[:, 1].max()
-    coverage = float((x1 - x0) * (y1 - y0) / (W * H))
-    min_margin = float(min(x0 / W, (W - x1) / W, y0 / H, (H - y1) / H))
+    max_margin = float(max(x0 / W, (W - x1) / W, y0 / H, (H - y1) / H))   # WORST side — small ⇒ card reaches ALL 4 edges
     ang = cv2.minAreaRect(pts)[-1]
     rot = min(abs(ang), abs(ang - 90), abs(ang + 90))
     aspect = min(W, H) / max(W, H)
-    return coverage > 0.90 and min_margin < 0.02 and rot < 2.0 and abs(aspect - CARD_ASPECT) < 0.05
+    return max_margin < 0.05 and rot < 2.0 and abs(aspect - CARD_ASPECT) < 0.06
 
 
 # ── Hosted segmentation inference ─────────────────────────────────────────────
