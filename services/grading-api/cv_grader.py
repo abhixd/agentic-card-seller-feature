@@ -372,14 +372,22 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
         cw = (grader._contour_to_warped_norm(contour, quad_padded)
               if (contour is not None and quad_padded is not None) else N._FULL_FRAME_CW)
         cb_feat   = grader.refine_cb_in_warped(warped, cb0, balance=False)            # grading features (model-matched; no expand)
-        # Crop-bypass: the image IS the card (fills the frame), so the outer die-cut edge = the image edge.
-        # refine_cb_in_warped searches inward and can latch onto a strong CONTENT edge (e.g. the title row) →
-        # undershoots the outer top (card_030: top pulled to ~3% → centering 43/57 vs the true ~55/45). On a
-        # cropped input, trust the image edge for the centering/display boundary. (cb_feat is left untouched so
-        # the grading-feature model is unaffected.)
-        cb_center = ([0.0, 0.0, 1.0, 1.0] if cropped
-                     else grader.refine_cb_in_warped(warped, cb0, balance=True,        # centering: balance + contour-expand
-                                                      cw=(cw if contour is not None else None)))
+        if cropped:
+            # Crop-bypass: the outer die-cut edge = the SAM3 contour's bbox. The image may carry a uniform
+            # background margin (card_003/008 sit ~3% inside a solid backdrop → the image edge is NOT the card
+            # edge), so [0,0,1,1] overshoots; and refine_cb_in_warped searches INWARD and latches onto a content
+            # edge → undershoot (card_030 top). Use the contour bbox, and fix a single-side SAM3 undershoot by
+            # clamping an OUTLIER margin (≫ the other three) to their median — a card is a uniform rectangle.
+            # (cb_feat is left untouched, so pillar grades are unaffected.)
+            cwp = np.asarray(cw, np.float32).reshape(-1, 2)
+            mg = [float(cwp[:, 0].min()), float(cwp[:, 1].min()),
+                  float(1 - cwp[:, 0].max()), float(1 - cwp[:, 1].max())]              # L, T, R, B margins
+            med = float(np.median(mg))
+            mg = [med if v > med + 0.012 else v for v in mg]                           # clamp single-side undershoot
+            cb_center = [mg[0], mg[1], 1 - mg[2], 1 - mg[3]]
+        else:
+            cb_center = grader.refine_cb_in_warped(warped, cb0, balance=True,          # centering: balance + contour-expand
+                                                   cw=(cw if contour is not None else None))
     else:
         warped = grader._warp_card(img_bgr, None) if False else img_bgr.copy()
         cb_feat = cb_center = [0.0, 0.0, 1.0, 1.0]
