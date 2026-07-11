@@ -199,10 +199,31 @@ export function CenteringPanel({
             </div>
           </div>
 
-          <div className={`flex items-center gap-1.5 text-xs ${centering.reliable === false ? 'text-amber-600' : 'text-emerald-600'}`}>
-            <span className={`size-1.5 rounded-full ${centering.reliable === false ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-            {centering.reliable === false ? 'Low-confidence read — verify visually' : 'High-confidence read'}
-          </div>
+          {(() => {
+            // Numeric read confidence (0..1 from the grader; MIN-combined with the stability probe when
+            // the grade ran with stability). Falls back to the legacy binary `reliable` flag when absent.
+            const conf = centering.confidence
+            const level =
+              conf != null
+                ? conf < 0.6 ? 'low' : conf < 0.85 ? 'mid' : 'high'
+                : centering.reliable === false ? 'low' : 'high'
+            const ui = {
+              high: { cls: 'text-emerald-600', dot: 'bg-emerald-500', label: 'High-confidence read' },
+              mid: { cls: 'text-amber-600', dot: 'bg-amber-500', label: 'Medium-confidence read — worth a glance' },
+              low: { cls: 'text-red-600', dot: 'bg-red-500', label: 'Low-confidence read — verify the borders' },
+            }[level]
+            return (
+              <div className={`flex items-center gap-1.5 text-xs ${ui.cls}`}>
+                <span className={`size-1.5 rounded-full ${ui.dot}`} />
+                {ui.label}
+                {conf != null && (
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium tabular-nums text-foreground/80">
+                    {Math.round(conf * 100)}%
+                  </span>
+                )}
+              </div>
+            )
+          })()}
         </div>
       </div>
 
