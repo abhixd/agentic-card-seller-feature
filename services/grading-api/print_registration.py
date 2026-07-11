@@ -394,43 +394,72 @@ def _fit_loose(card_bgr, ref_bgr):
     return card, ref, M
 
 
-def _band_cut_search(card_work, frame_px):
-    """Per side, the strongest perpendicular-gradient line within [0.2,1.8]×nominal margin OUTSIDE the
-    anchored print frame (the physical die-cut, even through case plastic — high contrast at the card
-    edge). All four sides must show a clear line, else None (abstain)."""
+def _band_cut_search(card_work, frame_px, size_meas=None):
+    """Locate the die-cut as a FIXED-SIZE box slide. The anchored print frame determines the card's exact
+    pixel size (frame / (1-2×inset)) — only the box POSITION is unknown (2 dof). Slide that box over
+    ±1.5×nominal and jointly maximize perpendicular edge energy along all FOUR sides at once: independent
+    per-side peaks allowed correlated drift (both horizontal cuts grabbing lines shifted the same way,
+    which preserves scale and per-side prominence); the true die-cut is the only rectangle of exactly this
+    size with aligned edges on all four sides."""
     H, W = card_work.shape[:2]
     gray = cv2.cvtColor(card_work, cv2.COLOR_BGR2GRAY).astype(np.float32)
     gx = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, 3))
     gy = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, 3))
-    x1, y1, x2, y2 = frame_px
-    m_nom = NOMINAL_INSET / (1 - 2 * NOMINAL_INSET) * (x2 - x1)      # nominal print→cut margin, px
-    cuts = {}
-    for side in "LTRB":
-        if side in "LR":
-            prof = gx[int(H * 0.2):int(H * 0.8)].mean(0)
-            edge, direction = (x1, -1) if side == "L" else (x2, +1)
+    fx1, fy1, fx2, fy2 = frame_px
+    m_nom = NOMINAL_INSET / (1 - 2 * NOMINAL_INSET) * (fx2 - fx1)    # nominal print→cut margin, px
+    if size_meas:                                                    # MEASURED card size (ref dims / fit
+        bw, bh, tol = size_meas[0], size_meas[1], 0.008              # scale — ~resid-accurate): tight tie
+    else:                                                            # kills wrong-pair grabs (title bar +
+        bw = (fx2 - fx1) / (1 - 2 * NOMINAL_INSET)                   # shadow spacing ≠ measured height)
+        bh = (fy2 - fy1) / (1 - 2 * NOMINAL_INSET)
+        tol = 0.035                                                  # nominal fallback: allow inset variance
+    colscore = gx[int(H * 0.2):int(H * 0.8)].mean(0)                 # vertical-edge energy per column
+    rowscore = gy[:, int(W * 0.2):int(W * 0.8)].mean(1)              # horizontal-edge energy per row
+    img = card_work.astype(np.float32)
+    k = max(int(0.02 * min(H, W)), 8)                                # the warp corners = pure surround (the
+    case_ref = np.median(np.concatenate([                            # ring exists — that's what fired the
+        img[:k, :k].reshape(-1, 3), img[:k, -k:].reshape(-1, 3),     # rescue), so they define what "outside
+        img[-k:, :k].reshape(-1, 3), img[-k:, -k:].reshape(-1, 3)]), axis=0)   # the card" looks like.
+
+    def outside_ok(axis, p, low_side):
+        """A TRUE cut has the surround (case/table) OUTSIDE it and card INSIDE — an interior line (title
+        bar) has card on both sides. Size ties can't break pure-translation ambiguity; this can."""
+        o1, o2 = (p - 9, p - 3) if low_side else (p + 3, p + 9)
+        i1, i2 = (p + 3, p + 9) if low_side else (p - 9, p - 3)
+        if axis == "y":
+            out = img[max(o1, 0):max(o2, 1), int(W * 0.2):int(W * 0.8)]
+            ins = img[max(i1, 0):max(i2, 1), int(W * 0.2):int(W * 0.8)]
         else:
-            prof = gy[:, int(W * 0.2):int(W * 0.8)].mean(1)
-            edge, direction = (y1, -1) if side == "T" else (y2, +1)
-        lo = edge + direction * _RESCUE_BAND[1] * m_nom
-        hi = edge + direction * _RESCUE_BAND[0] * m_nom
-        a, b = int(max(min(lo, hi), 0)), int(min(max(lo, hi), len(prof) - 1))
-        if b - a < 3:
-            return None
-        band = prof[a:b + 1]
-        med = float(np.median(band)) + 1e-6
-        # All prominent peaks in the band, then take the one CLOSEST to the nominal cut position — the
-        # strongest line is often interior print structure (title bars), not the fainter die-cut. Correlated
-        # both-sides shifts preserve scale, so the scale verify alone can't catch a strongest-peak grab.
-        expected = edge + direction * m_nom
-        peaks = [i for i in range(1, len(band) - 1)
-                 if band[i] >= band[i - 1] and band[i] >= band[i + 1]
-                 and band[i] >= 1.25 * med and band[i] >= 8.0]
-        if not peaks:
-            return None
-        pk = min(peaks, key=lambda i: abs((a + i) - expected))
-        cuts[side] = a + pk
-    return cuts
+            out = img[int(H * 0.2):int(H * 0.8), max(o1, 0):max(o2, 1)]
+            ins = img[int(H * 0.2):int(H * 0.8), max(i1, 0):max(i2, 1)]
+        if out.size == 0 or ins.size == 0:
+            return False
+        d_out = float(np.abs(out.reshape(-1, 3).mean(0) - case_ref).sum())
+        d_in = float(np.abs(ins.reshape(-1, 3).mean(0) - case_ref).sum())
+        return d_out < 0.8 * d_in + 10.0                             # outside must resemble the surround more
+
+    def axis_pair(score, e1, e2, size, limit, axis):
+        """Opposite sides searched JOINTLY: each within its band outside the frame, outside-looks-like-
+        surround required per side, the PAIR tied to the measured size, max summed edge energy."""
+        a1 = [p for p in range(int(max(e1 - _RESCUE_BAND[1] * m_nom, 0)),
+                               int(max(e1 - _RESCUE_BAND[0] * m_nom, 1))) if outside_ok(axis, p, True)]
+        a2 = [p for p in range(int(min(e2 + _RESCUE_BAND[0] * m_nom, limit - 1)),
+                               int(min(e2 + _RESCUE_BAND[1] * m_nom, limit - 1)) + 1) if outside_ok(axis, p, False)]
+        best, bs = None, -1.0
+        for p1 in a1:
+            for p2 in a2:
+                if abs((p2 - p1) - size) > tol * size:
+                    continue
+                s = float(score[p1] + score[p2])
+                if s > bs:
+                    bs, best = s, (p1, p2)
+        return best
+
+    xp = axis_pair(colscore, fx1, fx2, bw, W, "x")
+    yp = axis_pair(rowscore, fy1, fy2, bh, H, "y")
+    if xp is None or yp is None:
+        return None
+    return {"L": xp[0], "T": yp[0], "R": xp[1], "B": yp[1]}
 
 
 def _rescue_outer(card_bgr, ref_bgr):
@@ -449,7 +478,9 @@ def _rescue_outer(card_bgr, ref_bgr):
     mapped = frame @ Minv[:, :2].T + Minv[:, 2]
     fp = (float(mapped[:, 0].min()), float(mapped[:, 1].min()),
           float(mapped[:, 0].max()), float(mapped[:, 1].max()))
-    cuts = _band_cut_search(card_w, fp)
+    scale = float(np.linalg.norm(M[:, 0]))                           # card px × scale = render px, so the
+    size_meas = (RW / scale, RH / scale)                             # card's TRUE pixel size is measured
+    cuts = _band_cut_search(card_w, fp, size_meas)
     if cuts is None:
         return None
     bx1, by1, bx2, by2 = cuts["L"], cuts["T"], cuts["R"], cuts["B"]
