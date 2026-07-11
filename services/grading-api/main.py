@@ -279,14 +279,21 @@ def _get_grade_mods():
 _STRIP = {"_raw", "_analytical_centering"}
 
 
-def _grade_one(img_bgr, api_key: str = "", zoom: bool = False, raw_bytes: bytes | None = None) -> dict:
+def _grade_one(img_bgr, api_key: str = "", zoom: bool = False, raw_bytes: bytes | None = None,
+               contour: list | None = None) -> dict:
     """Grade one card. GRADE_BACKEND=modal runs the WHOLE grade on Modal in one /fullgrade call (no warp bounce);
     otherwise the local detect_and_grade (which may still offload seg/detect to Modal). Identical return shape.
     raw_bytes = the ORIGINAL upload bytes, forwarded UNTOUCHED on the modal path — the previous decode→
-    re-encode transcode measurably shifted the segmentation (see remote_grade.full_grade)."""
+    re-encode transcode measurably shifted the segmentation (see remote_grade.full_grade).
+    contour = an optional MANUAL 4-corner boundary ([[x,y],...] in source px); when given, SAM3 is skipped and the
+    grade runs on that boundary (Modal /gradecontour) — the user's override for an inaccurate auto-segmentation."""
     if os.environ.get("GRADE_BACKEND", "local").lower() == "modal":
         import remote_grade
+        if contour:
+            return remote_grade.grade_contour(img_bgr, contour, zoom, raw_bytes=raw_bytes)
         return remote_grade.full_grade(img_bgr, zoom, raw_bytes=raw_bytes)
+    if contour:
+        raise ValueError("Manual-boundary grading requires GRADE_BACKEND=modal")
     return _get_grader().detect_and_grade(img_bgr, api_key, zoom)
 
 def _decode(raw: bytes):
@@ -305,6 +312,7 @@ async def grade_card_endpoint(
     title:    str   = Form(""),
     price:    float = Form(0.0),
     shipping: float = Form(0.0),
+    contour:  str   = Form(""),   # optional JSON [[x,y],...] MANUAL card outline in source px → skip SAM3, grade on it
     zoom:     int   = 0,          # query param: ?zoom=1 → attach high-res per-defect close-ups (pillar_zooms)
 ):
     """
@@ -325,10 +333,18 @@ async def grade_card_endpoint(
     except Exception as e:                                # path forwards raw_front untouched (no transcode)
         raise HTTPException(status_code=400, detail=f"Image decode error: {e}")
 
+    ct = None
+    if contour:
+        try:
+            ct = json.loads(contour)
+            assert isinstance(ct, list) and len(ct) >= 4 and all(len(p) == 2 for p in ct)
+        except Exception:
+            raise HTTPException(status_code=400, detail="contour must be JSON [[x,y],...] with >= 4 points")
+
     aggregator, grade_comps = _get_grade_mods()
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, _grade_one, img_bgr, api_key, bool(zoom), raw_front)
+        result = await loop.run_in_executor(None, _grade_one, img_bgr, api_key, bool(zoom), raw_front, ct)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:

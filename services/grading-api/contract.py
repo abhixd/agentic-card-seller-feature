@@ -17,7 +17,8 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = "1.3.0"   # 1.3.0: + defect_boxes (per-pillar defect outline rectangles, optional, additive)
+CONTRACT_VERSION = "1.4.0"   # 1.4.0: + optional `contour` grade input (manual 4-corner boundary → skips SAM3, additive)
+# 1.3.0: + defect_boxes (per-pillar defect outline rectangles, optional, additive)
 # 1.2.0: + pillar_zooms (high-res defect close-ups, optional, additive)
 
 
