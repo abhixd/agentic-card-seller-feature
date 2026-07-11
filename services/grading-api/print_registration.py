@@ -36,6 +36,13 @@ MIN_YEAR      = int(os.environ.get("PRINT_REG_MIN_YEAR", "2011"))   # older rend
 # print — so a detected "scratch" whose line exists in the render is printed content (art/text), not damage.
 SCRATCH_FILTER = os.environ.get("PRINT_REG_SCRATCH_FILTER", "").strip().lower() in ("1", "true", "yes", "on")
 SCRATCH_NOVEL_THR = float(os.environ.get("PRINT_REG_SCRATCH_THR", "0.30"))
+# Outer-anchor rescue: when the ONLY reason registration fails is scale (the warp crop includes a case/
+# sleeve/slab ring around the true die-cut), band-search for the cut just outside the anchored print frame,
+# crop to it, and RE-REGISTER — acceptance requires the scale to snap to unit (the verify loop the old
+# geometric de-sleeve never had). Fires only when every candidate failed and a scale-only reject exists.
+OUTER_RESCUE = os.environ.get("PRINT_REG_OUTER", "").strip().lower() in ("1", "true", "yes", "on")
+_RESCUE_MAX_DEV = 0.25          # beyond ±25% scale the "ring" story is implausible — abstain
+_RESCUE_BAND = (0.2, 1.8)       # the cut is searched within [0.2, 1.8] × nominal margin outside the print frame
 NOMINAL_INSET = 0.034            # per_side_selector.CENTER — the expected print-frame inset on a modern card
 _CACHE = os.path.join(tempfile.gettempdir(), "print_reg_refs")
 os.makedirs(_CACHE, exist_ok=True)
@@ -275,7 +282,7 @@ def _prep(gray):
     return cv2.normalize(cv2.magnitude(gx, gy), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
 
-def register(card_bgr, ref_bgr):
+def register(card_bgr, ref_bgr, gates=None):
     """card_bgr = OUR card cropped to the die-cut (the display warp); ref_bgr = official render.
     Returns meta dict (always, for observability) — meta["accepted"] gates any use of the read.
     On acceptance, meta["content_region"] is the render's nominal print frame mapped into OUR card's
@@ -312,8 +319,11 @@ def register(card_bgr, ref_bgr):
     scale = float(np.linalg.norm(M[:, 0]))
     meta = {"inliers": int(inl.sum()), "matches": len(good), "resid_px": round(resid, 2),
             "scale": round(scale, 4)}
-    meta["accepted"] = bool(meta["inliers"] >= MIN_INLIERS and resid <= MAX_RESID
-                            and abs(scale - 1.0) <= MAX_SCALE_DEV)
+    min_inl, max_res, max_dev = gates or (MIN_INLIERS, MAX_RESID, MAX_SCALE_DEV)
+    meta["accepted"] = bool(meta["inliers"] >= min_inl and resid <= max_res
+                            and abs(scale - 1.0) <= max_dev)
+    if gates:
+        meta["gate"] = "rescue-verify"
     # Secondary acceptance — sparse-texture cards (alt-arts, glare, sleeves) can produce few anchors whose
     # geometry is nonetheless impeccable. Wrong cards never fit sub-pixel at unit scale (worst observed
     # wrong-ish fit: res 1.16 @ scale dev 0.018 — rejected here by the dev gate), so tighter geometry may
@@ -347,6 +357,129 @@ def register(card_bgr, ref_bgr):
     meta["tb"] = f"{round(T / (T + B) * 100)}/{round(B / (T + B) * 100)}"
     meta["_filter_ctx"] = (card, ref, M)                            # working-scale images + fit, for the
     return meta                                                     # scratch filter; popped before serializing
+
+
+# ── outer-anchor rescue (cased/slabbed/sleeved raw cards) ───────────────────────────────────────────
+def _fit_loose(card_bgr, ref_bgr):
+    """Gate-free registration fit → (card_work, ref_work, M) or None. Used only to locate the print frame
+    when the gated register() refused on scale — the rescue's final acceptance re-runs the FULL gates."""
+    Hn = 1024
+    sc = Hn / card_bgr.shape[0]
+    card = cv2.resize(card_bgr, (int(card_bgr.shape[1] * sc), Hn))
+    ref = cv2.resize(ref_bgr, (int(ref_bgr.shape[1] * Hn / ref_bgr.shape[0]), Hn))
+    gc, gr = _prep(cv2.cvtColor(card, cv2.COLOR_BGR2GRAY)), _prep(cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY))
+
+    def interior(im):
+        m = np.zeros(im.shape[:2], np.uint8)
+        b = int(0.06 * min(im.shape[:2]))
+        m[b:-b, b:-b] = 255
+        return m
+
+    sift = cv2.SIFT_create(nfeatures=6000)
+    kc, dc = sift.detectAndCompute(gc, interior(gc))
+    kr, dr = sift.detectAndCompute(gr, interior(gr))
+    if dc is None or dr is None:
+        return None
+    good = [m for m, n in cv2.BFMatcher(cv2.NORM_L2).knnMatch(dc, dr, k=2) if m.distance < 0.75 * n.distance]
+    if len(good) < 25:
+        return None
+    src = np.float32([kc[m.queryIdx].pt for m in good])
+    dst = np.float32([kr[m.trainIdx].pt for m in good])
+    M, inl = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=3.0, maxIters=5000)
+    if M is None or inl is None or int(inl.sum()) < 20:
+        return None
+    return card, ref, M
+
+
+def _band_cut_search(card_work, frame_px):
+    """Per side, the strongest perpendicular-gradient line within [0.2,1.8]×nominal margin OUTSIDE the
+    anchored print frame (the physical die-cut, even through case plastic — high contrast at the card
+    edge). All four sides must show a clear line, else None (abstain)."""
+    H, W = card_work.shape[:2]
+    gray = cv2.cvtColor(card_work, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gx = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, 3))
+    gy = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, 3))
+    x1, y1, x2, y2 = frame_px
+    m_nom = NOMINAL_INSET / (1 - 2 * NOMINAL_INSET) * (x2 - x1)      # nominal print→cut margin, px
+    cuts = {}
+    for side in "LTRB":
+        if side in "LR":
+            prof = gx[int(H * 0.2):int(H * 0.8)].mean(0)
+            edge, direction = (x1, -1) if side == "L" else (x2, +1)
+        else:
+            prof = gy[:, int(W * 0.2):int(W * 0.8)].mean(1)
+            edge, direction = (y1, -1) if side == "T" else (y2, +1)
+        lo = edge + direction * _RESCUE_BAND[1] * m_nom
+        hi = edge + direction * _RESCUE_BAND[0] * m_nom
+        a, b = int(max(min(lo, hi), 0)), int(min(max(lo, hi), len(prof) - 1))
+        if b - a < 3:
+            return None
+        band = prof[a:b + 1]
+        med = float(np.median(band)) + 1e-6
+        # All prominent peaks in the band, then take the one CLOSEST to the nominal cut position — the
+        # strongest line is often interior print structure (title bars), not the fainter die-cut. Correlated
+        # both-sides shifts preserve scale, so the scale verify alone can't catch a strongest-peak grab.
+        expected = edge + direction * m_nom
+        peaks = [i for i in range(1, len(band) - 1)
+                 if band[i] >= band[i - 1] and band[i] >= band[i + 1]
+                 and band[i] >= 1.25 * med and band[i] >= 8.0]
+        if not peaks:
+            return None
+        pk = min(peaks, key=lambda i: abs((a + i) - expected))
+        cuts[side] = a + pk
+    return cuts
+
+
+def _rescue_outer(card_bgr, ref_bgr):
+    """Full rescue: locate print frame (gate-free fit) → band-search the die-cut outside it → crop →
+    re-register with the FULL gates. Returns None (abstain) or a dict with the verified read + the cut
+    box as fractions of the ORIGINAL warp (for the display boundary)."""
+    lf = _fit_loose(card_bgr, ref_bgr)
+    if lf is None:
+        return None
+    card_w, ref_w, M = lf
+    RW, RH = ref_w.shape[1], ref_w.shape[0]
+    ins = NOMINAL_INSET
+    frame = np.float32([[RW * ins, RH * ins], [RW * (1 - ins), RH * ins],
+                        [RW * (1 - ins), RH * (1 - ins)], [RW * ins, RH * (1 - ins)]])
+    Minv = cv2.invertAffineTransform(M)
+    mapped = frame @ Minv[:, :2].T + Minv[:, 2]
+    fp = (float(mapped[:, 0].min()), float(mapped[:, 1].min()),
+          float(mapped[:, 0].max()), float(mapped[:, 1].max()))
+    cuts = _band_cut_search(card_w, fp)
+    if cuts is None:
+        return None
+    bx1, by1, bx2, by2 = cuts["L"], cuts["T"], cuts["R"], cuts["B"]
+    if bx2 - bx1 < 200 or by2 - by1 < 200:
+        return None
+    # Verify-or-abstain: the artwork match was already established pre-crop (that's what fired the rescue);
+    # this re-registration verifies the CROP — the scale must snap to unit. Textured/cased cards give sparse
+    # anchors, so the anchor bar relaxes to 40 while the SCALE bar tightens to 1.2% (the actual verify).
+    crop = card_w[by1:by2, bx1:bx2]
+    # Verify gates: identity was already established by the pre-crop fit, so the anchor bar here is low
+    # (30); the SCALE bar (1.2%) is the actual verify — a mis-sized crop cannot re-register at unit scale.
+    meta2 = register(crop, ref_bgr, gates=(30, MAX_RESID, 0.012))
+    if not meta2.get("accepted"):
+        return None
+    # Margin sanity from the RE-REGISTERED frame (trustworthy — scale verified): each print→cut margin must
+    # be plausible vs nominal. Catches correlated cut shifts that preserve scale (e.g. both horizontal cuts
+    # grabbing interior lines). [0.35, 1.8]×nominal tolerates real miscuts to ~82/18 but not interior grabs.
+    cr0 = meta2["content_region"]
+    nom = NOMINAL_INSET / (1 - 2 * NOMINAL_INSET) * (cr0["x2"] - cr0["x1"])
+    for m in (cr0["x1"], 1 - cr0["x2"], cr0["y1"], 1 - cr0["y2"]):
+        if not (0.35 * nom <= m <= 1.8 * nom):
+            return None
+    Hw, Ww = card_w.shape[:2]
+    cut_frac = (bx1 / Ww, by1 / Hw, bx2 / Ww, by2 / Hw)
+    cr = meta2["content_region"]                                     # fractions of the CROP → map to warp coords
+    cw, ch = cut_frac[2] - cut_frac[0], cut_frac[3] - cut_frac[1]
+    meta2["content_region"] = {"x1": round(cut_frac[0] + cr["x1"] * cw, 4),
+                               "y1": round(cut_frac[1] + cr["y1"] * ch, 4),
+                               "x2": round(cut_frac[0] + cr["x2"] * cw, 4),
+                               "y2": round(cut_frac[1] + cr["y2"] * ch, 4)}
+    meta2["cut_box"] = [round(v, 4) for v in cut_frac]
+    meta2["outer_corrected"] = True
+    return meta2
 
 
 # ── render-verified scratch filter ──────────────────────────────────────────────────────────────────
@@ -432,7 +565,7 @@ def apply_to_result(result, identity):
         # TRY-AND-VERIFY: text matching only needs to get the right card into the top-K — registration
         # itself is the verifier (a wrong card's artwork cannot produce a dense unit-scale RANSAC fit;
         # observed rejecting wrong Pokémon, wrong prints, even a card-back placeholder render).
-        meta, tried = None, []
+        meta, tried, scale_rejects = None, [], []
         for cid in cands:
             ref, ferr = _fetch_render(cid)
             if ref is None:
@@ -444,6 +577,9 @@ def apply_to_result(result, identity):
             elif m.get("inliers") is not None:                       # a fit existed — say which gate failed
                 tried.append(f"{cid}:{m.get('reason', 'rej')}(inl={m.get('inliers')} "
                              f"res={m.get('resid_px')} sc={m.get('scale')})")
+                if (m["inliers"] >= 40 and (m.get("resid_px") or 9) <= MAX_RESID
+                        and MAX_SCALE_DEV < abs((m.get("scale") or 1) - 1.0) <= _RESCUE_MAX_DEV):
+                    scale_rejects.append((m["inliers"], cid, ref))   # scale-ONLY reject → rescue candidate
             else:
                 tried.append(f"{cid}:{m.get('reason', 'rej')}")
             if m.get("accepted"):
@@ -451,12 +587,29 @@ def apply_to_result(result, identity):
                 meta["ref_id"] = cid
                 mark_winner(identity, cid)
                 break
+        if meta is None and OUTER_RESCUE and scale_rejects:
+            # The fit is real but the warp crop includes a case/sleeve ring — try the outer-anchor rescue
+            # with the best-fitting candidate. Acceptance is the full-gate re-registration on the crop.
+            _, cid, ref = max(scale_rejects)
+            r = _rescue_outer(card, ref)
+            if r is not None:
+                meta = r
+                meta["ref_id"] = cid
+                mark_winner(identity, cid)
+                tried.append(f"{cid}:outer-rescued(sc→{meta.get('scale')})")
         if meta is None:
             cen["registration"] = {"accepted": False, "reason": "no candidate registered", "tried": tried}
             return
         meta["tried"] = tried
         filter_ctx = meta.pop("_filter_ctx", None)                  # numpy arrays — never serialize
         cen["registration"] = {k: v for k, v in meta.items() if k != "content_region"}
+        if meta.get("outer_corrected") and meta.get("cut_box"):
+            # The true die-cut sits INSIDE the displayed warp (case/sleeve ring around it) — move the
+            # outer boundary so the UI's green rect hugs the actual card. content_region is already
+            # mapped into the same (original-warp) coordinates.
+            result["_card_boundary"] = list(meta["cut_box"])
+            filter_ctx = None                                        # crop-frame ctx ≠ warp-frame boxes → skip
+            cen["registration"]["scratch_filter"] = {"skipped": "outer-corrected (frame mismatch)"}
         if SCRATCH_FILTER and filter_ctx is not None:
             try:
                 _filter_surface_boxes(result, cen, card, filter_ctx)
