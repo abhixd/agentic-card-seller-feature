@@ -449,6 +449,20 @@ async def grade_card_endpoint(
             # Registration applies to the PROBE result too, so the stability delta measures the
             # registration read's test-retest (not selector-vs-registration disagreement).
             _preg.apply_to_result(result, ident)
+            # The vision ID is nondeterministic: it occasionally returns a vague identity (name without a
+            # collector number) whose candidates are all the wrong art → nothing registers. When that exact
+            # signature occurs, retry the identify ONCE — a second read usually recovers the number.
+            _reg = (result.get("centering") or {}).get("registration") or {}
+            if (not _reg.get("accepted") and _reg.get("reason") == "no candidate registered"
+                    and not (ident or {}).get("number")):
+                try:
+                    import identify as _identify2
+                    ident2 = await loop.run_in_executor(None, _identify2.identify_card, img_bgr, api_key)
+                    if ident2.get("number"):
+                        ident = ident2
+                        _preg.apply_to_result(result, ident)
+                except Exception:
+                    pass
             if probe_res is not None:
                 _preg.apply_to_result(probe_res, ident)
         except Exception:
