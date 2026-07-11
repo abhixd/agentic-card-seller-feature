@@ -209,7 +209,9 @@ async function gradeImage(front, back, meta = null) {
     form.append("shipping", String(meta.shipping ?? 0));
   }
 
-  const res  = await fetch(`${pythonBase}/grade`, { method: "POST", body: form });
+  // stability=1: the grader also grades a perturbed copy (concurrently) and MIN-combines the test–retest
+  // stability into centering.confidence — same as the web app, so both surfaces report identical confidence.
+  const res  = await fetch(`${pythonBase}/grade?stability=1`, { method: "POST", body: form });
   const data = await res.json();
   if (!res.ok) throw new Error(data.detail || `Server error ${res.status}`);
   return data;

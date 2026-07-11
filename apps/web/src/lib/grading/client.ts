@@ -52,9 +52,12 @@ async function proxyImageTo(
 }
 
 /** Forward a card image (+ optional listing fields) to the grading service /grade endpoint.
- *  `zoom` requests high-res per-defect close-ups (pillar_zooms) via /grade?zoom=1. */
+ *  `zoom` requests high-res per-defect close-ups (pillar_zooms) via /grade?zoom=1.
+ *  stability=1 is always requested: the grader also grades a perturbed copy (concurrently — ~no added
+ *  latency) and MIN-combines the test–retest stability into centering.confidence, catching fragile reads
+ *  (faint sleeve edges) that otherwise LOOK confident. The grader skips it on manual-contour re-grades. */
 export function proxyGrade(image: File, fields?: Record<string, string>, zoom = false): Promise<NextResponse> {
-  return proxyImageTo(zoom ? '/grade?zoom=1' : '/grade', image, fields, 'grade')
+  return proxyImageTo(`/grade?stability=1${zoom ? '&zoom=1' : ''}`, image, fields, 'grade')
 }
 
 /** Forward one card photo (+ ask/shipping/title) to the Sourcing-scout /scout endpoint. */
