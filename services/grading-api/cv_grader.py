@@ -458,6 +458,29 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
                     return False
                 return float(np.abs(o.reshape(-1, 3).mean(0) - i.reshape(-1, 3).mean(0)).sum()) < 25.0
 
+            def _flat_run(m, side):
+                # How far the image-edge colour stays flat, scanned PAST the contour (to m+4%). A real backdrop
+                # boundary ends the flat region AT SAM3's line (run ≈ m); when the flat colour CONTINUES past it,
+                # SAM3's line floats mid-region — it undershot into a flat card border (card_004: yellow border on
+                # a catalog render reads as "backdrop" to the colour vote; the yellow runs on to the frame line).
+                n = Hw if side in "TB" else Ww
+                ext = min(int((m + 0.04) * n) + 1, n // 3)
+                if   side == "T": blk = warped[:ext, int(Ww * 0.2):int(Ww * 0.8)]
+                elif side == "B": blk = warped[Hw - ext:, int(Ww * 0.2):int(Ww * 0.8)][::-1]
+                elif side == "L": blk = warped[int(Hw * 0.2):int(Hw * 0.8), :ext].transpose(1, 0, 2)
+                else:             blk = warped[int(Hw * 0.2):int(Hw * 0.8), Ww - ext:].transpose(1, 0, 2)[::-1]
+                med = np.median(blk.astype(np.float32), axis=1)          # per-row median colour, edge → inward
+                ref = med[:2].mean(0)
+                bad = np.abs(med - ref).sum(1) > 90.0
+                run = int(np.argmax(bad)) if bad.any() else ext
+                return run / n
+
+            votes = 0
+            for m, s in ((Lm, "L"), (Tm, "T"), (Rm, "R"), (Bm, "B")):
+                if _margin_is_card(m, s):                                # colour ≈ card interior (existing test)
+                    votes += 1
+                elif _flat_run(m, s) > m + 0.005:                        # "backdrop" colour floats past SAM3's line
+                    votes += 1
             if max(Lm, Tm, Rm, Bm) < 0.015:
                 # ALL margins tiny → no room for a real backdrop; a tight crop where SAM3 undershot a few px
                 # (card_37: contour bottom 7px inside the true edge). The content-vote is unreliable here — its
@@ -465,8 +488,7 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
                 # (card_37's silver bottom). Trust the frame edge. Real-backdrop cards carry a ≥~2.5% margin.
                 cb_center = [0.0, 0.0, 1.0, 1.0]
             else:
-                n_card = sum(_margin_is_card(m, s) for m, s in ((Lm, "L"), (Tm, "T"), (Rm, "R"), (Bm, "B")))
-                cb_center = [0.0, 0.0, 1.0, 1.0] if n_card >= 2 else [Lm, Tm, 1 - Rm, 1 - Bm]
+                cb_center = [0.0, 0.0, 1.0, 1.0] if votes >= 2 else [Lm, Tm, 1 - Rm, 1 - Bm]
         else:
             cb_center = grader.refine_cb_in_warped(warped, cb0, balance=True,          # centering: balance + contour-expand
                                                    cw=(cw if contour is not None else None))
