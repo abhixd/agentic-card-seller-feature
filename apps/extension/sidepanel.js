@@ -653,6 +653,47 @@ function renderPSAResult(r, listing) {
     chip.textContent = "· " + rs.text;
     $("grade-sub").appendChild(chip);
   }
+
+  // ── Scan details — collapsed deep-dive, parity with the web's centering popup section. Shows how the
+  // centering read was made (⚓ print-anchored vs edge detection + why), the stability probe, and the
+  // render-verified scratch filter counts. All from fields already in the response; nothing extra fetched.
+  {
+    const old = document.getElementById("scan-details");
+    if (old) old.remove();
+    const cen = r.centering || {};
+    const reg = cen.registration;
+    const det = document.createElement("details");
+    det.id = "scan-details";
+    det.style.cssText = "margin-top:6px;font-size:11px;color:#9aa0a6;";
+    const sum = document.createElement("summary");
+    sum.textContent = "Scan details";
+    sum.style.cssText = "cursor:pointer;user-select:none;";
+    det.appendChild(sum);
+    const row = (k, v) => {
+      const d = document.createElement("div");
+      d.style.cssText = "margin:2px 0 0 12px;";
+      d.textContent = `${k}: ${v}`;
+      det.appendChild(d);
+    };
+    if (cen._source === "print_reg" && reg?.accepted) {
+      row("Read method", `⚓ print-anchored to the official render${reg.ref_id ? ` (${reg.ref_id})` : ""}`);
+      row("Anchor quality", `${reg.inliers ?? "—"} anchors · ${reg.resid_px ?? "—"}px residual · scale ${reg.scale ?? "—"}`);
+    } else {
+      row("Read method", "edge detection (per-side)"
+        + (reg && !reg.accepted && reg.reason ? ` — print-anchor unavailable: ${reg.reason}` : ""));
+    }
+    const st = cen.stability;
+    if (st) {
+      row("Stability probe", st.delta_pts != null
+        ? `Δ ${st.delta_pts} pts — perturbed copy read ${st.probe_left_right ?? "—"} · ${st.probe_top_bottom ?? "—"}${st.note ? ` (${st.note})` : ""}`
+        : (st.error || st.note || "not available"));
+    }
+    const sf = reg?.scratch_filter;
+    if (sf && sf.checked != null) row("Scratch filter", `${sf.suppressed}/${sf.checked} boxes suppressed as printed content`);
+    if (cen.confidence != null) row("Confidence", `${Math.round(cen.confidence * 100)}% — the weakest signal gates the badge`);
+    row("Read", `${cen.left_right || "—"} L/R · ${cen.top_bottom || "—"} T/B`);
+    $("grade-reveal").appendChild(det);
+  }
   document.querySelector(".grade-row").classList.add("hidden");
   $("grade-dist").innerHTML   = "";
   $("grade-limiting").classList.add("hidden");
@@ -880,11 +921,13 @@ function centeringPhrase(leftRight, topBottom) {
   return "heavily off-center";
 }
 
-// Selector confidence float → the label the reveal shows.
+// Selector confidence float → the label the reveal shows. Numeric % included so the extension matches
+// the web's badge (same 0.6/0.85 thresholds — the two surfaces must never disagree on the verdict).
 function confidencePhrase(conf, reliable) {
-  if (reliable === false || (conf != null && conf < 0.6)) return "low confidence — try a brighter photo";
-  if (conf != null && conf < 0.85) return "medium confidence";
-  return "high confidence";
+  const pct = conf != null ? ` (${Math.round(conf * 100)}%)` : "";
+  if (reliable === false || (conf != null && conf < 0.6)) return `low confidence${pct} — verify the borders`;
+  if (conf != null && conf < 0.85) return `medium confidence${pct}`;
+  return `high confidence${pct}`;
 }
 function cen0Conf(r) { return r?.centering?.confidence ?? null; }
 
