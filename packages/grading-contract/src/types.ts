@@ -42,7 +42,24 @@ export interface Centering {
   confidence?: number | null;
   /** present only when the grade was requested with ?stability=1 */
   stability?: Stability | null;
+  /** present only when PRINT_REG=1 on the grading service and a card identity resolved */
+  registration?: Registration | null;
   [internal: string]: unknown;
+}
+
+/** Print-registration read (PRINT_REG=1): the identified card's official render SIFT-registered against
+ *  the die-cut warp. accepted=true → left_right/top_bottom/content_region come from the registered print
+ *  position (sub-pixel; solves full-arts with no detectable inner frame); false → selector read kept. */
+export interface Registration {
+  accepted: boolean;
+  inliers?: number | null;
+  matches?: number | null;
+  resid_px?: number | null;
+  scale?: number | null;
+  /** matched pokemontcg.io card id, e.g. "sv3-22" */
+  ref_id?: string | null;
+  /** why not accepted (gate / vintage / no match / ...) */
+  reason?: string | null;
 }
 
 export interface Pillar {

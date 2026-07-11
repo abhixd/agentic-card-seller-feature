@@ -63,6 +63,17 @@
             }
           ],
           "default": null
+        },
+        "registration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Registration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -260,6 +271,92 @@
         "score"
       ],
       "title": "Pillar",
+      "type": "object"
+    },
+    "Registration": {
+      "description": "Print-registration read (PRINT_REG=1): the identified card's official render is SIFT-registered\nagainst the die-cut warp; when accepted, left_right/top_bottom/content_region come from the registered\nprint position (sub-pixel; solves full-arts with no detectable inner frame). accepted=False = the\nselector read was kept; this block then only explains why (reason).",
+      "properties": {
+        "accepted": {
+          "title": "Accepted",
+          "type": "boolean"
+        },
+        "inliers": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inliers"
+        },
+        "matches": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Matches"
+        },
+        "resid_px": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resid Px"
+        },
+        "scale": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scale"
+        },
+        "ref_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ref Id"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "accepted"
+      ],
+      "title": "Registration",
       "type": "object"
     },
     "Stability": {
@@ -476,5 +573,5 @@
   "title": "GradeResponse",
   "type": "object",
   "$id": "https://acs/grading-contract/grade-response.schema.json",
-  "x-contract-version": "1.5.0"
+  "x-contract-version": "1.6.0"
 }

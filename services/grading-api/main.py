@@ -345,7 +345,15 @@ def _apply_stability(result: dict, probe: dict) -> None:
     if a is None or b is None:
         cen["stability"] = {"delta_pts": None, "confidence": None, "error": "unreadable probe margins"}
         return
+    # Like-for-like only: if the baseline and probe reads came from different methods (e.g. print
+    # registration accepted on the original but fell back to the selector on the resized probe), the delta
+    # measures METHOD disagreement, not test-retest fragility — report it but don't demote confidence.
+    src_a = cen.get("_source"); src_b = (probe.get("centering") or {}).get("_source")
     d = max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+    if src_a != src_b:
+        cen["stability"] = {"delta_pts": round(d, 2), "confidence": None,
+                            "note": f"cross-method ({src_a} vs {src_b}) — delta not used for confidence"}
+        return
     # Ramp calibrated on the 109-card probe run (clean ≈1pt, flippers 3–29pt), saturation re-tuned on user
     # feedback: saturating at 6 lumped a GOOD detection with a ±3pt wobble (card_025, Δ6.8 — boundaries
     # verified correct) together with catastrophic majority-side flippers (card_017 Δ29). Saturate at 15:
@@ -409,6 +417,16 @@ async def grade_card_endpoint(
             probe_task = loop.run_in_executor(None, _grade_one, probe_img, api_key, False, probe_bytes, None)
         except Exception:
             probe_task = None
+    # Print-registration (PRINT_REG=1): identity-anchored centering needs to know WHICH card this is.
+    # /grade has no identify step normally, so under the flag we vision-ID concurrently with the grade.
+    ident_task = None
+    import print_registration as _preg
+    if _preg.ENABLED and not ct:
+        try:
+            import identify as _identify
+            ident_task = loop.run_in_executor(None, _identify.identify_card, img_bgr, api_key)
+        except Exception:
+            ident_task = None
     try:
         result = await loop.run_in_executor(None, _grade_one, img_bgr, api_key, bool(zoom), raw_front, ct)
     except ValueError as e:
@@ -416,14 +434,30 @@ async def grade_card_endpoint(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Grading error: {type(e).__name__}: {e}")
+    probe_res = None
     if probe_task is not None:
         try:
-            _apply_stability(result, await probe_task)
+            probe_res = await probe_task
         except Exception as e:                            # non-fatal by construction
             cen = result.get("centering")
             if isinstance(cen, dict):
                 cen["stability"] = {"delta_pts": None, "confidence": None,
                                     "error": f"probe failed: {type(e).__name__}"}
+    if ident_task is not None:
+        try:
+            ident = await ident_task
+            # Registration applies to the PROBE result too, so the stability delta measures the
+            # registration read's test-retest (not selector-vs-registration disagreement).
+            _preg.apply_to_result(result, ident)
+            if probe_res is not None:
+                _preg.apply_to_result(probe_res, ident)
+        except Exception:
+            pass
+    if probe_res is not None:
+        try:
+            _apply_stability(result, probe_res)
+        except Exception:
+            pass
 
     # ── Optional back side → combined (worst-side) grade ──
     overall_for_econ = result.get("overall_score") or 0
@@ -516,9 +550,25 @@ async def scout_card(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Grading error: {type(e).__name__}: {e}")
+    probe_res = None
     if probe_task is not None:
         try:
-            _apply_stability(result, await probe_task)
+            probe_res = await probe_task
+        except Exception:
+            probe_res = None
+    # Print-registration (PRINT_REG=1): scout already has the identity — anchor the centering on the
+    # official render when the match passes the gate (applied to the probe too so Δ is like-for-like).
+    try:
+        import print_registration as _preg
+        if _preg.ENABLED:
+            _preg.apply_to_result(result, identity)
+            if probe_res is not None:
+                _preg.apply_to_result(probe_res, identity)
+    except Exception:
+        pass
+    if probe_res is not None:
+        try:
+            _apply_stability(result, probe_res)
         except Exception:
             pass
 
