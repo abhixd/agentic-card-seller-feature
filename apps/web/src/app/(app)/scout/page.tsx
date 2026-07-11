@@ -495,7 +495,7 @@ function ScoutDetail({ row, onClose }: { row: Row; onClose: () => void }) {
           <PillarBar label="corners" p={p?.corners} onClick={hasVisual('corners') ? () => setOpenPillar('corners') : undefined} />
           <PillarBar label="edges" p={p?.edges} onClick={hasVisual('edges') ? () => setOpenPillar('edges') : undefined} />
           <PillarBar label="surface" p={p?.surface} onClick={hasVisual('surface') ? () => setOpenPillar('surface') : undefined} />
-          <PillarVisualDialog pillar={openPillar} visuals={pv} onClose={() => setOpenPillar(null)} />
+          <PillarVisualDialog pillar={openPillar} visuals={pv} centering={p?.centering} onClose={() => setOpenPillar(null)} />
           {pv && <p className="pt-0.5 text-[11px] text-white/30">tap a pillar to see what we measured</p>}
           {p?.centering && (p.centering.left_right || p.centering.top_bottom) && (
             <p className="pt-1 text-[11px] text-white/40">

@@ -7,7 +7,7 @@
  * Self-contained (no UI-lib dependency) — a fixed overlay + panel, closes on backdrop click or Escape.
  */
 import { useEffect } from 'react'
-import type { PillarVisuals } from '@/lib/grading/types'
+import type { CenteringResult, PillarVisuals } from '@/lib/grading/types'
 
 const TITLE: Record<string, string> = { centering: 'Centering', corners: 'Corners', edges: 'Edges', surface: 'Surface' }
 const HINT: Record<string, string> = {
@@ -17,13 +17,73 @@ const HINT: Record<string, string> = {
   surface: 'detected scratch segments',
 }
 
+function DetailRow({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="flex gap-3">
+      <span className="w-28 shrink-0 text-muted-foreground">{k}</span>
+      <span className="min-w-0">{v}</span>
+    </div>
+  )
+}
+
+/** Structurally tolerant view of the centering result — accepts both the grade page's CenteringResult and
+ *  the scout page's local Pillar shape (whose numeric fields allow null). */
+type CenteringDetails = {
+  left_right?: string | null
+  top_bottom?: string | null
+  confidence?: number | null
+  _source?: string | null
+  stability?: CenteringResult['stability']
+  registration?: CenteringResult['registration']
+}
+
+/** Collapsible deep-dive: how the centering read was made (method, anchor quality, stability probe).
+ *  Collapsed by default so the main flow (the overlay image) stays uncluttered. */
+function ScanDetails({ cen }: { cen: CenteringDetails }) {
+  const reg = cen.registration
+  const st = cen.stability
+  const anchored = cen._source === 'print_reg' && reg?.accepted
+  const method = anchored
+    ? `⚓ Print-anchored — registered against the official card render${reg?.ref_id ? ` (${reg.ref_id})` : ''}`
+    : `Edge detection (per-side detector)${reg && !reg.accepted && reg.reason ? ` — print-anchor unavailable: ${reg.reason}` : ''}`
+  return (
+    <details className="mt-3 rounded-md border">
+      <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-muted-foreground hover:bg-muted/50">
+        Scan details
+      </summary>
+      <div className="space-y-1.5 border-t px-3 py-2.5 text-xs">
+        <DetailRow k="Read method" v={method} />
+        {anchored && (
+          <DetailRow k="Anchor quality"
+            v={`${reg?.inliers ?? '—'} anchor points · ${reg?.resid_px ?? '—'}px residual · scale ${reg?.scale ?? '—'}`} />
+        )}
+        {st && (st.delta_pts != null ? (
+          <DetailRow k="Stability probe"
+            v={`Δ ${st.delta_pts} pts — a re-encoded copy read ${st.probe_left_right ?? '—'} · ${st.probe_top_bottom ?? '—'}${st.note ? ` (${st.note})` : ''}`} />
+        ) : (
+          <DetailRow k="Stability probe" v={st.error ?? st.note ?? 'not available'} />
+        ))}
+        {cen.confidence != null && (
+          <DetailRow k="Confidence" v={`${Math.round(cen.confidence * 100)}% — the weakest of the signals above gates the badge`} />
+        )}
+        {(cen.left_right || cen.top_bottom) && (
+          <DetailRow k="Read" v={`${cen.left_right ?? '—'} L/R · ${cen.top_bottom ?? '—'} T/B`} />
+        )}
+      </div>
+    </details>
+  )
+}
+
 export function PillarVisualDialog({
   pillar,
   visuals,
+  centering,
   onClose,
 }: {
   pillar: string | null
   visuals?: PillarVisuals | null
+  /** optional: the centering result — when given, the centering popup gains a "Scan details" section */
+  centering?: CenteringDetails | null
   onClose: () => void
 }) {
   useEffect(() => {
@@ -64,6 +124,7 @@ export function PillarVisualDialog({
         ) : (
           <p className="py-8 text-center text-xs text-muted-foreground">No visual available for this read.</p>
         )}
+        {pillar === 'centering' && centering && <ScanDetails cen={centering} />}
       </div>
     </div>
   )

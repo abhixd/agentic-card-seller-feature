@@ -302,7 +302,7 @@ export function GradeResultCompact({
         </div>
       </div>
 
-      <PillarVisualDialog pillar={openPillar} visuals={result.pillar_visuals} onClose={() => setOpenPillar(null)} />
+      <PillarVisualDialog pillar={openPillar} visuals={result.pillar_visuals} centering={result.centering} onClose={() => setOpenPillar(null)} />
       <CardProfileModal profile={showProfile ? profile ?? null : null} onClose={() => setShowProfile(false)} />
       <DefectZoomGallery zooms={showZooms ? result.pillar_zooms ?? null : null} onClose={() => setShowZooms(false)} />
     </div>
