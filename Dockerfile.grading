@@ -40,6 +40,7 @@ COPY services/grading-api/main.py services/grading-api/inference.py services/gra
      services/grading-api/inner_boundary_correct.py \
      services/grading-api/remote_detect.py services/grading-api/remote_grade.py services/grading-api/quad_refine.py \
      services/grading-api/rect_check.py services/grading-api/rect_correct.py \
+     services/grading-api/print_registration.py \
      services/grading-api/grade_model.json services/grading-api/feedback_to_yolo.py ./
 
 # per-side selector model + bundled base training set (for /admin/train server-side retrain)
