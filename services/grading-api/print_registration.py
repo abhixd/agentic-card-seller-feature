@@ -542,6 +542,31 @@ def _filter_surface_boxes(result, cen, card_full, filter_ctx):
                                              "threshold": SCRATCH_NOVEL_THR}
 
 
+def _redraw_centering_viz(result, cen):
+    """The 'what we measured' popup shows a SERVER-BAKED overlay (pillar_visuals.centering) rendered by
+    the grader BEFORE registration runs — after an anchored/rescued read replaces the selector's, that
+    image still shows the OLD boundaries. Redraw it from the current _card_boundary + content_region
+    (same colors/format as cv_grader._viz_centering) so the picture matches the numbers."""
+    import base64
+    pv = result.get("pillar_visuals")
+    wj = result.get("_warped_jpeg_b64")
+    if not isinstance(pv, dict) or not wj:
+        return
+    im = cv2.imdecode(np.frombuffer(base64.b64decode(wj), np.uint8), cv2.IMREAD_COLOR)
+    if im is None:
+        return
+    H, W = im.shape[:2]
+    cb = result.get("_card_boundary") or [0.0, 0.0, 1.0, 1.0]
+    cv2.rectangle(im, (int(cb[0] * W), int(cb[1] * H)), (int(cb[2] * W), int(cb[3] * H)), (0, 255, 0), 2)
+    cr = cen.get("content_region")
+    if cr:
+        cv2.rectangle(im, (int(cr["x1"] * W), int(cr["y1"] * H)),
+                      (int(cr["x2"] * W), int(cr["y2"] * H)), (0, 200, 255), 2)
+    ok, buf = cv2.imencode(".jpg", im, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+    if ok:
+        pv["centering"] = base64.b64encode(buf.tobytes()).decode()
+
+
 # ── result integration ──────────────────────────────────────────────────────────────────────────────
 def apply_to_result(result, identity):
     """Mutates result.centering in place when registration is accepted; always attaches
@@ -634,5 +659,9 @@ def apply_to_result(result, identity):
             import re
             result["summary"] = re.sub(r"Centering \d+/\d+ L/R · \d+/\d+ T/B",
                                        f"Centering {lr} L/R · {tb} T/B", result["summary"])
+        try:
+            _redraw_centering_viz(result, cen)                      # keep the baked popup in sync with the read
+        except Exception:
+            pass
     except Exception as e:                                          # never break a grade over registration
         cen["registration"] = {"accepted": False, "reason": f"{type(e).__name__}: {e}"}
