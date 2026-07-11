@@ -407,7 +407,8 @@ def _crop_display_to_card(result, cb):
                     bx["box"] = [round(_rx(v[0]), 5), round(_ry(v[1]), 5), round(v[2] / dx, 5), round(v[3] / dy, 5)]
 
 
-def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=False, cropped=False, **_ignore) -> dict:
+def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=False, cropped=False,
+                  contour_raw=None, **_ignore) -> dict:
     """Grade a card with the classical-CV pipeline. Same signature/return shape as
     grader.grade_card() (minus the api_key — no VLM call)."""
     if quad_padded is None and quad_raw is not None:
@@ -436,9 +437,15 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
             # just inside it — similar colour = SAM3 undershot into the card (no backdrop that side); different =
             # backdrop. Vote GLOBALLY (a single dark card edge, e.g. card_030's top, is outvoted): ≥2 "no-backdrop"
             # sides ⇒ tight crop ⇒ [0,0,1,1]; else trust the SAM3 contour bbox. (cb_feat untouched → grades unmoved.)
-            cwp = np.asarray(cw, np.float32).reshape(-1, 2)
-            Lm, Tm = float(cwp[:, 0].min()), float(cwp[:, 1].min())
-            Rm, Bm = float(1 - cwp[:, 0].max()), float(1 - cwp[:, 1].max())
+            # Margins come from the RAW (unsmoothed) contour: Gaussian smoothing pulls the extremes INWARD —
+            # ~0.5% typically but 1.5%+ where the edge is ragged (card_004's yellow-on-gray right side) — and
+            # since the display warp is cropped to cb_center, that shave visibly removed the card border.
+            # Robust p0.5/99.5 bbox = the die-cut without single-pixel spike inflation (raw minmax +0.2%).
+            craw = (grader._contour_to_warped_norm(contour_raw, quad_padded)
+                    if (contour_raw is not None and quad_padded is not None) else None)
+            cwp = np.asarray(craw if craw is not None else cw, np.float32).reshape(-1, 2)
+            Lm, Tm = float(np.percentile(cwp[:, 0], 0.5)), float(np.percentile(cwp[:, 1], 0.5))
+            Rm, Bm = float(1 - np.percentile(cwp[:, 0], 99.5)), float(1 - np.percentile(cwp[:, 1], 99.5))
             Hw, Ww = warped.shape[:2]
 
             def _margin_is_card(m, side):                                              # margin strip ≈ card border?

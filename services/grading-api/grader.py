@@ -1219,6 +1219,7 @@ def _detect_seg(img_bgr: np.ndarray, api_key: str = None):
         "_seg_conf": seg["conf"],
         "_seg_n_segments": seg["n_segments"],
         "_cropped": bool(seg.get("cropped", False)),
+        "_contour_raw": seg.get("contour_raw"),   # UNsmoothed outline — the true die-cut extremes (see cv_grader)
     }
 
 
@@ -1280,14 +1281,15 @@ def detect_and_grade(img_bgr: np.ndarray, api_key: str = None, zoom: bool = Fals
         except Exception as _e:                    # the correction must never break a grade
             print(f"[rect_correct on] skipped: {type(_e).__name__}: {_e}", flush=True)
 
+    contour_raw = meta.pop("_contour_raw", None)   # numpy array — must not leak into the JSON result via meta
     # Grading backend: "cv" (classical-CV XGBoost, default) | "vlm" (Claude Sonnet, legacy backup).
     if os.environ.get("GRADER_BACKEND", "cv").lower() == "vlm":
         result = grade_card(img_bgr, quad_raw=quad_raw, quad_padded=quad_padded,
                             use_multicrop=True, api_key=api_key, contour=contour)
     else:
         import cv_grader   # lazy (cv_grader imports grader); CV is the default backend
-        result = cv_grader.grade_card_cv(img_bgr, quad_raw=quad_raw,
-                                         quad_padded=quad_padded, contour=contour, zoom=zoom, cropped=cropped)
+        result = cv_grader.grade_card_cv(img_bgr, quad_raw=quad_raw, quad_padded=quad_padded, contour=contour,
+                                         zoom=zoom, cropped=cropped, contour_raw=contour_raw)
     result.update(meta)
     result["_quad_raw"]    = quad_raw.tolist()
     result["_quad_padded"] = quad_padded.tolist()
