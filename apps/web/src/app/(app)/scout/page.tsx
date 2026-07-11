@@ -16,6 +16,23 @@ type Grade = {
 type Pillar = {
   score?: number; left_right?: string; top_bottom?: string; notes?: string; worst_severity?: string
   content_region?: { x1: number; y1: number; x2: number; y2: number }
+  /** centering only: 0..1 numeric read confidence from the grader (faint-edge / sleeve aware) */
+  confidence?: number | null
+}
+
+/** Same thresholds as the grade page's CenteringPanel so the two surfaces can't disagree. */
+function ConfidenceBadge({ conf }: { conf?: number | null }) {
+  if (conf == null) return <span className="text-white/25">—</span>
+  const cls =
+    conf >= 0.85 ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
+    : conf >= 0.6 ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
+    : 'border-red-500/40 bg-red-500/10 text-red-400'
+  return (
+    <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium tabular-nums ${cls}`}
+          title="centering read confidence — low means verify the borders before trusting the centering">
+      {Math.round(conf * 100)}%
+    </span>
+  )
 }
 type Pillars = { centering?: Pillar; corners?: Pillar; edges?: Pillar; surface?: Pillar }
 type Economics = {
@@ -228,6 +245,7 @@ export default function ScoutPage() {
                 <th className="px-3 py-2 text-left font-normal">Card</th>
                 <th className="px-3 py-2 text-left font-normal">Identity</th>
                 <th className="px-3 py-2 text-center font-normal">Grade</th>
+                <th className="px-3 py-2 text-center font-normal">Confidence</th>
                 <th className="px-3 py-2 text-right font-normal">Max bid</th>
                 <th className="px-3 py-2 text-right font-normal">EV</th>
                 <th className="px-3 py-2 text-center font-normal">Verdict</th>
@@ -283,6 +301,9 @@ export default function ScoutPage() {
                           </div>
                         </div>
                       ) : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      {res ? <ConfidenceBadge conf={res.pillars?.centering?.confidence} /> : '—'}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums" title={est ? 'estimated from raw price' : undefined}>
                       {comps ? `${tilde}${money(econ?.max_buy_price_for_psa9_target) ?? '—'}`

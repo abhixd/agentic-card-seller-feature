@@ -481,7 +481,8 @@ async def scout_card(
     compute_economics() as /grade and degrade to NO DATA when comps are unavailable."""
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
     try:
-        img_bgr = _decode(await image.read())
+        raw_front = await image.read()
+        img_bgr = _decode(raw_front)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Image decode error: {e}")
 
@@ -496,16 +497,30 @@ async def scout_card(
             identity = {"title": "", "error": f"{type(e).__name__}: {e}"}
     use_title = (identity.get("title") or title or "").strip()
 
-    # ── grade (reuses the production grader) ──
-    grader = _get_grader()
+    # ── grade — the SAME path as /grade (_grade_one → Modal when GRADE_BACKEND=modal, original bytes
+    # forwarded) plus the stability probe, so a card scores and reports confidence IDENTICALLY whether it
+    # comes through Scout batch or the grade page. (Previously scout graded locally on Railway with a
+    # different seg backend → grades/confidence could disagree with /grade for the same image.) Scout IS
+    # the batch-triage flow, so the test–retest probe is always on here.
     aggregator, grade_comps = _get_grade_mods()
+    probe_task = None
     try:
-        result = await loop.run_in_executor(None, grader.detect_and_grade, img_bgr, api_key)
+        probe_img, probe_bytes = _stability_probe_bytes(img_bgr)
+        probe_task = loop.run_in_executor(None, _grade_one, probe_img, api_key, False, probe_bytes, None)
+    except Exception:
+        probe_task = None
+    try:
+        result = await loop.run_in_executor(None, _grade_one, img_bgr, api_key, False, raw_front, None)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Grading error: {type(e).__name__}: {e}")
+    if probe_task is not None:
+        try:
+            _apply_stability(result, await probe_task)
+        except Exception:
+            pass
 
     overall = result.get("overall_score") or 0
     confidence = result.get("_confidence") or ("low" if result.get("_truncated") else "high")
