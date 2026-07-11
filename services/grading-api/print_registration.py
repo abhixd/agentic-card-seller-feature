@@ -84,15 +84,18 @@ def _candidate_ids(identity):
     errored = [0]
 
     def q(query):
-        try:
-            r = _rq.get("https://api.pokemontcg.io/v2/cards",
-                        params={"q": query, "pageSize": 30, "orderBy": "-set.releaseDate",
-                                "select": "id,name,number,set"},
-                        headers=headers, timeout=10.0)
-            return (r.json() or {}).get("data") or []
-        except Exception:
-            errored[0] += 1
-            return []
+        for attempt in (0, 1):                                       # one retry — the API blips regularly
+            try:
+                r = _rq.get("https://api.pokemontcg.io/v2/cards",
+                            params={"q": query, "pageSize": 30, "orderBy": "-set.releaseDate",
+                                    "select": "id,name,number,set,images"},
+                            headers=headers, timeout=10.0)
+                return (r.json() or {}).get("data") or []
+            except Exception:
+                if attempt == 0:
+                    import time as _t; _t.sleep(1.0)
+        errored[0] += 1
+        return []
 
     cards = q(f'name:"{name}" number:"{num}"') if num else []
     if not cards and num and " " in name:                            # "Charizard GX" → "Charizard"
@@ -127,24 +130,39 @@ def _candidate_ids(identity):
         cid = c.get("id")
         if cid and "-" in cid and cid not in seen:
             out.append(cid); seen.add(cid)
+            url = ((c.get("images") or {}).get("large")) or ((c.get("images") or {}).get("small"))
+            if url:                                              # the API's own URL beats the constructed
+                _IMG_URLS[cid] = url                             # {set}/{num}_hires.png (404s on some sets)
         if len(out) >= _CAND_K:
             break
     return out
 
 
+_IMG_URLS: dict = {}                                                # cid → the API's own images.large URL
+
+
 def _fetch_render(cid):
-    """Official hires render for a pokemontcg id, disk-cached. (None, reason) on failure."""
+    """Official render for a pokemontcg id, disk-cached. Prefers the API's own images URL (the constructed
+    {set}/{num}_hires.png 404s on some sets); falls back to the hires pattern. (None, reason) on failure."""
     set_id, num = cid.rsplit("-", 1)
     fp = os.path.join(_CACHE, f"{set_id}_{num}.png")
     try:
         if not os.path.exists(fp):
             import requests as _rq
-            r = _rq.get(f"https://images.pokemontcg.io/{set_id}/{num}_hires.png",
-                        timeout=30, headers={"User-Agent": "card-grader/1.0"})
-            if r.status_code != 200 or len(r.content) < 10_000:
-                return None, f"render http {r.status_code}"
-            with open(fp, "wb") as f:
-                f.write(r.content)
+            urls = []
+            if _IMG_URLS.get(cid):
+                urls.append(_IMG_URLS[cid])
+            urls.append(f"https://images.pokemontcg.io/{set_id}/{num}_hires.png")
+            last = None
+            for url in urls:
+                r = _rq.get(url, timeout=30, headers={"User-Agent": "card-grader/1.0"})
+                last = r.status_code
+                if r.status_code == 200 and len(r.content) >= 10_000:
+                    with open(fp, "wb") as f:
+                        f.write(r.content)
+                    break
+            else:
+                return None, f"render http {last}"
         ref = cv2.imread(fp)
         return (ref, cid) if ref is not None else (None, "render decode")
     except Exception as e:
@@ -361,7 +379,13 @@ def apply_to_result(result, identity):
                 tried.append(f"{cid}:{ferr}")
                 continue
             m = register(card, ref)
-            tried.append(f"{cid}:{'ok' if m.get('accepted') else m.get('reason', 'rej')}")
+            if m.get("accepted"):
+                tried.append(f"{cid}:ok")
+            elif m.get("inliers") is not None:                       # a fit existed — say which gate failed
+                tried.append(f"{cid}:{m.get('reason', 'rej')}(inl={m.get('inliers')} "
+                             f"res={m.get('resid_px')} sc={m.get('scale')})")
+            else:
+                tried.append(f"{cid}:{m.get('reason', 'rej')}")
             if m.get("accepted"):
                 meta = m
                 meta["ref_id"] = cid

@@ -681,6 +681,9 @@ function renderPSAResult(r, listing) {
     } else {
       row("Read method", "edge detection (per-side)"
         + (reg && !reg.accepted && reg.reason ? ` — print-anchor unavailable: ${reg.reason}` : ""));
+      if (reg && Array.isArray(reg.tried) && reg.tried.length) {
+        row("Anchor attempts", reg.tried.join(" · "));
+      }
     }
     const st = cen.stability;
     if (st) {
