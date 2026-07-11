@@ -310,8 +310,10 @@ def register(card_bgr, ref_bgr, gates=None):
         return {"accepted": False, "reason": "too few matches", "matches": len(good)}
     src = np.float32([kc[m.queryIdx].pt for m in good])
     dst = np.float32([kr[m.trainIdx].pt for m in good])
-    M, inl = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC,
-                                         ransacReprojThreshold=3.0, maxIters=5000)
+    cv2.setRNGSeed(1234567)                                          # RANSAC is stochastic — borderline fits
+    M, inl = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC,  # (cased cards ~47 inl) flapped between
+                                         ransacReprojThreshold=3.0,    # rescue-eligible and not across runs.
+                                         maxIters=10000)               # Seed + more iters = deterministic.
     if M is None or inl is None or int(inl.sum()) < 20:
         return {"accepted": False, "reason": "ransac failed", "matches": len(good)}
     keep = inl.ravel() == 1
@@ -385,7 +387,8 @@ def _fit_loose(card_bgr, ref_bgr):
         return None
     src = np.float32([kc[m.queryIdx].pt for m in good])
     dst = np.float32([kr[m.trainIdx].pt for m in good])
-    M, inl = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=3.0, maxIters=5000)
+    cv2.setRNGSeed(1234567)
+    M, inl = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=3.0, maxIters=10000)
     if M is None or inl is None or int(inl.sum()) < 20:
         return None
     return card, ref, M
