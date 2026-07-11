@@ -32,6 +32,10 @@ MAX_SCALE_DEV = float(os.environ.get("PRINT_REG_MAX_SCALE_DEV", "0.01"))   # rea
 # crop bias → reject and let the selector read stand. (Scale-off cards are exactly the future outer-anchor
 # corrector's population — rescue-not-reject is the upgrade path if they prove common.)
 MIN_YEAR      = int(os.environ.get("PRINT_REG_MIN_YEAR", "2011"))   # older renders are SCANS of physical copies
+# Render-verified scratch filter: a scratch is a deviation FROM THE PRINT, and the registered render IS the
+# print — so a detected "scratch" whose line exists in the render is printed content (art/text), not damage.
+SCRATCH_FILTER = os.environ.get("PRINT_REG_SCRATCH_FILTER", "").strip().lower() in ("1", "true", "yes", "on")
+SCRATCH_NOVEL_THR = float(os.environ.get("PRINT_REG_SCRATCH_THR", "0.30"))
 NOMINAL_INSET = 0.034            # per_side_selector.CENTER — the expected print-frame inset on a modern card
 _CACHE = os.path.join(tempfile.gettempdir(), "print_reg_refs")
 os.makedirs(_CACHE, exist_ok=True)
@@ -263,7 +267,65 @@ def register(card_bgr, ref_bgr):
     meta["content_region"] = {k: round(v, 4) for k, v in cr.items()}
     meta["lr"] = f"{round(L / (L + R) * 100)}/{round(R / (L + R) * 100)}"
     meta["tb"] = f"{round(T / (T + B) * 100)}/{round(B / (T + B) * 100)}"
-    return meta
+    meta["_filter_ctx"] = (card, ref, M)                            # working-scale images + fit, for the
+    return meta                                                     # scratch filter; popped before serializing
+
+
+# ── render-verified scratch filter ──────────────────────────────────────────────────────────────────
+def _novel_line_score(card_w, ref_dil, box_px):
+    """Does the box contain a coherent LINE absent from the render? Largest connected novel-edge
+    component's extent / box diagonal, chance-corrected by the render's local edge coverage (in busy art
+    the dilated render edges blanket most of a patch, which would otherwise eat a real scratch).
+    Validated: content-line FPs ≤0.24, real/synthetic scratches ≥0.32 (scratch_filter_proto)."""
+    x1, y1, x2, y2 = [int(v) for v in box_px]
+    x1, y1 = max(x1, 0), max(y1, 0)
+    x2, y2 = min(x2, card_w.shape[1]), min(y2, card_w.shape[0])
+    if x2 - x1 < 4 or y2 - y1 < 4:
+        return None
+    ours = cv2.Canny(cv2.cvtColor(card_w[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY), 60, 140)
+    if int((ours > 0).sum()) < 20:
+        return None                                                 # too little structure to judge
+    ref_e = ref_dil[y1:y2, x1:x2]
+    coverage = float((ref_e > 0).mean())
+    novel = cv2.dilate(((ours > 0) & (ref_e == 0)).astype(np.uint8), np.ones((3, 3), np.uint8))
+    ncomp, _, stats, _ = cv2.connectedComponentsWithStats(novel, 8)
+    if ncomp <= 1:
+        return 0.0
+    diags = [np.hypot(stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]) for i in range(1, ncomp)]
+    raw = float(max(diags) / max(np.hypot(x2 - x1, y2 - y1), 1.0))
+    return min(raw / max(1.0 - coverage, 0.15), 1.5)
+
+
+def _filter_surface_boxes(result, cen, card_full, filter_ctx):
+    """Suppress RF-DETR surface boxes whose 'scratch' line exists in the registered render (printed content,
+    not damage). Suppress-only; kept boxes gain render_novel for observability. Non-fatal."""
+    boxes = (result.get("defect_boxes") or {}).get("surface")
+    if not boxes:
+        return
+    card_w, ref_w, M = filter_ctx
+    Minv = cv2.invertAffineTransform(M)
+    ref_on = cv2.warpAffine(ref_w, Minv, (card_w.shape[1], card_w.shape[0]))
+    ref_dil = cv2.dilate(cv2.Canny(cv2.cvtColor(ref_on, cv2.COLOR_BGR2GRAY), 40, 120),
+                         np.ones((3, 3), np.uint8))
+    H, W = card_full.shape[:2]
+    sc = card_w.shape[0] / H
+    kept, suppressed = [], 0
+    for b in boxes:
+        try:
+            x, y, w, h = b["box"]
+            score = _novel_line_score(card_w, ref_dil,
+                                      (x * W * sc, y * H * sc, (x + w) * W * sc, (y + h) * H * sc))
+        except Exception:
+            score = None
+        if score is not None and score < SCRATCH_NOVEL_THR:
+            suppressed += 1                                          # the line exists in the print → content
+            continue
+        if score is not None:
+            b = dict(b); b["render_novel"] = round(score, 2)
+        kept.append(b)
+    result["defect_boxes"]["surface"] = kept
+    cen["registration"]["scratch_filter"] = {"checked": len(boxes), "suppressed": suppressed,
+                                             "threshold": SCRATCH_NOVEL_THR}
 
 
 # ── result integration ──────────────────────────────────────────────────────────────────────────────
@@ -309,7 +371,13 @@ def apply_to_result(result, identity):
             cen["registration"] = {"accepted": False, "reason": "no candidate registered", "tried": tried}
             return
         meta["tried"] = tried
+        filter_ctx = meta.pop("_filter_ctx", None)                  # numpy arrays — never serialize
         cen["registration"] = {k: v for k, v in meta.items() if k != "content_region"}
+        if SCRATCH_FILTER and filter_ctx is not None:
+            try:
+                _filter_surface_boxes(result, cen, card, filter_ctx)
+            except Exception as e:                                   # filter is optional polish — never fatal
+                cen["registration"]["scratch_filter"] = {"error": type(e).__name__}
         # Accepted → the registered read replaces the selector's. Score ladder stays byte-compatible.
         from cv_grader import _centering_score
         lr, tb = meta["lr"], meta["tb"]
