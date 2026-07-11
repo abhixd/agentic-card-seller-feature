@@ -346,8 +346,11 @@ def _apply_stability(result: dict, probe: dict) -> None:
         cen["stability"] = {"delta_pts": None, "confidence": None, "error": "unreadable probe margins"}
         return
     d = max(abs(a[0] - b[0]), abs(a[1] - b[1]))
-    # ramp calibrated on the 109-card probe run: clean cards ≈1pt, flippers 3–29pt
-    sconf = 1.0 if d <= 1.5 else (0.2 if d >= 6.0 else round(1.0 - (d - 1.5) / 4.5 * 0.8, 3))
+    # Ramp calibrated on the 109-card probe run (clean ≈1pt, flippers 3–29pt), saturation re-tuned on user
+    # feedback: saturating at 6 lumped a GOOD detection with a ±3pt wobble (card_025, Δ6.8 — boundaries
+    # verified correct) together with catastrophic majority-side flippers (card_017 Δ29). Saturate at 15:
+    # Δ6.8→0.68 (medium badge), Δ3.3→0.89, Δ≥15 (true flippers 24–29) still floored at 0.2.
+    sconf = 1.0 if d <= 1.5 else (0.2 if d >= 15.0 else round(1.0 - (d - 1.5) / 13.5 * 0.8, 3))
     pc = probe.get("centering") or {}
     cen["stability"] = {"delta_pts": round(d, 2), "confidence": sconf,
                         "probe_left_right": pc.get("left_right"), "probe_top_bottom": pc.get("top_bottom")}
