@@ -111,6 +111,8 @@ def _local_cards(name, num):
         out = match(lambda r: r["n"].split()[0] == base and _num_parts(r["num"])[0] == num)
     if not out and nl:
         out = match(lambda r: r["n"] == nl or r["n"].startswith(nl + " "))
+    if not out and nl and len(nl) >= 4:                              # spelling-variant tail: substring match is
+        out = match(lambda r: nl in r["n"] or r["n"] in nl)          # safe — registration verifies every render
     return out
 
 
@@ -312,6 +314,14 @@ def register(card_bgr, ref_bgr):
             "scale": round(scale, 4)}
     meta["accepted"] = bool(meta["inliers"] >= MIN_INLIERS and resid <= MAX_RESID
                             and abs(scale - 1.0) <= MAX_SCALE_DEV)
+    # Secondary acceptance — sparse-texture cards (alt-arts, glare, sleeves) can produce few anchors whose
+    # geometry is nonetheless impeccable. Wrong cards never fit sub-pixel at unit scale (worst observed
+    # wrong-ish fit: res 1.16 @ scale dev 0.018 — rejected here by the dev gate), so tighter geometry may
+    # compensate for fewer points. Cases: sv10-31 inl=42 res=0.72 sc=0.9985; swsh5-177 55/1.22/1.0019 (still
+    # rejected — res above this bar, correctly conservative).
+    if not meta["accepted"] and meta["inliers"] >= 40 and resid <= 1.0 and abs(scale - 1.0) <= 0.005:
+        meta["accepted"] = True
+        meta["gate"] = "secondary (tight-geometry)"
     if not meta["accepted"]:
         meta["reason"] = "gate"
         return meta
