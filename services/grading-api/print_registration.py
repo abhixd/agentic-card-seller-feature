@@ -34,22 +34,36 @@ os.makedirs(_CACHE, exist_ok=True)
 
 
 # ── reference resolution: identity → pokemontcg id → official hires render ──────────────────────────
+_RESOLVE_MEMO: dict = {}                                            # (name,set,number,variant) → (fp|None, cid|reason)
+
+
 def resolve_reference(identity):
     """identity {name,set,number,variant} → (ref_bgr, ptcg_id) or (None, reason). Uses the price feed's
-    existing pokemontcg matcher so card resolution logic stays in ONE place."""
+    existing pokemontcg matcher so card resolution logic stays in ONE place. Memoized per identity — the
+    stability probe applies registration twice per grade, and batches repeat cards, so without the memo
+    every read pays the ~0.4-0.6s pokemontcg text query again."""
     if not identity or not identity.get("name"):
         return None, "no identity"
+    key = (identity.get("name"), identity.get("set"), identity.get("number"), identity.get("variant"))
+    if key in _RESOLVE_MEMO:
+        fp, tag = _RESOLVE_MEMO[key]
+        if fp is None:
+            return None, tag
+        ref = cv2.imread(fp)
+        return (ref, tag) if ref is not None else (None, "render decode")
     yr = identity.get("year")
     if isinstance(yr, (int, float)) and yr and yr < MIN_YEAR:       # vintage → render is a scan, not the print layer
+        _RESOLVE_MEMO[key] = (None, f"vintage ({int(yr)} < {MIN_YEAR})")
         return None, f"vintage ({int(yr)} < {MIN_YEAR})"
     try:
         import price_sources
         pc = price_sources.pokemontcg_lookup(identity["name"], identity.get("set"),
                                              identity.get("number"), identity.get("variant"))
     except Exception as e:
-        return None, f"lookup {type(e).__name__}"
+        return None, f"lookup {type(e).__name__}"                   # transient — not memoized
     cid = (pc or {}).get("id")
     if not cid or "-" not in cid:
+        _RESOLVE_MEMO[key] = (None, "no pokemontcg match")
         return None, "no pokemontcg match"
     set_id, num = cid.rsplit("-", 1)
     fp = os.path.join(_CACHE, f"{set_id}_{num}.png")
@@ -59,11 +73,14 @@ def resolve_reference(identity):
             url = f"https://images.pokemontcg.io/{set_id}/{num}_hires.png"
             r = requests.get(url, timeout=30, headers={"User-Agent": "card-grader/1.0"})
             if r.status_code != 200 or len(r.content) < 10_000:
-                return None, f"render http {r.status_code}"
+                return None, f"render http {r.status_code}"         # transient — not memoized
             with open(fp, "wb") as f:
                 f.write(r.content)
         ref = cv2.imread(fp)
-        return (ref, cid) if ref is not None else (None, "render decode")
+        if ref is None:
+            return None, "render decode"
+        _RESOLVE_MEMO[key] = (fp, cid)
+        return ref, cid
     except Exception as e:
         return None, f"render {type(e).__name__}"
 
