@@ -26,7 +26,11 @@ import cv2
 ENABLED       = os.environ.get("PRINT_REG", "").strip().lower() in ("1", "true", "yes", "on")
 MIN_INLIERS   = int(os.environ.get("PRINT_REG_MIN_INLIERS", "60"))
 MAX_RESID     = float(os.environ.get("PRINT_REG_MAX_RESID", "2.5"))
-MAX_SCALE_DEV = float(os.environ.get("PRINT_REG_MAX_SCALE_DEV", "0.03"))
+MAX_SCALE_DEV = float(os.environ.get("PRINT_REG_MAX_SCALE_DEV", "0.01"))   # read error tracks |scale-1|:
+# dev 0.005 → clean reads; dev 0.015 (mimikyu, warp crop ≠ die line) → TB off by 11pts. Both images are
+# cropped to the die line, so a real match MUST be ~unit scale; beyond 1% the mapped frame inherits the
+# crop bias → reject and let the selector read stand. (Scale-off cards are exactly the future outer-anchor
+# corrector's population — rescue-not-reject is the upgrade path if they prove common.)
 MIN_YEAR      = int(os.environ.get("PRINT_REG_MIN_YEAR", "2011"))   # older renders are SCANS of physical copies
 NOMINAL_INSET = 0.034            # per_side_selector.CENTER — the expected print-frame inset on a modern card
 _CACHE = os.path.join(tempfile.gettempdir(), "print_reg_refs")
@@ -34,55 +38,158 @@ os.makedirs(_CACHE, exist_ok=True)
 
 
 # ── reference resolution: identity → pokemontcg id → official hires render ──────────────────────────
-_RESOLVE_MEMO: dict = {}                                            # (name,set,number,variant) → (fp|None, cid|reason)
+_RESOLVE_MEMO: dict = {}       # identity key → ("neg", reason) | ("cands", [cid,...]) | ("winner", cid, [cid,...])
+_CAND_K = int(os.environ.get("PRINT_REG_CANDIDATES", "3"))          # try-and-verify: register up to K candidates
+
+# Vision-ID set phrasings → tokens dropped before matching pokemontcg set names. Registration itself is the
+# real verifier (a wrong candidate can't register), so matching here only needs to get the right card INTO
+# the top-K — not to be perfect.
+_FILLER_TOKENS = {"the", "a", "base", "set", "series", "expansion", "collection", "edition",
+                  "black", "star", "promo", "promos", "promotional", "holiday", "exclusive"}
 
 
-def resolve_reference(identity):
-    """identity {name,set,number,variant} → (ref_bgr, ptcg_id) or (None, reason). Uses the price feed's
-    existing pokemontcg matcher so card resolution logic stays in ONE place. Memoized per identity — the
-    stability probe applies registration twice per grade, and batches repeat cards, so without the memo
-    every read pays the ~0.4-0.6s pokemontcg text query again."""
-    if not identity or not identity.get("name"):
-        return None, "no identity"
-    key = (identity.get("name"), identity.get("set"), identity.get("number"), identity.get("variant"))
-    if key in _RESOLVE_MEMO:
-        fp, tag = _RESOLVE_MEMO[key]
-        if fp is None:
-            return None, tag
-        ref = cv2.imread(fp)
-        return (ref, tag) if ref is not None else (None, "render decode")
-    yr = identity.get("year")
-    if isinstance(yr, (int, float)) and yr and yr < MIN_YEAR:       # vintage → render is a scan, not the print layer
-        _RESOLVE_MEMO[key] = (None, f"vintage ({int(yr)} < {MIN_YEAR})")
-        return None, f"vintage ({int(yr)} < {MIN_YEAR})"
-    try:
-        import price_sources
-        pc = price_sources.pokemontcg_lookup(identity["name"], identity.get("set"),
-                                             identity.get("number"), identity.get("variant"))
-    except Exception as e:
-        return None, f"lookup {type(e).__name__}"                   # transient — not memoized
-    cid = (pc or {}).get("id")
-    if not cid or "-" not in cid:
-        _RESOLVE_MEMO[key] = (None, "no pokemontcg match")
-        return None, "no pokemontcg match"
+def _tokens(s):
+    import re, unicodedata
+    s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode()
+    return {t for t in re.split(r"[^a-z0-9]+", s.lower()) if t and t not in _FILLER_TOKENS}
+
+
+def _num_parts(number):
+    """'085/198' → ('85', 198); '25' → ('25', None). pokemontcg stores numbers unpadded."""
+    import re
+    s = str(number or "")
+    m = re.search(r"(\d+)", s)
+    num = str(int(m.group(1))) if m else None
+    d = re.search(r"/\s*(\d+)", s)
+    return num, (int(d.group(1)) if d else None)
+
+
+def _candidate_ids(identity):
+    """Ranked pokemontcg candidate ids for an identity — top-K by a registration-oriented score:
+    the collector-number DENOMINATOR vs the set's printed size is the strongest cue (promos don't carry
+    '/198'), then set-name token overlap, then promo-affinity. Variant is deliberately NOT queried (it
+    over-filters; it exists for pricing). Returns [] when nothing plausible."""
+    import requests as _rq
+    name = identity.get("name") or ""
+    num, denom = _num_parts(identity.get("number"))
+    headers = {}
+    key = os.environ.get("POKEMONTCG_API_KEY")
+    if key:
+        headers["X-Api-Key"] = key
+
+    errored = [0]
+
+    def q(query):
+        try:
+            r = _rq.get("https://api.pokemontcg.io/v2/cards",
+                        params={"q": query, "pageSize": 30, "orderBy": "-set.releaseDate",
+                                "select": "id,name,number,set"},
+                        headers=headers, timeout=10.0)
+            return (r.json() or {}).get("data") or []
+        except Exception:
+            errored[0] += 1
+            return []
+
+    cards = q(f'name:"{name}" number:"{num}"') if num else []
+    if not cards and num and " " in name:                            # "Charizard GX" → "Charizard"
+        cards = q(f'name:"{name.split()[0]}" number:"{num}"')
+    if not cards:
+        cards = q(f'name:"{name}"')
+    if not cards:
+        return None if errored[0] else []                            # None = transient API failure, [] = true no-match
+    idt = _tokens(identity.get("set"))
+    id_is_promo = bool({"promo", "promos", "black"} & _tokens((identity.get("set") or "") + " " +
+                                                              (identity.get("variant") or "")) |
+                       ({"promo"} if "promo" in str(identity.get("set") or "").lower() else set()))
+
+    def score(c):
+        st = c.get("set") or {}
+        s = 0.0
+        if denom and denom in (st.get("printedTotal"), st.get("total")):
+            s += 4.0                                                 # '/198' ⇒ a 198-card set, not a promo
+        ct = _tokens(f"{st.get('name','')} {st.get('series','')} {st.get('id','')}")
+        if idt:
+            s += 3.0 * len(idt & ct) / len(idt)
+        cand_is_promo = "promo" in (st.get("name") or "").lower() or str(st.get("id", "")).endswith("p")
+        if id_is_promo == cand_is_promo:
+            s += 1.0
+        if num and _num_parts(c.get("number"))[0] == num:
+            s += 1.0
+        return s
+
+    ranked = sorted(cards, key=score, reverse=True)
+    out, seen = [], set()
+    for c in ranked:
+        cid = c.get("id")
+        if cid and "-" in cid and cid not in seen:
+            out.append(cid); seen.add(cid)
+        if len(out) >= _CAND_K:
+            break
+    return out
+
+
+def _fetch_render(cid):
+    """Official hires render for a pokemontcg id, disk-cached. (None, reason) on failure."""
     set_id, num = cid.rsplit("-", 1)
     fp = os.path.join(_CACHE, f"{set_id}_{num}.png")
     try:
         if not os.path.exists(fp):
-            import requests
-            url = f"https://images.pokemontcg.io/{set_id}/{num}_hires.png"
-            r = requests.get(url, timeout=30, headers={"User-Agent": "card-grader/1.0"})
+            import requests as _rq
+            r = _rq.get(f"https://images.pokemontcg.io/{set_id}/{num}_hires.png",
+                        timeout=30, headers={"User-Agent": "card-grader/1.0"})
             if r.status_code != 200 or len(r.content) < 10_000:
-                return None, f"render http {r.status_code}"         # transient — not memoized
+                return None, f"render http {r.status_code}"
             with open(fp, "wb") as f:
                 f.write(r.content)
         ref = cv2.imread(fp)
-        if ref is None:
-            return None, "render decode"
-        _RESOLVE_MEMO[key] = (fp, cid)
-        return ref, cid
+        return (ref, cid) if ref is not None else (None, "render decode")
     except Exception as e:
         return None, f"render {type(e).__name__}"
+
+
+def _identity_key(identity):
+    return (identity.get("name"), identity.get("set"), identity.get("number"), identity.get("variant"))
+
+
+def resolve_candidates(identity):
+    """identity → (candidate_ids, reason_if_empty). Memoized (winner-first after an acceptance)."""
+    if not identity or not identity.get("name"):
+        return [], "no identity"
+    key = _identity_key(identity)
+    memo = _RESOLVE_MEMO.get(key)
+    if memo:
+        if memo[0] == "neg":
+            return [], memo[1]
+        if memo[0] == "winner":                                      # winner first, then the other candidates
+            return [memo[1]] + [c for c in memo[2] if c != memo[1]], None
+        return memo[1], None
+    yr = identity.get("year")
+    if isinstance(yr, (int, float)) and yr and yr < MIN_YEAR:        # vintage → render is a scan, not the print
+        _RESOLVE_MEMO[key] = ("neg", f"vintage ({int(yr)} < {MIN_YEAR})")
+        return [], f"vintage ({int(yr)} < {MIN_YEAR})"
+    cands = _candidate_ids(identity)
+    if cands is None:                                                # transient API failure — NOT memoized
+        return [], "lookup unavailable"
+    if not cands:
+        _RESOLVE_MEMO[key] = ("neg", "no pokemontcg match")          # true no-match → memoized
+        return [], "no pokemontcg match"
+    _RESOLVE_MEMO[key] = ("cands", cands)
+    return cands, None
+
+
+def mark_winner(identity, cid):
+    key = _identity_key(identity)
+    memo = _RESOLVE_MEMO.get(key)
+    cands = memo[1] if memo and memo[0] == "cands" else (memo[2] if memo and memo[0] == "winner" else [cid])
+    _RESOLVE_MEMO[key] = ("winner", cid, cands)
+
+
+def resolve_reference(identity):
+    """Back-compat single-reference resolve (lab tools): first candidate's render."""
+    cands, why = resolve_candidates(identity)
+    if not cands:
+        return None, why
+    return _fetch_render(cands[0])
 
 
 # ── registration (lab-validated; ref_centering.py) ─────────────────────────────────────────────────
@@ -174,19 +281,35 @@ def apply_to_result(result, identity):
         if not wj:
             cen["registration"] = {"accepted": False, "reason": "no warp"}
             return
-        ref, why = resolve_reference(identity)
-        if ref is None:
+        cands, why = resolve_candidates(identity)
+        if not cands:
             cen["registration"] = {"accepted": False, "reason": why}
             return
         card = cv2.imdecode(np.frombuffer(base64.b64decode(wj), np.uint8), cv2.IMREAD_COLOR)
         if card is None:
             cen["registration"] = {"accepted": False, "reason": "warp decode"}
             return
-        meta = register(card, ref)
-        meta["ref_id"] = why                                        # the matched pokemontcg id
-        cen["registration"] = {k: v for k, v in meta.items() if k != "content_region"}
-        if not meta.get("accepted"):
+        # TRY-AND-VERIFY: text matching only needs to get the right card into the top-K — registration
+        # itself is the verifier (a wrong card's artwork cannot produce a dense unit-scale RANSAC fit;
+        # observed rejecting wrong Pokémon, wrong prints, even a card-back placeholder render).
+        meta, tried = None, []
+        for cid in cands:
+            ref, ferr = _fetch_render(cid)
+            if ref is None:
+                tried.append(f"{cid}:{ferr}")
+                continue
+            m = register(card, ref)
+            tried.append(f"{cid}:{'ok' if m.get('accepted') else m.get('reason', 'rej')}")
+            if m.get("accepted"):
+                meta = m
+                meta["ref_id"] = cid
+                mark_winner(identity, cid)
+                break
+        if meta is None:
+            cen["registration"] = {"accepted": False, "reason": "no candidate registered", "tried": tried}
             return
+        meta["tried"] = tried
+        cen["registration"] = {k: v for k, v in meta.items() if k != "content_region"}
         # Accepted → the registered read replaces the selector's. Score ladder stays byte-compatible.
         from cv_grader import _centering_score
         lr, tb = meta["lr"], meta["tb"]
