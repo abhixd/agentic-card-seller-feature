@@ -19,7 +19,7 @@ Tunables: PRINT_REG_MIN_INLIERS (60) · PRINT_REG_MAX_RESID (2.5 px) · PRINT_RE
 offset baked in), so vintage registration would measure our-copy-vs-their-copy. resolve gates on set release
 year when available; the acceptance gate is the backstop.
 """
-import os, tempfile
+import os, json, tempfile
 import numpy as np
 import cv2
 
@@ -68,11 +68,59 @@ def _num_parts(number):
     return num, (int(d.group(1)) if d else None)
 
 
+_INDEX: list = []
+
+
+def _load_index():
+    """The bundled offline catalog (ptcg_index.json.gz, built from the public pokemon-tcg-data dump).
+    Removes the runtime dependency on the rate-limited pokemontcg API for every card the dump knows;
+    the live API remains the fallback for sets newer than the bundle."""
+    if not _INDEX:
+        try:
+            import gzip
+            fp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptcg_index.json.gz")
+            with gzip.open(fp, "rt") as f:
+                _INDEX.extend(json.loads(f.read()))
+        except Exception:
+            _INDEX.append(None)                                      # sentinel: load failed → API-only
+    return [r for r in _INDEX if r]
+
+
+def _local_cards(name, num):
+    """Offline equivalent of the API queries: exact name + number → first-token + number → name-only.
+    Returns rows shaped like API card objects (for the shared score())."""
+    idx = _load_index()
+    if not idx:
+        return []
+    nl = (name or "").lower()
+
+    def to_card(r):
+        return {"id": r["id"], "name": r["n"], "number": r["num"],
+                "set": {"name": r["set"], "id": r["sid"], "series": r["ser"],
+                        "printedTotal": r["pt"], "total": r["tot"], "releaseDate": r["rd"]},
+                "images": {"large": r["img"]}}
+
+    def match(pred):
+        rows = [r for r in idx if pred(r)]
+        rows.sort(key=lambda r: r["rd"], reverse=True)               # newest sets first, like the API
+        return [to_card(r) for r in rows[:30]]
+
+    out = match(lambda r: r["n"] == nl and (not num or _num_parts(r["num"])[0] == num)) if nl else []
+    if not out and num and " " in nl:
+        base = nl.split()[0]
+        out = match(lambda r: r["n"].split()[0] == base and _num_parts(r["num"])[0] == num)
+    if not out and nl:
+        out = match(lambda r: r["n"] == nl or r["n"].startswith(nl + " "))
+    return out
+
+
 def _candidate_ids(identity):
     """Ranked pokemontcg candidate ids for an identity — top-K by a registration-oriented score:
     the collector-number DENOMINATOR vs the set's printed size is the strongest cue (promos don't carry
     '/198'), then set-name token overlap, then promo-affinity. Variant is deliberately NOT queried (it
-    over-filters; it exists for pricing). Returns [] when nothing plausible."""
+    over-filters; it exists for pricing). Resolution is OFFLINE-FIRST (bundled index); the live API runs
+    only when the bundle has no match (newer sets). Returns [] when nothing plausible, None on transient
+    API failure."""
     import requests as _rq
     name = identity.get("name") or ""
     num, denom = _num_parts(identity.get("number"))
@@ -97,11 +145,13 @@ def _candidate_ids(identity):
         errored[0] += 1
         return []
 
-    cards = q(f'name:"{name}" number:"{num}"') if num else []
-    if not cards and num and " " in name:                            # "Charizard GX" → "Charizard"
-        cards = q(f'name:"{name.split()[0]}" number:"{num}"')
+    cards = _local_cards(name, num)                                  # offline-first: no rate limits, ~1ms
     if not cards:
-        cards = q(f'name:"{name}"')
+        cards = q(f'name:"{name}" number:"{num}"') if num else []
+        if not cards and num and " " in name:                        # "Charizard GX" → "Charizard"
+            cards = q(f'name:"{name.split()[0]}" number:"{num}"')
+        if not cards:
+            cards = q(f'name:"{name}"')
     if not cards:
         return None if errored[0] else []                            # None = transient API failure, [] = true no-match
     idt = _tokens(identity.get("set"))
