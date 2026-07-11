@@ -302,6 +302,58 @@ def _decode(raw: bytes):
         raise ValueError("Unsupported image format")
     return img
 
+
+# ── Stability probe (?stability=1): test–retest confidence for batch grading ──────────────────────────
+# Grade the card a SECOND time on a label-preserving perturbation (resize 98% + JPEG q95 re-encode) and
+# measure how far the centering read moves. The pipeline is deterministic on identical bytes, so any move
+# is real sensitivity: Δ(margin shares) ≈ distance to the pipeline's decision boundary ≈ P(read error).
+# Validated on 109 cards (2026-07-10): catches confidently-WRONG cards the existing confidence misses
+# (card_017 sleeve: conf 0.944 but Δ=29pt — the majority side flips under a 2% resize; card_40 conf 0.976,
+# Δ=24pt) while stable cards sit at Δ≈1pt. COMPLEMENTARY to the existing confidence (which catches
+# stable-wrong cards like the sleeve-lip latch) → combine via MIN, never replace. Input-level perturbation
+# only — contour-level jitter false-fires by toggling the crop-bypass outer logic on tight crops.
+
+def _stability_probe_bytes(img_bgr):
+    """The perturbed input: 98% resize + JPEG q95. Label-preserving (margin SHARES are scale-invariant)."""
+    im2 = cv2.resize(img_bgr, None, fx=0.98, fy=0.98, interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", im2, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+    if not ok:
+        raise ValueError("probe encode failed")
+    return im2, buf.tobytes()
+
+
+def _margin_shares(result: dict):
+    """(L-share, T-share) in points from the content_region/_card_boundary FLOATS (the rounded '51/49'
+    strings carry ±1pt quantization noise — never diff those)."""
+    cb = result.get("_card_boundary")
+    cr = (result.get("centering") or {}).get("content_region")
+    if not cb or not cr:
+        return None
+    L = cr["x1"] - cb[0]; R = cb[2] - cr["x2"]; T = cr["y1"] - cb[1]; B = cb[3] - cr["y2"]
+    if min(L, R, T, B) <= 0 or (L + R) <= 0 or (T + B) <= 0:
+        return None
+    return (L / (L + R) * 100.0, T / (T + B) * 100.0)
+
+
+def _apply_stability(result: dict, probe: dict) -> None:
+    """Attach centering.stability {delta_pts, confidence, probe_*} and demote centering.confidence via MIN.
+    Non-fatal: if either read is unusable the block carries an error and confidence is left untouched."""
+    cen = result.get("centering")
+    if not isinstance(cen, dict):
+        return
+    a, b = _margin_shares(result), _margin_shares(probe)
+    if a is None or b is None:
+        cen["stability"] = {"delta_pts": None, "confidence": None, "error": "unreadable probe margins"}
+        return
+    d = max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+    # ramp calibrated on the 109-card probe run: clean cards ≈1pt, flippers 3–29pt
+    sconf = 1.0 if d <= 1.5 else (0.2 if d >= 6.0 else round(1.0 - (d - 1.5) / 4.5 * 0.8, 3))
+    pc = probe.get("centering") or {}
+    cen["stability"] = {"delta_pts": round(d, 2), "confidence": sconf,
+                        "probe_left_right": pc.get("left_right"), "probe_top_bottom": pc.get("top_bottom")}
+    old = cen.get("confidence")
+    cen["confidence"] = sconf if old is None else round(min(float(old), sconf), 3)
+
 FEEDBACK_DIR = _HERE / "feedback"
 
 
@@ -314,7 +366,8 @@ async def grade_card_endpoint(
     shipping: float = Form(0.0),
     contour:  str   = Form(""),   # optional JSON [[x,y],...] MANUAL card outline in source px → skip SAM3, grade on it
     zoom:     int   = 0,          # query param: ?zoom=1 → attach high-res per-defect close-ups (pillar_zooms)
-):
+    stability: int  = 0,          # query param: ?stability=1 → grade a 2nd, perturbed copy (resize98+jpeg95) and
+):                                #   report centering.stability {delta_pts, confidence}; confidence = MIN-combined.
     """
     Detailed PSA grading via YOLO OBB detection + Claude vision.
 
@@ -343,6 +396,16 @@ async def grade_card_endpoint(
 
     aggregator, grade_comps = _get_grade_mods()
     loop = asyncio.get_event_loop()
+    # Stability probe (skipped for manual-contour grades — the human already intervened, and the contour's
+    # source-pixel coordinates wouldn't survive the resize). Probe runs CONCURRENTLY with the baseline, so
+    # the added latency is ~0 on the modal path.
+    probe_task = None
+    if stability and not ct:
+        try:
+            probe_img, probe_bytes = _stability_probe_bytes(img_bgr)
+            probe_task = loop.run_in_executor(None, _grade_one, probe_img, api_key, False, probe_bytes, None)
+        except Exception:
+            probe_task = None
     try:
         result = await loop.run_in_executor(None, _grade_one, img_bgr, api_key, bool(zoom), raw_front, ct)
     except ValueError as e:
@@ -350,6 +413,14 @@ async def grade_card_endpoint(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Grading error: {type(e).__name__}: {e}")
+    if probe_task is not None:
+        try:
+            _apply_stability(result, await probe_task)
+        except Exception as e:                            # non-fatal by construction
+            cen = result.get("centering")
+            if isinstance(cen, dict):
+                cen["stability"] = {"delta_pts": None, "confidence": None,
+                                    "error": f"probe failed: {type(e).__name__}"}
 
     # ── Optional back side → combined (worst-side) grade ──
     overall_for_econ = result.get("overall_score") or 0

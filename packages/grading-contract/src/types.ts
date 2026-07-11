@@ -10,6 +10,23 @@ export interface ContentRegion {
   y2: number;
 }
 
+/**
+ * Test–retest stability probe (grade called with ?stability=1): the card is graded a second time on a
+ * label-preserving perturbation (98% resize + JPEG re-encode); delta_pts = the largest centering
+ * margin-share move in points. Stable reads ≈1pt; fragile reads (faint sleeve edges) flip 3–29pt while
+ * LOOKING confident. `confidence` (0..1 ramp of delta_pts) is already MIN-combined into
+ * Centering.confidence — use this block for display/triage detail.
+ */
+export interface Stability {
+  /** null when the probe read was unusable (see error) */
+  delta_pts?: number | null;
+  confidence?: number | null;
+  /** the perturbed read, for display/debugging */
+  probe_left_right?: string | null;
+  probe_top_bottom?: string | null;
+  error?: string | null;
+}
+
 export interface Centering {
   /** 1..10 display score */
   score: number;
@@ -23,6 +40,8 @@ export interface Centering {
   content_region?: ContentRegion | null;
   /** 0..1 read reliability (faint-edge / thin-border aware). null until the grading side fills it in. */
   confidence?: number | null;
+  /** present only when the grade was requested with ?stability=1 */
+  stability?: Stability | null;
   [internal: string]: unknown;
 }
 

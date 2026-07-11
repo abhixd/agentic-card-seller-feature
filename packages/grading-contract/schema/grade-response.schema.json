@@ -52,6 +52,17 @@
           ],
           "default": null,
           "title": "Confidence"
+        },
+        "stability": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Stability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -250,6 +261,73 @@
       ],
       "title": "Pillar",
       "type": "object"
+    },
+    "Stability": {
+      "description": "Test\u2013retest stability probe (?stability=1): the card is graded a second time on a label-preserving\nperturbation (98% resize + JPEG re-encode) and delta_pts is the largest centering margin-share move in\npoints. Stable reads sit at ~1pt; fragile reads (faint sleeve edges) flip by 3\u201329pt while LOOKING\nconfident. `confidence` is the 0..1 ramp of delta_pts, already MIN-combined into centering.confidence.",
+      "properties": {
+        "delta_pts": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delta Pts"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
+        "probe_left_right": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Probe Left Right"
+        },
+        "probe_top_bottom": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Probe Top Bottom"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        }
+      },
+      "title": "Stability",
+      "type": "object"
     }
   },
   "additionalProperties": true,
@@ -398,5 +476,5 @@
   "title": "GradeResponse",
   "type": "object",
   "$id": "https://acs/grading-contract/grade-response.schema.json",
-  "x-contract-version": "1.4.0"
+  "x-contract-version": "1.5.0"
 }

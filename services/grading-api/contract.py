@@ -17,7 +17,8 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = "1.4.0"   # 1.4.0: + optional `contour` grade input (manual 4-corner boundary → skips SAM3, additive)
+CONTRACT_VERSION = "1.5.0"   # 1.5.0: + optional ?stability=1 grade input → centering.stability block (additive)
+# 1.4.0: + optional `contour` grade input (manual 4-corner boundary → skips SAM3, additive)
 # 1.3.0: + defect_boxes (per-pillar defect outline rectangles, optional, additive)
 # 1.2.0: + pillar_zooms (high-res defect close-ups, optional, additive)
 
@@ -28,6 +29,18 @@ class ContentRegion(BaseModel):
     y1: float
     x2: float
     y2: float
+
+
+class Stability(BaseModel):
+    """Test–retest stability probe (?stability=1): the card is graded a second time on a label-preserving
+    perturbation (98% resize + JPEG re-encode) and delta_pts is the largest centering margin-share move in
+    points. Stable reads sit at ~1pt; fragile reads (faint sleeve edges) flip by 3–29pt while LOOKING
+    confident. `confidence` is the 0..1 ramp of delta_pts, already MIN-combined into centering.confidence."""
+    delta_pts: Optional[float] = None                  # None when the probe read was unusable (see error)
+    confidence: Optional[float] = None
+    probe_left_right: Optional[str] = None             # the perturbed read, for display/debugging
+    probe_top_bottom: Optional[str] = None
+    error: Optional[str] = None
 
 
 class Centering(BaseModel):
@@ -41,6 +54,7 @@ class Centering(BaseModel):
     # NEW (fill-in pending on the grading side): 0..1 read reliability that accounts for faint card↔bg
     # contrast and thin borders — the product surfaces this as a centering confidence badge.
     confidence: Optional[float] = None
+    stability: Optional[Stability] = None              # present only when the grade was called ?stability=1
 
 
 class Pillar(BaseModel):
