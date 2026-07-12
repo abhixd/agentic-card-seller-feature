@@ -472,6 +472,11 @@ async def grade_card_endpoint(
                     if ident2.get("number") or (ident2.get("name") and ident2.get("name") != (ident or {}).get("name")):
                         ident = ident2
                         _preg.apply_to_result(result, ident)
+                        _r2 = (result.get("centering") or {}).get("registration")
+                        if isinstance(_r2, dict):                     # observability: how often the Opus
+                            _r2["identify_retry"] = _esc              # escalation fires + what it changed
+                        print(f"[identify-retry] escalated to {_esc}: "
+                              f"{(ident or {}).get('name')!r} {(ident or {}).get('number')!r}", flush=True)
                 except Exception:
                     pass
             # RE-WARP LOOP (PRINT_REG_REWARP=1): registration failed, but the homography diagnosis says the
