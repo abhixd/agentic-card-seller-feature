@@ -450,15 +450,19 @@ async def grade_card_endpoint(
             # registration read's test-retest (not selector-vs-registration disagreement).
             _preg.apply_to_result(result, ident)
             # The vision ID is nondeterministic: it occasionally returns a vague identity (name without a
-            # collector number) whose candidates are all the wrong art → nothing registers. When that exact
-            # signature occurs, retry the identify ONCE — a second read usually recovers the number.
+            # collector number, or a MISREAD number) whose candidates are all the wrong art → every render
+            # RANSAC-fails. When that signature occurs, retry the identify ONCE — a second read usually
+            # recovers the number. (A number that produced a real-but-gated fit means the identity was
+            # right — no retry then.)
             _reg = (result.get("centering") or {}).get("registration") or {}
-            if (not _reg.get("accepted") and _reg.get("reason") == "no candidate registered"
-                    and not (ident or {}).get("number")):
+            _all_ransac = bool(_reg.get("tried")) and all(
+                ("ransac failed" in t or "too few" in t or "http" in t) for t in (_reg.get("tried") or []))
+            if (not _reg.get("accepted") and str(_reg.get("reason", "")).startswith("no candidate")
+                    and (not (ident or {}).get("number") or _all_ransac)):
                 try:
                     import identify as _identify2
                     ident2 = await loop.run_in_executor(None, _identify2.identify_card, img_bgr, api_key)
-                    if ident2.get("number"):
+                    if ident2.get("number") or (ident2.get("name") and ident2.get("name") != (ident or {}).get("name")):
                         ident = ident2
                         _preg.apply_to_result(result, ident)
                 except Exception:

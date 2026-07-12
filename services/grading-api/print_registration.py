@@ -121,11 +121,15 @@ def _local_cards(name, num):
         rows.sort(key=lambda r: r["rd"], reverse=True)               # newest sets first, like the API
         return [to_card(r) for r in rows[:30]]
 
-    out = match(lambda r: r["n"] == nl and (not num or _num_parts(r["num"])[0] == num)) if nl else []
+    out = match(lambda r: r["n"] == nl and _num_parts(r["num"])[0] == num) if (nl and num) else []
     if not out and num and " " in nl:
         base = nl.split()[0]
         out = match(lambda r: r["n"].split()[0] == base and _num_parts(r["num"])[0] == num)
     if not out and nl:
+        # Name tier includes PREFIX matches from the start: a vision read of "Charizard" (number lost to
+        # case glare) must rank "Charizard ex"/"Charizard VMAX" prints too — exact-only returned 30 plain
+        # Charizards and starved try-and-verify of the true candidate. Registration verifies every render,
+        # so a wider pool costs attempts, never correctness.
         out = match(lambda r: r["n"] == nl or r["n"].startswith(nl + " "))
     if not out and nl and len(nl) >= 4:                              # spelling-variant tail: substring match is
         out = match(lambda r: nl in r["n"] or r["n"] in nl)          # safe — registration verifies every render
@@ -772,6 +776,13 @@ def apply_to_result(result, identity):
                 tried.append(f"{cid}:outer-rescued(sc→{meta.get('scale')})")
         if meta is None:
             cen["registration"] = {"accepted": False, "reason": "no candidate registered", "tried": tried}
+            if scale_rejects:
+                # The right card WAS found — its render fit densely but at non-unit scale, which is anchor
+                # evidence that the warp crop is card + case/sleeve ring — and the rescue couldn't verify a
+                # cut. The selector is therefore confidently measuring the RING: demote, don't trust.
+                cen["registration"]["reason"] = "scale-reject unrescued (crop larger than the card)"
+                cur = cen.get("confidence")
+                cen["confidence"] = round(min(cur if cur is not None else 1.0, 0.4), 3)
             return
         meta["tried"] = tried
         filter_ctx = meta.pop("_filter_ctx", None)                  # numpy arrays — never serialize
