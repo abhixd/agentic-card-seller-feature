@@ -1407,6 +1407,11 @@ def apply_to_result(result, identity):
                 else float(os.environ.get("PRINT_REG_BREG_CONF_LOW", "0.6"))
             reg_conf = min(reg_conf, cap)
         g_geom = ((result.get("_rect_check") or {}).get("g_geom"))
+        if meta.get("boundary_registered"):
+            # rect_check's inset invariant is tuned for SAM3 warps ([0.03,0.97] card edges) and mis-scores
+            # padded contour warps (audit: g_geom 0.1 on a support-confirmed re-warp). For crop-registered
+            # reads the geometry trust comes from the unit-scale re-verify + per-side support instead.
+            g_geom = None
         cen["confidence"] = round(min(reg_conf, g_geom) if g_geom is not None else reg_conf, 3)
         if isinstance(result.get("summary"), str) and "Centering" in result["summary"]:
             import re
