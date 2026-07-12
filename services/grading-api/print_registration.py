@@ -577,6 +577,34 @@ def diagnose_result(result, cid):
         return None
 
 
+def quad_boundary_in_warp(result, src_corners):
+    """Where the caller's SOURCE-coords quad sits inside the (padded) contour-path display warp, as a
+    normalized bbox — the _card_boundary for a re-warped grade, so registration can use the crop directly."""
+    try:
+        import base64
+        quad = result.get("_quad_padded")
+        wj = result.get("_warped_jpeg_b64")
+        if not quad or len(quad) != 4 or not wj:
+            return None
+        img = cv2.imdecode(np.frombuffer(base64.b64decode(wj), np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            return None
+        Hh, Ww = img.shape[:2]
+        Hq = cv2.getPerspectiveTransform(np.float32(quad), np.float32([[0, 0], [Ww, 0], [Ww, Hh], [0, Hh]]))
+        pts = np.float32([[x, y, 1.0] for x, y in src_corners]) @ Hq.T
+        if np.any(np.abs(pts[:, 2]) < 1e-6):
+            return None
+        pp = pts[:, :2] / pts[:, 2:3]
+        x1, y1 = float(pp[:, 0].min()), float(pp[:, 1].min())
+        x2, y2 = float(pp[:, 0].max()), float(pp[:, 1].max())
+        if x2 - x1 < 0.3 * Ww or y2 - y1 < 0.3 * Hh:
+            return None
+        return [round(max(x1, 0) / Ww, 4), round(max(y1, 0) / Hh, 4),
+                round(min(x2, Ww - 1) / Ww, 4), round(min(y2, Hh - 1) / Hh, 4)]
+    except Exception:
+        return None
+
+
 def map_warp_frac_to_source(result, corners_frac):
     """Corrected corners (warp-fraction coords) → SOURCE-photo pixels, through the inverse of the
     quad→rect perspective used to build the warp. Sanity: area within [0.7, 1.4]× the original quad,
@@ -1079,6 +1107,22 @@ def apply_to_result(result, identity):
         if card is None:
             cen["registration"] = {"accepted": False, "reason": "warp decode"}
             return
+        # DIRECT-CROP registration (the 2a refinement): when the result carries a meaningful
+        # _card_boundary (a re-warped grade — main.py marks the anchor-corrected quad inside the padded
+        # contour warp), register THAT crop instead of the padded frame. The old path bounced through the
+        # ring rescue (scale-reject at the pad → extrapolated cut → snaps), whose machinery misfired on
+        # some cards (audit: a false 7/93). The crop IS the claimed die-cut: registration accepts at unit
+        # scale directly, reads are crop margins, and confidence is support-gated below.
+        card_full, cb_off = card, None
+        cbb = result.get("_card_boundary") or [0, 0, 1, 1]
+        Hf, Wf = card.shape[:2]
+        if (result.get("_rewarped_boundary") and len(cbb) == 4
+                and (cbb[0] > 0.015 or cbb[1] > 0.015 or cbb[2] < 0.985 or cbb[3] < 0.985)):
+            bx1, by1 = int(round(cbb[0] * Wf)), int(round(cbb[1] * Hf))
+            bx2, by2 = int(round(cbb[2] * Wf)), int(round(cbb[3] * Hf))
+            if bx2 - bx1 > 200 and by2 - by1 > 200:
+                card = card[by1:by2, bx1:bx2]
+                cb_off = (bx1, by1, bx2, by2)
         cands, why = resolve_candidates(identity)
         vis_used = []
         vis_top_sim = None
@@ -1174,8 +1218,51 @@ def apply_to_result(result, identity):
             if extra2:
                 tried.append("(first-token retry)")
                 meta = _try_loop(extra2)
-        rescueable = [t for t in scale_rejects if t[3] >= _RESCUE_MIN_DEV]
+        rescueable = [] if cb_off is not None else [t for t in scale_rejects if t[3] >= _RESCUE_MIN_DEV]
         gray_diag = None
+        if meta is None and cb_off is not None and (scale_rejects or weak_fits):
+            # Crop-registered re-warp with residual ring slop: the anchors measured the per-side overhang
+            # exactly — adjust the boundary by it (≤3% moves, clipped) and re-register ONCE at FULL gates.
+            # Pure-anchor adjustment is safe at this magnitude: acceptance still requires unit scale, and
+            # the read's confidence is support-gated regardless.
+            try:
+                if scale_rejects:
+                    _, cidb, refb, _devb = max(scale_rejects)
+                else:
+                    _, cidb, refb = max(weak_fits)
+                lfb = _fit_loose(card, refb)
+                if lfb is not None:
+                    cwb, rwb, Mb = lfb
+                    Hwb = cwb.shape[0]
+                    RWb, RHb = rwb.shape[1], rwb.shape[0]
+                    Mi = cv2.invertAffineTransform(Mb)
+                    mcb = np.float32([[0, 0], [RWb, 0], [RWb, RHb], [0, RHb]]) @ Mi[:, :2].T + Mi[:, 2]
+                    sc_b = card.shape[0] / Hwb
+                    bx1o, by1o, bx2o, by2o = cb_off
+                    nb = (max(bx1o + float(mcb[:, 0].min()) * sc_b, 0),
+                          max(by1o + float(mcb[:, 1].min()) * sc_b, 0),
+                          min(bx1o + float(mcb[:, 0].max()) * sc_b, Wf - 1),
+                          min(by1o + float(mcb[:, 1].max()) * sc_b, Hf - 1))
+                    if (abs(nb[0] - bx1o) < 0.03 * Wf and abs(nb[1] - by1o) < 0.03 * Hf
+                            and abs(nb[2] - bx2o) < 0.03 * Wf and abs(nb[3] - by2o) < 0.03 * Hf
+                            and nb[2] - nb[0] > 200 and nb[3] - nb[1] > 200):
+                        crop2 = card_full[int(nb[1]):int(nb[3]), int(nb[0]):int(nb[2])]
+                        # Rescue-verify gates: identity is pre-established by the anchor loop and the
+                        # scale snapping to unit IS the verify (glare keeps SIFT sparse on some cards —
+                        # ex_1: 35 inliers at res 1.45 with a perfect sc 0.997). Support-gating caps conf.
+                        m2 = register(crop2, refb, gates=(30, MAX_RESID, 0.012))
+                        if m2.get("accepted"):
+                            meta = m2
+                            meta["ref_id"] = cidb
+                            meta["boundary_adjust"] = {"L": round(nb[0] - bx1o, 1), "T": round(nb[1] - by1o, 1),
+                                                       "R": round(nb[2] - bx2o, 1), "B": round(nb[3] - by2o, 1)}
+                            mark_winner(identity, cidb)
+                            tried.append(f"{cidb}:boundary-adjusted(sc→{m2.get('scale')})")
+                            cb_off = (int(nb[0]), int(nb[1]), int(nb[2]), int(nb[3]))
+                            result["_card_boundary"] = [round(cb_off[0] / Wf, 4), round(cb_off[1] / Hf, 4),
+                                                        round(cb_off[2] / Wf, 4), round(cb_off[3] / Hf, 4)]
+            except Exception:
+                pass
         if meta is None and OUTER_RESCUE and rescueable:
             # The fit is real and the warp crop is UNAMBIGUOUSLY larger than the card (a case/sleeve/
             # toploader ring) — try the outer-anchor rescue with the best-fitting candidate. Acceptance is
@@ -1188,7 +1275,7 @@ def apply_to_result(result, identity):
                 meta["ref_id"] = cid
                 mark_winner(identity, cid)
                 tried.append(f"{cid}:outer-rescued(sc→{meta.get('scale')})")
-        if meta is None and TIGHTEN and scale_rejects and not rescueable:
+        if meta is None and TIGHTEN and scale_rejects and not rescueable and cb_off is None:
             # GRAY ZONE (scale excess 1-3%): anchored tightening + crop + full-gate re-registration.
             _, cid, ref, _dev = max(scale_rejects)
             r, gray_diag = _gray_zone_recover(card, ref)
@@ -1215,7 +1302,7 @@ def apply_to_result(result, identity):
                                                  + (f"; {gray_diag}" if gray_diag else ""))
                 cur = cen.get("confidence")
                 cen["confidence"] = round(min(cur if cur is not None else 1.0, 0.4), 3)
-            if REWARP and weak_fits:
+            if REWARP and weak_fits and cb_off is None:
                 # PROPOSE a re-warp: a real artwork match exists but registration can't accept — check
                 # whether the WARP itself is the problem (homography exposes a locally-bad quad corner).
                 # main.py executes the proposal (one Modal contour re-grade, verify-or-discard).
@@ -1235,6 +1322,25 @@ def apply_to_result(result, identity):
             return
         meta["tried"] = tried
         filter_ctx = meta.pop("_filter_ctx", None)                  # numpy arrays — never serialize
+        if cb_off is not None:
+            # Crop-registered (re-warped) result: reads are already die-cut-relative (the crop IS the
+            # claimed cut). Map the frame back to FULL-warp coords for display, measure per-side support
+            # of the boundary lines (drives the confidence gate below), and skip the tightener + scratch
+            # filter (their ctx is crop-frame; defect boxes are warp-frame).
+            meta["boundary_registered"] = True
+            filter_ctx = None
+            bx1, by1, bx2, by2 = cb_off
+            cr = meta.get("content_region")
+            if cr:
+                meta["content_region"] = {
+                    "x1": round((bx1 + cr["x1"] * (bx2 - bx1)) / Wf, 4),
+                    "y1": round((by1 + cr["y1"] * (by2 - by1)) / Hf, 4),
+                    "x2": round((bx1 + cr["x2"] * (bx2 - bx1)) / Wf, 4),
+                    "y2": round((by1 + cr["y2"] * (by2 - by1)) / Hf, 4)}
+            try:
+                meta["cut_edge_support"] = _cut_edge_support(card_full, cb_off)
+            except Exception:
+                meta["cut_edge_support"] = None
         if TIGHTEN and not meta.get("outer_corrected") and filter_ctx is not None:
             try:
                 t = _tighten_outer(*filter_ctx)
@@ -1289,6 +1395,16 @@ def apply_to_result(result, identity):
             confirmable = sup_min >= float(os.environ.get("PRINT_REG_SUPPORT_THR", "0.4"))
             cap = float(os.environ.get("PRINT_REG_RESCUE_CONF", "0.7")) if confirmable \
                 else float(os.environ.get("PRINT_REG_RESCUE_CONF_LOW", "0.4"))
+            reg_conf = min(reg_conf, cap)
+        elif meta.get("boundary_registered"):
+            # Boundary came from a CONVERGED anchor loop + unit-scale re-registration — stronger than the
+            # rescue's raw extrapolation, so the tiers sit higher: all four boundary lines photometrically
+            # confirmed → near-full anchor confidence; any side unconfirmed → medium.
+            sup = meta.get("cut_edge_support") or {}
+            sup_min = min(sup.values()) if sup else 0.0
+            confirmable = sup_min >= float(os.environ.get("PRINT_REG_SUPPORT_THR", "0.4"))
+            cap = float(os.environ.get("PRINT_REG_BREG_CONF", "0.85")) if confirmable \
+                else float(os.environ.get("PRINT_REG_BREG_CONF_LOW", "0.6"))
             reg_conf = min(reg_conf, cap)
         g_geom = ((result.get("_rect_check") or {}).get("g_geom"))
         cen["confidence"] = round(min(reg_conf, g_geom) if g_geom is not None else reg_conf, 3)

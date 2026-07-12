@@ -517,6 +517,10 @@ async def grade_card_endpoint(
                             None, lambda: _rg.grade_contour(img_bgr, src_corners, bool(zoom), raw_bytes=raw_front))
                         if not isinstance(result2, dict) or result2.get("error"):
                             break
+                        _bb = _preg.quad_boundary_in_warp(result2, src_corners)
+                        if _bb:                                      # mark the corrected quad inside the padded
+                            result2["_card_boundary"] = _bb          # warp → registration uses the CROP directly
+                            result2["_rewarped_boundary"] = True     # (no ring-rescue detour)
                         _preg.apply_to_result(result2, ident)
                         reg2 = (result2.get("centering") or {}).get("registration") or {}
                         if not reg2.get("accepted"):
