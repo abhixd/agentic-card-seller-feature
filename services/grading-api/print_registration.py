@@ -842,11 +842,12 @@ def _rescue_outer(card_bgr, ref_bgr):
                                "y1": round(float(mapped_cr[:, 1].min()) / Hw, 4),
                                "x2": round(float(mapped_cr[:, 0].max()) / Ww, 4),
                                "y2": round(float(mapped_cr[:, 1].max()) / Hw, 4)}
-    # Photometric OUTWARD-ONLY snap: pokemontcg renders depict SIR/etched borders as a flat gray
-    # PLACEHOLDER whose width differs from the physical etch, so the extrapolated corners can land on the
-    # frame line instead of the die-cut (card_035 top: 25px inside). Where an actual coherent line exists
-    # outward of the extrapolation (the physical cut vs the case), snap to it; invisible sides keep the
-    # extrapolation (their low cut_edge_support keeps confidence honest).
+    # Photometric snap: pokemontcg renders depict SIR/etched borders as a flat gray PLACEHOLDER whose
+    # width differs from the physical etch, so the extrapolated corners inherit a per-side error in EITHER
+    # direction (card_035: top 30px inside, bottom ~right). Per side, search a band around the
+    # extrapolation in BOTH directions (frame line masked out) and snap to the STRONGEST coherent line;
+    # sides with no qualifying line keep the extrapolation, and their low cut_edge_support keeps
+    # confidence honest. NO cross-side mirroring — the errors are independent (user-falsified).
     try:
         gx2, gy2 = _grad_mags(card_w)
         cr2 = meta2["content_region"]
@@ -864,52 +865,33 @@ def _rescue_outer(card_bgr, ref_bgr):
             band = int(0.035 * (Hw if horiz else Ww))
             m_nom_s = m_ny if horiz else m_nx
             quals = []
-            for d in range(6, band + 1):
-                pp = box[side] - d if side in ("L", "T") else box[side] + d
+            for d in range(-band, band + 1):
+                pp = int(round(box[side] + d))
                 if not (2 <= pp < lim - 2):
-                    break
+                    continue
+                if abs(pp - fr_px[side]) <= 7:                       # never latch the print frame
+                    continue
+                marg = abs(pp - fr_px[side])                         # frame→cut must stay plausible
+                if not (0.35 * m_nom_s <= marg <= 1.9 * m_nom_s):
+                    continue
                 r_ = _line_prominence(mag, pp, lo2, hi2, horiz, Hw, Ww)
                 if r_ >= thr:
-                    quals.append((d, pp, r_))
+                    quals.append((pp, r_))
             if not quals:
                 continue
-            # outermost qualifying LINE: the contiguous run containing the largest d, at its prominence
-            # PEAK (the raw outermost pixel is the edge's outer shoulder — it overshoots the cut by a
-            # few px and can trip the margin cap).
+            # strongest coherent line = the contiguous run containing the global peak, at its peak
             quals.sort()
-            run = [quals[-1]]
-            for q in reversed(quals[:-1]):
-                if run[-1][0] - q[0] > 3:
-                    break
-                run.append(q)
-            best = max(run, key=lambda t: t[2])[1]
-            marg = abs(best - fr_px[side])                           # frame→cut must stay plausible
-            if not (0.35 * m_nom_s <= marg <= 1.9 * m_nom_s):
-                continue
-            snapped[side] = int(abs(best - box[side]))
-            box[side] = best
+            peak_p, peak_r = max(quals, key=lambda t: t[1])
+            if abs(peak_p - box[side]) <= 2:
+                continue                                             # already there
+            snapped[side] = int(peak_p - box[side])
+            box[side] = float(peak_p)
         if snapped:
-            # Per-axis MIRROR: the placeholder-border width error is symmetric (the render's gray band is
-            # uniform), so a snap on one side calibrates the whole axis. Mirror the shift to the opposite
-            # side unless that side has its own photometric line at its current position (evidence wins).
-            # Without this, a one-sided snap mixes corrected and biased margins (card_035: false 69/31).
-            mirrored = {}
-            for s1, s2 in (("T", "B"), ("B", "T"), ("L", "R"), ("R", "L")):
-                if s1 in snapped and s2 not in snapped and s2 not in mirrored:
-                    horiz2 = s2 in ("T", "B")
-                    mag2 = gy2 if horiz2 else gx2
-                    lo3, hi3 = (0, Ww) if horiz2 else (0, Hw)
-                    ratio = _line_prominence(mag2, int(round(box[s2])), lo3, hi3, horiz2, Hw, Ww)
-                    if (ratio - 1.0) / 0.8 < 0.5:
-                        box[s2] = box[s2] - snapped[s1] if s2 in ("L", "T") else box[s2] + snapped[s1]
-                        mirrored[s2] = snapped[s1]
-            if mirrored:
-                meta2["cut_mirror"] = mirrored
             meta2["cut_snap"] = snapped
             bx1, by1, bx2, by2 = box["L"], box["T"], box["R"], box["B"]
-            L, R = fr_px["L"] - bx1, bx2 - fr_px["R"]                # UNCLIPPED margins for the read
+            L, R = fr_px["L"] - bx1, bx2 - fr_px["R"]                # per-side best evidence for the read
             T, B = fr_px["T"] - by1, by2 - fr_px["B"]
-            if min(L, R, T, B) > 0:                                  # read from photometric cut evidence
+            if min(L, R, T, B) > 0:
                 meta2["lr"] = f"{round(L / (L + R) * 100)}/{round(R / (L + R) * 100)}"
                 meta2["tb"] = f"{round(T / (T + B) * 100)}/{round(B / (T + B) * 100)}"
     except Exception:
