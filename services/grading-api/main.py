@@ -350,9 +350,13 @@ def _apply_stability(result: dict, probe: dict) -> None:
     # measures METHOD disagreement, not test-retest fragility — report it but don't demote confidence.
     src_a = cen.get("_source"); src_b = (probe.get("centering") or {}).get("_source")
     d = max(abs(a[0] - b[0]), abs(a[1] - b[1]))
-    if src_a != src_b:
+    if src_a != src_b or bool(result.get("_rewarped")) != bool(probe.get("_rewarped")):
+        # Like-for-like also requires the same GEOMETRY pipeline: the probe never runs the re-warp loop
+        # (cost), so comparing a re-warped main against a first-warp probe measures the correction, not
+        # test-retest fragility — that was falsely demoting evidence-backed re-warped reads to ~0.1.
         cen["stability"] = {"delta_pts": round(d, 2), "confidence": None,
-                            "note": f"cross-method ({src_a} vs {src_b}) — delta not used for confidence"}
+                            "note": f"cross-method ({src_a}{'+rewarp' if result.get('_rewarped') else ''} "
+                                    f"vs {src_b}) — delta not used for confidence"}
         return
     # Ramp calibrated on the 109-card probe run (clean ≈1pt, flippers 3–29pt), saturation re-tuned on user
     # feedback: saturating at 6 lumped a GOOD detection with a ±3pt wobble (card_025, Δ6.8 — boundaries
