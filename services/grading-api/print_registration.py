@@ -1081,12 +1081,15 @@ def apply_to_result(result, identity):
             return
         cands, why = resolve_candidates(identity)
         vis_used = []
+        vis_top_sim = None
         try:
             import visual_id as _vid
             if _vid.ENABLED:
                 # Visual retrieval (RAG over renders) leads: image-native candidates, text as backup.
                 # Vintage renders are SCANS (their own print offset) — same gate as the text path.
                 for vcid, _sim in _vid.candidates(card):
+                    if vis_top_sim is None or _sim > vis_top_sim:
+                        vis_top_sim = _sim
                     url, rd = _catalog_meta(vcid)
                     if rd and rd[:4] and int(rd[:4]) < MIN_YEAR:
                         continue
@@ -1095,6 +1098,14 @@ def apply_to_result(result, identity):
                     vis_used.append(vcid)
         except Exception:
             vis_used = []
+        if vis_top_sim is not None and vis_top_sim < float(os.environ.get("PRINT_REG_VISUAL_MIN_SIM", "0.42")):
+            # The index is all catalog FRONTS: a card BACK (or non-card) sits far from everything (fronts
+            # embed ≥0.6 to their own render even under glare/case/sleeve). Registration is meaningless
+            # here — and crucially the wrong-artwork honesty cap must NOT fire (a back's selector read is
+            # legitimately reliable; the audit showed every back capped to 0.7 by a hallucinated identity).
+            cen["registration"] = {"accepted": False,
+                                   "reason": f"not in catalog (top artwork sim {vis_top_sim:.2f} — card back / non-card?)"}
+            return
         if vis_used:
             cands = list(dict.fromkeys(vis_used + (cands or [])))
         if not cands:

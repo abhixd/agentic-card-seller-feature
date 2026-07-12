@@ -496,9 +496,14 @@ async def grade_card_endpoint(
                     try:
                         _reg = (result.get("centering") or {}).get("registration") or {}
                         _rw = _reg.get("rewarp")                     # failure-path proposal, or…
-                        if _rw is None and _reg.get("accepted") and _reg.get("ref_id"):
-                            _d = _preg.diagnose_result(result, _reg["ref_id"])   # …residual bend on an
-                            if _d is not None:                                    # accepted (re-)warp
+                        if (_rw is None and _reg.get("accepted") and _reg.get("ref_id")
+                                and (result.get("_rewarped") or _reg.get("outer_corrected"))):
+                            # Residual-bend diagnosis ONLY on results already in the correction chain
+                            # (re-warped or rescued). A clean first-pass registration is anchor-verified —
+                            # re-warping it trades a verified read for correction-path noise (audit: 8px
+                            # homography deviation is common SIFT noise on perfectly good warps).
+                            _d = _preg.diagnose_result(result, _reg["ref_id"])
+                            if _d is not None:
                                 _rw = {"corners_frac": _d[0], "dev_px": _d[1], "ref_id": _reg["ref_id"]}
                         if _rw is None:
                             break                                    # converged or undiagnosable
