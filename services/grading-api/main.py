@@ -484,24 +484,44 @@ async def grade_card_endpoint(
             # opposite corner out of frame). Re-grade ONCE on the anchor-corrected corners via the Modal
             # contour path, and keep the re-warp ONLY if registration then verifies on it. One iteration:
             # the corrected warp may still carry a small ring, which the gray-zone tightener handles.
-            _reg = (result.get("centering") or {}).get("registration") or {}
-            _rw = _reg.get("rewarp")
-            if _rw and getattr(_preg, "REWARP", False):
-                try:
-                    src_corners = _preg.map_warp_frac_to_source(result, _rw["corners_frac"])
-                    if src_corners:
+            if getattr(_preg, "REWARP", False):
+                # ITERATIVE re-warp: diagnose → correct corners in SOURCE coords → /gradecontour →
+                # verify. Corrections compose on the corner ESTIMATE (the original photo is warped once
+                # per estimate — no resample accumulation) and the render is an absolute reference, so
+                # the loop contracts. Guards: keep an iterate only if registration accepts on it; iterate
+                # again only if the measured bend DECREASED; hard cap on passes (each is a Modal call).
+                _max_iters = int(os.environ.get("PRINT_REG_REWARP_ITERS", "2"))
+                _prev_dev = None
+                for _it in range(1, _max_iters + 1):
+                    try:
+                        _reg = (result.get("centering") or {}).get("registration") or {}
+                        _rw = _reg.get("rewarp")                     # failure-path proposal, or…
+                        if _rw is None and _reg.get("accepted") and _reg.get("ref_id"):
+                            _d = _preg.diagnose_result(result, _reg["ref_id"])   # …residual bend on an
+                            if _d is not None:                                    # accepted (re-)warp
+                                _rw = {"corners_frac": _d[0], "dev_px": _d[1], "ref_id": _reg["ref_id"]}
+                        if _rw is None:
+                            break                                    # converged or undiagnosable
+                        if _prev_dev is not None and _rw["dev_px"] >= _prev_dev:
+                            break                                    # not improving — keep best
+                        src_corners = _preg.map_warp_frac_to_source(result, _rw["corners_frac"])
+                        if not src_corners:
+                            break
                         import remote_grade as _rg
                         result2 = await loop.run_in_executor(
                             None, lambda: _rg.grade_contour(img_bgr, src_corners, bool(zoom), raw_bytes=raw_front))
-                        if isinstance(result2, dict) and not result2.get("error"):
-                            _preg.apply_to_result(result2, ident)
-                            reg2 = (result2.get("centering") or {}).get("registration") or {}
-                            if reg2.get("accepted"):
-                                reg2["rewarped"] = {"dev_px": _rw["dev_px"], "ref_id": _rw.get("ref_id")}
-                                result2["_rewarped"] = True
-                                result = result2
-                except Exception:
-                    pass
+                        if not isinstance(result2, dict) or result2.get("error"):
+                            break
+                        _preg.apply_to_result(result2, ident)
+                        reg2 = (result2.get("centering") or {}).get("registration") or {}
+                        if not reg2.get("accepted"):
+                            break                                    # verify-or-discard: keep best
+                        reg2["rewarped"] = {"dev_px": _rw["dev_px"], "ref_id": _rw.get("ref_id"), "iter": _it}
+                        result2["_rewarped"] = True
+                        result = result2
+                        _prev_dev = _rw["dev_px"]
+                    except Exception:
+                        break
             if probe_res is not None:
                 # Register the probe ONLY when the main result registered: on failure the probe would
                 # repeat the entire candidate sweep (visual + retries) for nothing — main and probe both

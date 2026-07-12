@@ -542,6 +542,41 @@ def _diagnose_rewarp(card_bgr, ref_bgr):
             round(dev, 1), int(inl.sum()))
 
 
+def diagnose_result(result, cid):
+    """Residual-bend diagnosis on a grade RESULT (possibly already re-warped): decode its display warp,
+    crop to _card_boundary when meaningful (contour-path warps carry a padding ring; rescued results mark
+    the true cut — diagnosing the full padded frame would read the ring as bend forever), and run the
+    homography diagnosis against the registered render. Returns (corners_frac in FULL-warp coords, dev_px,
+    h_inliers) or None (converged / can't judge). This is what lets the re-warp LOOP iterate: the one-shot
+    proposal only exists on failed registrations, but a verified re-warp can still carry residual bend."""
+    try:
+        import base64
+        wj = result.get("_warped_jpeg_b64")
+        if not wj:
+            return None
+        ref, _err = _fetch_render(cid)
+        if ref is None:
+            return None
+        card = cv2.imdecode(np.frombuffer(base64.b64decode(wj), np.uint8), cv2.IMREAD_COLOR)
+        if card is None:
+            return None
+        H0, W0 = card.shape[:2]
+        cb = result.get("_card_boundary") or [0, 0, 1, 1]
+        x1, y1 = int(round(cb[0] * W0)), int(round(cb[1] * H0))
+        x2, y2 = int(round(cb[2] * W0)), int(round(cb[3] * H0))
+        if x2 - x1 > 100 and y2 - y1 > 100 and (x1 > 2 or y1 > 2 or x2 < W0 - 2 or y2 < H0 - 2):
+            d = _diagnose_rewarp(card[y1:y2, x1:x2], ref)
+            if d is None:
+                return None
+            corners, dev, ninl = d
+            corners = [[round((x1 + fx * (x2 - x1)) / W0, 4), round((y1 + fy * (y2 - y1)) / H0, 4)]
+                       for fx, fy in corners]
+            return corners, dev, ninl
+        return _diagnose_rewarp(card, ref)
+    except Exception:
+        return None
+
+
 def map_warp_frac_to_source(result, corners_frac):
     """Corrected corners (warp-fraction coords) → SOURCE-photo pixels, through the inverse of the
     quad→rect perspective used to build the warp. Sanity: area within [0.7, 1.4]× the original quad,
