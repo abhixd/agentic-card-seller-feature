@@ -44,7 +44,7 @@ def _coerce(d: dict) -> dict:
     return out
 
 
-def identify_card(img_bgr, api_key: str = None) -> dict:
+def identify_card(img_bgr, api_key: str = None, model: str = None) -> dict:
     """Photo -> {name, set, number, year, variant, language, title, confidence}. Never raises; on any
     failure returns an empty-ish identity with an `error` key so the scout can still grade the card."""
     api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
@@ -58,7 +58,7 @@ def identify_card(img_bgr, api_key: str = None) -> dict:
             {"type": "text", "text": _USER},
         ]
         client = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(model=MODEL, max_tokens=400, system=_SYSTEM,
+        msg = client.messages.create(model=model or MODEL, max_tokens=400, system=_SYSTEM,
                                      messages=[{"role": "user", "content": content}])
         raw = re.sub(r"```json|```", "", msg.content[0].text.strip()).strip()
         return _coerce(json.loads(raw))

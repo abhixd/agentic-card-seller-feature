@@ -462,7 +462,13 @@ async def grade_card_endpoint(
                     and (not (ident or {}).get("number") or _all_ransac)):
                 try:
                     import identify as _identify2
-                    ident2 = await loop.run_in_executor(None, _identify2.identify_card, img_bgr, api_key)
+                    # Escalate the retry to Opus: Sonnet deterministically HALLUCINATES a different card on
+                    # some glare-heavy foils (ex_1: 'Charizard GX 147/147' for the MEW Charizard ex, 3/3
+                    # runs, warp input didn't help) while Opus reads the same photo correctly (2/2). Rare
+                    # path (wrong-artwork signature only) → the extra cost is per-flake, not per-grade.
+                    _esc = os.environ.get("IDENTIFY_RETRY_MODEL", "claude-opus-4-8")
+                    ident2 = await loop.run_in_executor(
+                        None, lambda: _identify2.identify_card(img_bgr, api_key, model=_esc))
                     if ident2.get("number") or (ident2.get("name") and ident2.get("name") != (ident or {}).get("name")):
                         ident = ident2
                         _preg.apply_to_result(result, ident)
