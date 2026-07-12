@@ -842,6 +842,41 @@ def _rescue_outer(card_bgr, ref_bgr):
                                "y1": round(float(mapped_cr[:, 1].min()) / Hw, 4),
                                "x2": round(float(mapped_cr[:, 0].max()) / Ww, 4),
                                "y2": round(float(mapped_cr[:, 1].max()) / Hw, 4)}
+    # FRAME snap: the placeholder render misplaces the FRAME line too — its gray-band inner edge sits at a
+    # different content-relative depth than the physical etch boundary (card_035: mapped frame ~13px deep).
+    # The physical frame is a strong full-span line on the card, so snap each mapped frame edge to the
+    # NEAREST coherent line within ±2% (proximity prior — title/art edges can be stronger but are farther);
+    # no qualifying line → keep the mapped position.
+    try:
+        gxf, gyf = _grad_mags(card_w)
+        crf = meta2["content_region"]
+        fpx = {"L": crf["x1"] * Ww, "T": crf["y1"] * Hw, "R": crf["x2"] * Ww, "B": crf["y2"] * Hw}
+        fsnap = {}
+        fthr = float(os.environ.get("PRINT_REG_FRAME_SNAP_PROM", "2.5"))
+        for side in ("L", "T", "R", "B"):
+            horiz = side in ("T", "B")
+            mag = gyf if horiz else gxf
+            lo2, hi2 = (0, Ww) if horiz else (0, Hw)
+            lim = Hw if horiz else Ww
+            band = int(0.04 * (Hw if horiz else Ww))                 # placeholder offsets reach ~3% (card_035: 30px)
+            base = fpx[side]
+            best, bestd = None, None
+            for d in range(-band, band + 1):
+                pp = int(round(base + d))
+                if not (2 <= pp < lim - 2):
+                    continue
+                r_ = _line_prominence(mag, pp, lo2, hi2, horiz, Hw, Ww)
+                if r_ >= fthr and (bestd is None or abs(d) < bestd):
+                    best, bestd = pp, abs(d)
+            if best is not None and bestd > 2:
+                fsnap[side] = int(round(best - base))
+                fpx[side] = float(best)
+        if fsnap:
+            meta2["frame_snap"] = fsnap
+            meta2["content_region"] = {"x1": round(fpx["L"] / Ww, 4), "y1": round(fpx["T"] / Hw, 4),
+                                       "x2": round(fpx["R"] / Ww, 4), "y2": round(fpx["B"] / Hw, 4)}
+    except Exception:
+        pass
     # Photometric snap: pokemontcg renders depict SIR/etched borders as a flat gray PLACEHOLDER whose
     # width differs from the physical etch, so the extrapolated corners inherit a per-side error in EITHER
     # direction (card_035: top 30px inside, bottom ~right). Per side, search a band around the
@@ -889,6 +924,7 @@ def _rescue_outer(card_bgr, ref_bgr):
         if snapped:
             meta2["cut_snap"] = snapped
             bx1, by1, bx2, by2 = box["L"], box["T"], box["R"], box["B"]
+        if snapped or meta2.get("frame_snap"):
             L, R = fr_px["L"] - bx1, bx2 - fr_px["R"]                # per-side best evidence for the read
             T, B = fr_px["T"] - by1, by2 - fr_px["B"]
             if min(L, R, T, B) > 0:
