@@ -304,10 +304,15 @@ def _render_frame_insets(refw):
     frame lives at ~3.8-4% (user-confirmed on card_025) — the mapped orange now hugs the visible border."""
     H, W = refw.shape[:2]
     gx, gy = _grad_mags(refw)
-    def best(mag, size, horiz, from_end):
+    # PHYSICAL search band per axis: a print frame is ~1.4-3.5mm on a 63x88mm card, i.e. x 2.2-5.5% /
+    # y 1.6-4.0%. Searching wider (the first cut used up to 8%) grabbed symmetric ART/text-box lines on
+    # BW/XY-era renders (2011-2016) at ~7.4% — symmetric, so the symmetry guard can't catch them; the
+    # physical band can. No coherent line inside the band → nominal fallback.
+    _BANDS = {"x": (0.022, 0.055), "y": (0.016, 0.040)}
+    def best(mag, size, horiz, from_end, band):
         lo, hi = (0, W) if horiz else (0, H)
         proms = {}
-        for q in range(max(int(size * 0.015), 3), int(size * 0.08)):
+        for q in range(max(int(size * band[0]), 3), int(size * band[1])):
             pos = size - 1 - q if from_end else q
             proms[q] = _line_prominence(mag, pos, lo, hi, horiz, H, W, R=6)
         if not proms:
@@ -325,7 +330,8 @@ def _render_frame_insets(refw):
         return top_q / size, top_r
     out = {}
     for axis, mag, size, horiz in (("x", gx, W, False), ("y", gy, H, True)):
-        (i1, r1), (i2, r2) = best(mag, size, horiz, False), best(mag, size, horiz, True)
+        band = _BANDS[axis]
+        (i1, r1), (i2, r2) = best(mag, size, horiz, False, band), best(mag, size, horiz, True, band)
         ok1, ok2 = (i1 is not None and r1 >= 2.5), (i2 is not None and r2 >= 2.5)
         if ok1 and ok2 and abs(i1 - i2) <= 0.008:
             out[axis] = (i1 + i2) / 2
