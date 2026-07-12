@@ -57,6 +57,12 @@ function ScanDetails({ cen }: { cen: CenteringDetails }) {
           <DetailRow k="Anchor quality"
             v={`${reg?.inliers ?? '—'} anchor points · ${reg?.resid_px ?? '—'}px residual · scale ${reg?.scale ?? '—'}`} />
         )}
+        {anchored && reg?.outer_corrected && (
+          <DetailRow k="Cut edge visibility"
+            v={reg?.cut_edge_support
+              ? `${Object.entries(reg.cut_edge_support).map(([s, v]) => `${s} ${Math.round((v as number) * 100)}%`).join(' · ')} — the die-cut was located from the print anchors; low sides are not visible against the case/sleeve`
+              : 'boundary extrapolated from print anchors (cased/sleeved card)'} />
+        )}
         {st && (st.delta_pts != null ? (
           <DetailRow k="Stability probe"
             v={`Δ ${st.delta_pts} pts — a re-encoded copy read ${st.probe_left_right ?? '—'} · ${st.probe_top_bottom ?? '—'}${st.note ? ` (${st.note})` : ''}`} />

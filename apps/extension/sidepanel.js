@@ -678,6 +678,13 @@ function renderPSAResult(r, listing) {
     if (cen._source === "print_reg" && reg?.accepted) {
       row("Read method", `⚓ print-anchored to the official render${reg.ref_id ? ` (${reg.ref_id})` : ""}`);
       row("Anchor quality", `${reg.inliers ?? "—"} anchors · ${reg.resid_px ?? "—"}px residual · scale ${reg.scale ?? "—"}`);
+      if (reg.outer_corrected) {
+        const sup = reg.cut_edge_support;
+        row("Cut edge visibility", sup
+          ? Object.entries(sup).map(([s, v]) => `${s} ${Math.round(v * 100)}%`).join(" · ")
+            + " — die-cut located from print anchors; low sides are invisible against the case/sleeve"
+          : "boundary extrapolated from print anchors (cased/sleeved card)");
+      }
     } else {
       row("Read method", "edge detection (per-side)"
         + (reg && !reg.accepted && reg.reason ? ` — print-anchor unavailable: ${reg.reason}` : ""));

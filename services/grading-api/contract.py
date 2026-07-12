@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = "1.6.0"   # 1.6.0: + optional centering.registration block (PRINT_REG print-registration, additive)
+CONTRACT_VERSION = "1.7.0"   # 1.7.0: + registration.outer_corrected/cut_edge_support/tried/gate (rescue observability, additive)
 # 1.5.0: + optional ?stability=1 grade input → centering.stability block (additive)
 # 1.4.0: + optional `contour` grade input (manual 4-corner boundary → skips SAM3, additive)
 # 1.3.0: + defect_boxes (per-pillar defect outline rectangles, optional, additive)
@@ -44,6 +44,11 @@ class Registration(BaseModel):
     scale: Optional[float] = None
     ref_id: Optional[str] = None                       # matched pokemontcg.io card id, e.g. "sv3-22"
     reason: Optional[str] = None                       # why not accepted (gate / vintage / no match / ...)
+    gate: Optional[str] = None                         # which acceptance gate passed (secondary / rescue-verify)
+    tried: Optional[List[str]] = None                  # per-candidate attempt log ("cid:ok" / "cid:gate(...)")
+    outer_corrected: Optional[bool] = None             # True = outer-anchor rescue relocated the die-cut
+    cut_edge_support: Optional[Dict[str, float]] = None  # per-side (T/B/L/R) photometric confirmability of the
+                                                       # rescued cut line, 0..1; low = extrapolated → low conf
 
 
 class Stability(BaseModel):

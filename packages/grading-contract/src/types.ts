@@ -60,6 +60,14 @@ export interface Registration {
   ref_id?: string | null;
   /** why not accepted (gate / vintage / no match / ...) */
   reason?: string | null;
+  /** which acceptance gate passed (secondary / rescue-verify) */
+  gate?: string | null;
+  /** per-candidate attempt log ("cid:ok" / "cid:gate(...)") */
+  tried?: string[] | null;
+  /** true = outer-anchor rescue relocated the die-cut (cased/sleeved card) */
+  outer_corrected?: boolean | null;
+  /** per-side (T/B/L/R) photometric confirmability of the rescued cut line, 0..1; low = extrapolated → low confidence */
+  cut_edge_support?: Record<string, number> | null;
 }
 
 export interface Pillar {

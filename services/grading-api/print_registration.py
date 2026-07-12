@@ -462,6 +462,44 @@ def _band_cut_search(card_work, frame_px, size_meas=None):
     return {"L": xp[0], "T": yp[0], "R": xp[1], "B": yp[1]}
 
 
+def _cut_edge_support(card_bgr, box_px):
+    """Is the claimed die-cut line photometrically CONFIRMABLE? Per side: LINE PROMINENCE — the
+    perpendicular gradient integrated along the full side, as a function of offset from the claimed line.
+    A real cut is a coherent line: the profile peaks sharply within ±2px of the claim. Texture (a sparkle
+    case around a sparkle border — the card_035 situation) has strong gradients EVERYWHERE, so the profile
+    is flat and prominence ≈ 0. (A per-point 'any peak near the line' test saturates on texture — same
+    failure mode as the band-search surround tests; line-integration is what distinguishes cut from case.)
+    Returns per-side scores in [0,1]: peak-over-background ratio, 1.0 at ≥1.8× the offset median."""
+    x1, y1, x2, y2 = [int(round(v)) for v in box_px]
+    gray = cv2.cvtColor(card_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gx = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))
+    gy = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
+    H, W = gray.shape
+    R = 10
+    def side(mag, fixed, lo, hi, horiz):
+        pts = np.linspace(lo + 0.08 * (hi - lo), hi - 0.08 * (hi - lo), 60).astype(int)
+        offs = range(-R, R + 1)
+        prof = {}
+        for d in offs:
+            p = fixed + d
+            if horiz:
+                if not (0 <= p < H):
+                    continue
+                prof[d] = float(mag[p, pts].mean())
+            else:
+                if not (0 <= p < W):
+                    continue
+                prof[d] = float(mag[pts, p].mean())
+        near = [v for d, v in prof.items() if abs(d) <= 2]
+        bg = [v for d, v in prof.items() if abs(d) >= 4]
+        if not near or len(bg) < 4:
+            return 0.0
+        ratio = max(near) / (float(np.median(bg)) + 1e-6)
+        return round(max(0.0, min(1.0, (ratio - 1.0) / 0.8)), 3)
+    return {"T": side(gy, y1, x1, x2, True), "B": side(gy, y2, x1, x2, True),
+            "L": side(gx, x1, y1, y2, False), "R": side(gx, x2, y1, y2, False)}
+
+
 def _rescue_outer(card_bgr, ref_bgr):
     """Full rescue: the RENDER spans exactly die-cut to die-cut, so its own image corners mapped through
     the fitted transform ARE the die-cut estimate — directly, at the registration's ~px precision. (Earlier
@@ -513,6 +551,10 @@ def _rescue_outer(card_bgr, ref_bgr):
                                "y2": round(float(mapped_cr[:, 1].max()) / Hw, 4)}
     meta2["cut_box"] = [round(bx1 / Ww, 4), round(by1 / Hw, 4), round(bx2 / Ww, 4), round(by2 / Hw, 4)]
     meta2["outer_corrected"] = True
+    try:                                                             # coords are working-scale → probe card_w
+        meta2["cut_edge_support"] = _cut_edge_support(card_w, (bx1, by1, bx2, by2))
+    except Exception:
+        meta2["cut_edge_support"] = None
     return meta2
 
 
@@ -681,14 +723,24 @@ def apply_to_result(result, identity):
         cen["content_region"] = meta["content_region"]
         cen["score"] = _centering_score(lr, tb)
         cen["_source"] = "print_reg"
-        # Confidence: registration is sub-pixel when accepted; the warp (die-cut) quality still gates via
-        # g_geom (a loose/tilted warp shifts the die-cut crop itself). Stability MINs in afterwards.
-        reg_conf = 0.95 if meta["resid_px"] <= 1.5 else 0.85
+        # Confidence FROM the anchors: instead of two fixed tiers, score the fit itself — inlier count
+        # (how much of the print layer agreed) and residual (how precisely). A dense sub-pixel fit earns
+        # ~0.95; a barely-passing sparse fit earns ~0.7 (medium). g_geom still MINs in below (a loose/
+        # tilted warp shifts the die-cut crop itself), and the stability probe MINs in afterwards.
+        q_inl = min(1.0, meta["inliers"] / 120.0)
+        q_res = max(0.0, min(1.0, (MAX_RESID - meta["resid_px"]) / 2.0))
+        reg_conf = round(0.6 + 0.35 * (0.5 * q_inl + 0.5 * q_res), 3)
         if meta.get("outer_corrected"):
-            # Rescued reads: the die-cut is EXTRAPOLATED from the fit (the very reason the rescue fired is
-            # that the cut has ~no photometric contrast against the case — it cannot be pixel-confirmed).
-            # Cap at medium so the badge honestly says "worth a glance", never "trust blindly".
-            reg_conf = min(reg_conf, float(os.environ.get("PRINT_REG_RESCUE_CONF", "0.7")))
+            # Rescued reads: the die-cut is EXTRAPOLATED from the fit. Whether that deserves medium or LOW
+            # depends on whether the claimed cut line is photometrically confirmable: if the gradient probe
+            # finds an actual edge coinciding with the line on every side, cap at medium (0.7); if any side
+            # is invisible against the case (the very situation that fired the rescue), cap at LOW (0.4).
+            sup = meta.get("cut_edge_support") or {}
+            sup_min = min(sup.values()) if sup else 0.0
+            confirmable = sup_min >= float(os.environ.get("PRINT_REG_SUPPORT_THR", "0.4"))
+            cap = float(os.environ.get("PRINT_REG_RESCUE_CONF", "0.7")) if confirmable \
+                else float(os.environ.get("PRINT_REG_RESCUE_CONF_LOW", "0.4"))
+            reg_conf = min(reg_conf, cap)
         g_geom = ((result.get("_rect_check") or {}).get("g_geom"))
         cen["confidence"] = round(min(reg_conf, g_geom) if g_geom is not None else reg_conf, 3)
         if isinstance(result.get("summary"), str) and "Centering" in result["summary"]:

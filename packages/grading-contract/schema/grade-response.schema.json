@@ -351,6 +351,60 @@
           ],
           "default": null,
           "title": "Reason"
+        },
+        "gate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gate"
+        },
+        "tried": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tried"
+        },
+        "outer_corrected": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outer Corrected"
+        },
+        "cut_edge_support": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cut Edge Support"
         }
       },
       "required": [
@@ -573,5 +627,5 @@
   "title": "GradeResponse",
   "type": "object",
   "$id": "https://acs/grading-contract/grade-response.schema.json",
-  "x-contract-version": "1.6.0"
+  "x-contract-version": "1.7.0"
 }
