@@ -463,55 +463,55 @@ def _band_cut_search(card_work, frame_px, size_meas=None):
 
 
 def _rescue_outer(card_bgr, ref_bgr):
-    """Full rescue: locate print frame (gate-free fit) → band-search the die-cut outside it → crop →
-    re-register with the FULL gates. Returns None (abstain) or a dict with the verified read + the cut
-    box as fractions of the ORIGINAL warp (for the display boundary)."""
+    """Full rescue: the RENDER spans exactly die-cut to die-cut, so its own image corners mapped through
+    the fitted transform ARE the die-cut estimate — directly, at the registration's ~px precision. (Earlier
+    photometric band-searches failed one by one on a dark-sparkle-border card in a dark-sparkle case: the
+    border and the case are photometrically identical, so edge peaks, size ties, and surround tests all
+    saturate. The mapping needs none of that.) Then crop → re-register to verify. Returns None (abstain)
+    or the verified read + the cut box as fractions of the ORIGINAL warp."""
     lf = _fit_loose(card_bgr, ref_bgr)
     if lf is None:
         return None
     card_w, ref_w, M = lf
     RW, RH = ref_w.shape[1], ref_w.shape[0]
-    ins = NOMINAL_INSET
-    frame = np.float32([[RW * ins, RH * ins], [RW * (1 - ins), RH * ins],
-                        [RW * (1 - ins), RH * (1 - ins)], [RW * ins, RH * (1 - ins)]])
     Minv = cv2.invertAffineTransform(M)
-    mapped = frame @ Minv[:, :2].T + Minv[:, 2]
-    fp = (float(mapped[:, 0].min()), float(mapped[:, 1].min()),
-          float(mapped[:, 0].max()), float(mapped[:, 1].max()))
-    scale = float(np.linalg.norm(M[:, 0]))                           # card px × scale = render px, so the
-    size_meas = (RW / scale, RH / scale)                             # card's TRUE pixel size is measured
-    cuts = _band_cut_search(card_w, fp, size_meas)
-    if cuts is None:
-        return None
-    bx1, by1, bx2, by2 = cuts["L"], cuts["T"], cuts["R"], cuts["B"]
+    corners = np.float32([[0, 0], [RW, 0], [RW, RH], [0, RH]])       # the render's die line
+    mc = corners @ Minv[:, :2].T + Minv[:, 2]
+    H, W = card_w.shape[:2]
+    bx1 = int(round(max(float(mc[:, 0].min()), 0)))                  # display box (axis-aligned bbox of the
+    by1 = int(round(max(float(mc[:, 1].min()), 0)))                  # mapped die line; the fit may carry a
+    bx2 = int(round(min(float(mc[:, 0].max()), W - 1)))              # small rotation)
+    by2 = int(round(min(float(mc[:, 1].max()), H - 1)))
     if bx2 - bx1 < 200 or by2 - by1 < 200:
         return None
     # Verify-or-abstain: the artwork match was already established pre-crop (that's what fired the rescue);
     # this re-registration verifies the CROP — the scale must snap to unit. Textured/cased cards give sparse
-    # anchors, so the anchor bar relaxes to 40 while the SCALE bar tightens to 1.2% (the actual verify).
-    crop = card_w[by1:by2, bx1:bx2]
-    # Verify gates: identity was already established by the pre-crop fit, so the anchor bar here is low
-    # (30); the SCALE bar (1.2%) is the actual verify — a mis-sized crop cannot re-register at unit scale.
+    # The crop is a RESAMPLE through the fitted transform onto the render's own grid — die-cut-aligned and
+    # rotation-corrected by construction (a plain bbox crop of a slightly-rotated fit overshoots each side
+    # and honestly fails the scale verify). The re-registration then verifies the fit itself: if M really
+    # mapped the die line, this registers at scale ≈ 1.000 with near-zero offset; if M was off, it can't.
+    crop = cv2.warpAffine(card_w, M, (RW, RH))
     meta2 = register(crop, ref_bgr, gates=(30, MAX_RESID, 0.012))
     if not meta2.get("accepted"):
         return None
-    # Margin sanity from the RE-REGISTERED frame (trustworthy — scale verified): each print→cut margin must
-    # be plausible vs nominal. Catches correlated cut shifts that preserve scale (e.g. both horizontal cuts
-    # grabbing interior lines). [0.35, 1.8]×nominal tolerates real miscuts to ~82/18 but not interior grabs.
+    # Margin sanity from the RE-REGISTERED frame: each print→cut margin must be plausible vs nominal.
+    # [0.35, 1.8]×nominal tolerates real miscuts to ~82/18 but rejects interior-structure lock-ons.
     cr0 = meta2["content_region"]
     nom = NOMINAL_INSET / (1 - 2 * NOMINAL_INSET) * (cr0["x2"] - cr0["x1"])
     for m in (cr0["x1"], 1 - cr0["x2"], cr0["y1"], 1 - cr0["y2"]):
         if not (0.35 * nom <= m <= 1.8 * nom):
             return None
+    # Reads (lr/tb, content_region) from meta2 are in DIE-CUT coordinates — exactly what centering wants.
+    # For the DISPLAY, map the frame back into original-warp coordinates through Minv.
     Hw, Ww = card_w.shape[:2]
-    cut_frac = (bx1 / Ww, by1 / Hw, bx2 / Ww, by2 / Hw)
-    cr = meta2["content_region"]                                     # fractions of the CROP → map to warp coords
-    cw, ch = cut_frac[2] - cut_frac[0], cut_frac[3] - cut_frac[1]
-    meta2["content_region"] = {"x1": round(cut_frac[0] + cr["x1"] * cw, 4),
-                               "y1": round(cut_frac[1] + cr["y1"] * ch, 4),
-                               "x2": round(cut_frac[0] + cr["x2"] * cw, 4),
-                               "y2": round(cut_frac[1] + cr["y2"] * ch, 4)}
-    meta2["cut_box"] = [round(v, 4) for v in cut_frac]
+    cr_px = np.float32([[cr0["x1"] * RW, cr0["y1"] * RH], [cr0["x2"] * RW, cr0["y1"] * RH],
+                        [cr0["x2"] * RW, cr0["y2"] * RH], [cr0["x1"] * RW, cr0["y2"] * RH]])
+    mapped_cr = cr_px @ Minv[:, :2].T + Minv[:, 2]
+    meta2["content_region"] = {"x1": round(float(mapped_cr[:, 0].min()) / Ww, 4),
+                               "y1": round(float(mapped_cr[:, 1].min()) / Hw, 4),
+                               "x2": round(float(mapped_cr[:, 0].max()) / Ww, 4),
+                               "y2": round(float(mapped_cr[:, 1].max()) / Hw, 4)}
+    meta2["cut_box"] = [round(bx1 / Ww, 4), round(by1 / Hw, 4), round(bx2 / Ww, 4), round(by2 / Hw, 4)]
     meta2["outer_corrected"] = True
     return meta2
 
