@@ -306,13 +306,23 @@ def _render_frame_insets(refw):
     gx, gy = _grad_mags(refw)
     def best(mag, size, horiz, from_end):
         lo, hi = (0, W) if horiz else (0, H)
-        top_q, top_r = None, 0.0
+        proms = {}
         for q in range(max(int(size * 0.015), 3), int(size * 0.08)):
             pos = size - 1 - q if from_end else q
-            r = _line_prominence(mag, pos, lo, hi, horiz, H, W, R=6)
-            if r > top_r:
-                top_r, top_q = r, q
-        return (top_q / size if top_q else None), top_r
+            proms[q] = _line_prominence(mag, pos, lo, hi, horiz, H, W, R=6)
+        if not proms:
+            return None, 0.0
+        top_q = max(proms, key=proms.get)
+        top_r = proms[top_q]
+        # The frame is a BAND with two edges (border-side and art-side) a few px apart; the strongest
+        # gradient is usually the OUTER edge, but the true inner border — what a human measures to — is
+        # the INNERMOST coherent line of the band (user-confirmed on card_025). Walk inward up to 1.2%
+        # and take the deepest line still ≥60% of the peak's prominence.
+        for q in sorted(proms, reverse=True):
+            if top_q < q <= top_q + int(0.012 * size) and proms[q] >= max(0.6 * top_r, 2.5):
+                top_q, top_r = q, proms[q]
+                break
+        return top_q / size, top_r
     out = {}
     for axis, mag, size, horiz in (("x", gx, W, False), ("y", gy, H, True)):
         (i1, r1), (i2, r2) = best(mag, size, horiz, False), best(mag, size, horiz, True)
@@ -385,7 +395,8 @@ def register(card_bgr, ref_bgr, gates=None):
         return meta
     # Render's DETECTED print frame (per-axis depth, symmetric) → OUR card coords, normalized 0..1.
     RW, RH = ref.shape[1], ref.shape[0]
-    ix, iy = _render_frame_insets(ref)
+    ix, iy = _render_frame_insets(ref_bgr)                          # NATIVE res: the frame is a 2-3px band;
+                                                                    # working-scale blur biases the peak outward
     meta["frame_insets"] = {"x": round(ix, 4), "y": round(iy, 4)}
     frame = np.float32([[RW * ix, RH * iy], [RW * (1 - ix), RH * iy],
                         [RW * (1 - ix), RH * (1 - iy)], [RW * ix, RH * (1 - iy)]])
@@ -839,10 +850,11 @@ def apply_to_result(result, identity):
             except Exception:
                 t = None
             if t is not None:
-                tcut, moved, tfr = t
+                tcut, moved, _ = t
                 cw, ch = filter_ctx[0].shape[1], filter_ctx[0].shape[0]
-                L, R = tfr["L"] - tcut["L"], tcut["R"] - tfr["R"]
-                T, B = tfr["T"] - tcut["T"], tcut["B"] - tfr["B"]
+                cr0 = meta["content_region"]                         # detected-datum frame, same coords as cut
+                L, R = cr0["x1"] * cw - tcut["L"], tcut["R"] - cr0["x2"] * cw
+                T, B = cr0["y1"] * ch - tcut["T"], tcut["B"] - cr0["y2"] * ch
                 if min(L, R, T, B) > 0:
                     meta["lr"] = f"{round(L / (L + R) * 100)}/{round(R / (L + R) * 100)}"
                     meta["tb"] = f"{round(T / (T + B) * 100)}/{round(B / (T + B) * 100)}"
