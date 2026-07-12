@@ -684,6 +684,11 @@ def apply_to_result(result, identity):
         # Confidence: registration is sub-pixel when accepted; the warp (die-cut) quality still gates via
         # g_geom (a loose/tilted warp shifts the die-cut crop itself). Stability MINs in afterwards.
         reg_conf = 0.95 if meta["resid_px"] <= 1.5 else 0.85
+        if meta.get("outer_corrected"):
+            # Rescued reads: the die-cut is EXTRAPOLATED from the fit (the very reason the rescue fired is
+            # that the cut has ~no photometric contrast against the case — it cannot be pixel-confirmed).
+            # Cap at medium so the badge honestly says "worth a glance", never "trust blindly".
+            reg_conf = min(reg_conf, float(os.environ.get("PRINT_REG_RESCUE_CONF", "0.7")))
         g_geom = ((result.get("_rect_check") or {}).get("g_geom"))
         cen["confidence"] = round(min(reg_conf, g_geom) if g_geom is not None else reg_conf, 3)
         if isinstance(result.get("summary"), str) and "Centering" in result["summary"]:
