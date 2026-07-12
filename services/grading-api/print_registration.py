@@ -632,6 +632,56 @@ def _tighten_outer(card, refw, M):
     return cut, moved, fr
 
 
+def _gray_zone_recover(card_bgr, ref_bgr):
+    """Gray-zone recovery (scale excess 1-3%): the fit is real but the warp is slightly larger than the
+    card — some sides carry background slop. Instead of giving up (selector read + conf 0.4), run the SAME
+    anchored tightener evidence rules on the gate-free fit: move a side inward only where the warp edge is
+    photometrically absent AND a strong coherent line sits in the anchored band. Then crop to the tightened
+    box and RE-REGISTER WITH FULL GATES — if the slop was truly removed, scale snaps to unit and the read
+    is a verified registered read; anything else honestly fails and the demotion path stands. Strictly
+    additive: only cards that today end at 'scale-reject unrescued' can reach this."""
+    lf = _fit_loose(card_bgr, ref_bgr)
+    if lf is None:
+        return None, None
+    card_w, ref_w, M = lf
+    # Anchor diagnosis (also the abstain explanation): where does the fit say the cut sits relative to the
+    # warp edges? +px inside = slop the tightener may remove; -px outside = the warp CUT OFF part of the
+    # card — unfixable from the warp alone (the pixels don't exist; the honest outcome is the demotion).
+    Hw0, Ww0 = card_w.shape[:2]
+    RW0, RH0 = ref_w.shape[1], ref_w.shape[0]
+    Minv0 = cv2.invertAffineTransform(M)
+    mc0 = np.float32([[0, 0], [RW0, 0], [RW0, RH0], [0, RH0]]) @ Minv0[:, :2].T + Minv0[:, 2]
+    over = {"L": float(mc0[:, 0].min()), "T": float(mc0[:, 1].min()),
+            "R": Ww0 - 1 - float(mc0[:, 0].max()), "B": Hw0 - 1 - float(mc0[:, 1].max())}
+    parts = [f"{s} {'cut-off' if v < -3 else 'slop'} ~{abs(round(v))}px" for s, v in over.items() if abs(v) > 3]
+    diag = ("anchors: " + ", ".join(parts)) if parts else None
+    t = _tighten_outer(card_w, ref_w, M)
+    if t is None:
+        return None, diag                                            # no side had absent-edge + strong-line
+    cut, moved, _fr = t
+    x1, y1 = int(round(cut["L"])), int(round(cut["T"]))
+    x2, y2 = int(round(cut["R"])), int(round(cut["B"]))
+    Hw, Ww = card_w.shape[:2]
+    if x2 - x1 < 200 or y2 - y1 < 200:
+        return None, diag
+    crop = card_w[y1:y2 + 1, x1:x2 + 1]
+    meta2 = register(crop, ref_bgr)                                  # FULL gates — the scale IS the verify
+    if not meta2.get("accepted"):
+        return None, diag
+    # Reads (lr/tb) are crop-relative = die-cut-relative. Map content_region back to ORIGINAL warp coords
+    # for display; the crop-frame filter ctx can't be used on warp-frame boxes downstream.
+    cw, ch = x2 - x1 + 1, y2 - y1 + 1
+    cr = meta2["content_region"]
+    meta2["content_region"] = {"x1": round((x1 + cr["x1"] * cw) / Ww, 4),
+                               "y1": round((y1 + cr["y1"] * ch) / Hw, 4),
+                               "x2": round((x1 + cr["x2"] * cw) / Ww, 4),
+                               "y2": round((y1 + cr["y2"] * ch) / Hw, 4)}
+    meta2.pop("_filter_ctx", None)
+    meta2["cut_box"] = [round(x1 / Ww, 4), round(y1 / Hw, 4), round((x2 + 1) / Ww, 4), round((y2 + 1) / Hw, 4)]
+    meta2["gray_zone_tightened"] = moved                             # px moved inward per side (working scale)
+    return meta2, None
+
+
 def _rescue_outer(card_bgr, ref_bgr):
     """Full rescue: the RENDER spans exactly die-cut to die-cut, so its own image corners mapped through
     the fitted transform ARE the die-cut estimate — directly, at the registration's ~px precision. (Earlier
@@ -835,6 +885,7 @@ def apply_to_result(result, identity):
                 tried.append("(number-stripped retry)")
                 meta = _try_loop(extra)
         rescueable = [t for t in scale_rejects if t[3] >= _RESCUE_MIN_DEV]
+        gray_diag = None
         if meta is None and OUTER_RESCUE and rescueable:
             # The fit is real and the warp crop is UNAMBIGUOUSLY larger than the card (a case/sleeve/
             # toploader ring) — try the outer-anchor rescue with the best-fitting candidate. Acceptance is
@@ -847,13 +898,23 @@ def apply_to_result(result, identity):
                 meta["ref_id"] = cid
                 mark_winner(identity, cid)
                 tried.append(f"{cid}:outer-rescued(sc→{meta.get('scale')})")
+        if meta is None and TIGHTEN and scale_rejects and not rescueable:
+            # GRAY ZONE (scale excess 1-3%): anchored tightening + crop + full-gate re-registration.
+            _, cid, ref, _dev = max(scale_rejects)
+            r, gray_diag = _gray_zone_recover(card, ref)
+            if r is not None:
+                meta = r
+                meta["ref_id"] = cid
+                mark_winner(identity, cid)
+                tried.append(f"{cid}:gray-zone-tightened(sc→{meta.get('scale')})")
         if meta is None:
             cen["registration"] = {"accepted": False, "reason": "no candidate registered", "tried": tried}
             if scale_rejects:
                 # The right card WAS found — its render fit densely but at non-unit scale, which is anchor
                 # evidence that the warp crop is card + case/sleeve ring — and the rescue couldn't verify a
                 # cut. The selector is therefore confidently measuring the RING: demote, don't trust.
-                cen["registration"]["reason"] = "scale-reject unrescued (crop larger than the card)"
+                cen["registration"]["reason"] = ("scale-reject unrescued (crop larger than the card)"
+                                                 + (f"; {gray_diag}" if gray_diag else ""))
                 cur = cen.get("confidence")
                 cen["confidence"] = round(min(cur if cur is not None else 1.0, 0.4), 3)
             return
@@ -877,8 +938,8 @@ def apply_to_result(result, identity):
                     result["_card_boundary"] = [round(tcut["L"] / cw, 4), round(tcut["T"] / ch, 4),
                                                 round((tcut["R"] + 1) / cw, 4), round((tcut["B"] + 1) / ch, 4)]
         cen["registration"] = {k: v for k, v in meta.items() if k != "content_region"}
-        if meta.get("outer_corrected") and meta.get("cut_box"):
-            # The true die-cut sits INSIDE the displayed warp (case/sleeve ring around it) — move the
+        if (meta.get("outer_corrected") or meta.get("gray_zone_tightened")) and meta.get("cut_box"):
+            # The true die-cut sits INSIDE the displayed warp (case/sleeve/slop ring around it) — move the
             # outer boundary so the UI's green rect hugs the actual card. content_region is already
             # mapped into the same (original-warp) coordinates.
             result["_card_boundary"] = list(meta["cut_box"])

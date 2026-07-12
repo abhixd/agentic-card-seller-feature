@@ -17,7 +17,8 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = "1.9.0"   # 1.9.0: + registration.frame_insets (render-detected print-frame datum, additive)
+CONTRACT_VERSION = "1.10.0"  # 1.10.0: + registration.gray_zone_tightened (anchored gray-zone recovery, additive)
+# 1.9.0: + registration.frame_insets (render-detected print-frame datum, additive)
 # 1.5.0: + optional ?stability=1 grade input → centering.stability block (additive)
 # 1.4.0: + optional `contour` grade input (manual 4-corner boundary → skips SAM3, additive)
 # 1.3.0: + defect_boxes (per-pillar defect outline rectangles, optional, additive)
@@ -53,6 +54,8 @@ class Registration(BaseModel):
                                                        # overhang tightener (PRINT_REG_TIGHTEN=1)
     frame_insets: Optional[Dict[str, float]] = None    # render-detected print-frame depth per axis (x/y,
                                                        # fractions) — the datum the margins are measured from
+    gray_zone_tightened: Optional[Dict[str, float]] = None  # sides moved inward (px) by the gray-zone
+                                                       # recovery (1-3% oversize warp → tighten+re-verify)
 
 
 class Stability(BaseModel):

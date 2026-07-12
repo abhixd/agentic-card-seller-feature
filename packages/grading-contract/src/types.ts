@@ -72,6 +72,8 @@ export interface Registration {
   outer_tightened?: Record<string, number> | null;
   /** render-detected print-frame depth per axis (x/y, fractions) — the datum margins are measured from */
   frame_insets?: Record<string, number> | null;
+  /** sides moved inward (px) by the gray-zone recovery (1-3% oversize warp, tighten + full re-verify) */
+  gray_zone_tightened?: Record<string, number> | null;
 }
 
 export interface Pillar {
