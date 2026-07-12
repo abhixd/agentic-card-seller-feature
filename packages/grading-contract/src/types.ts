@@ -70,6 +70,8 @@ export interface Registration {
   cut_edge_support?: Record<string, number> | null;
   /** sides moved inward (px) by the anchored sleeve-overhang tightener (PRINT_REG_TIGHTEN=1) */
   outer_tightened?: Record<string, number> | null;
+  /** render-detected print-frame depth per axis (x/y, fractions) — the datum margins are measured from */
+  frame_insets?: Record<string, number> | null;
 }
 
 export interface Pillar {

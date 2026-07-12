@@ -295,6 +295,39 @@ def _prep(gray):
     return cv2.normalize(cv2.magnitude(gx, gy), None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
 
+def _render_frame_insets(refw):
+    """Detect the render's OWN visible print-frame depth per axis (fractions), searching [1.5%, 8%] inset
+    for the most line-prominent edge. The render is the perfectly-centered print by construction, so the
+    frame must be symmetric: when both sides of an axis detect coherently they are AVERAGED (an asymmetric
+    datum would inject ratio bias); one strong side is mirrored; no detection falls back to NOMINAL_INSET.
+    This replaces the fixed 3.4% datum, which sat visibly outside the true frame on cards whose etched
+    frame lives at ~3.8-4% (user-confirmed on card_025) — the mapped orange now hugs the visible border."""
+    H, W = refw.shape[:2]
+    gx, gy = _grad_mags(refw)
+    def best(mag, size, horiz, from_end):
+        lo, hi = (0, W) if horiz else (0, H)
+        top_q, top_r = None, 0.0
+        for q in range(max(int(size * 0.015), 3), int(size * 0.08)):
+            pos = size - 1 - q if from_end else q
+            r = _line_prominence(mag, pos, lo, hi, horiz, H, W, R=6)
+            if r > top_r:
+                top_r, top_q = r, q
+        return (top_q / size if top_q else None), top_r
+    out = {}
+    for axis, mag, size, horiz in (("x", gx, W, False), ("y", gy, H, True)):
+        (i1, r1), (i2, r2) = best(mag, size, horiz, False), best(mag, size, horiz, True)
+        ok1, ok2 = (i1 is not None and r1 >= 2.5), (i2 is not None and r2 >= 2.5)
+        if ok1 and ok2 and abs(i1 - i2) <= 0.008:
+            out[axis] = (i1 + i2) / 2
+        elif ok1 and ok2:
+            out[axis] = i1 if r1 >= r2 else i2
+        elif ok1 or ok2:
+            out[axis] = i1 if ok1 else i2
+        else:
+            out[axis] = NOMINAL_INSET
+    return out["x"], out["y"]
+
+
 def register(card_bgr, ref_bgr, gates=None):
     """card_bgr = OUR card cropped to the die-cut (the display warp); ref_bgr = official render.
     Returns meta dict (always, for observability) — meta["accepted"] gates any use of the read.
@@ -350,11 +383,12 @@ def register(card_bgr, ref_bgr, gates=None):
     if not meta["accepted"]:
         meta["reason"] = "gate"
         return meta
-    # Render's nominal print frame → OUR card coords (via the inverse transform), normalized 0..1.
+    # Render's DETECTED print frame (per-axis depth, symmetric) → OUR card coords, normalized 0..1.
     RW, RH = ref.shape[1], ref.shape[0]
-    ins = NOMINAL_INSET
-    frame = np.float32([[RW * ins, RH * ins], [RW * (1 - ins), RH * ins],
-                        [RW * (1 - ins), RH * (1 - ins)], [RW * ins, RH * (1 - ins)]])
+    ix, iy = _render_frame_insets(ref)
+    meta["frame_insets"] = {"x": round(ix, 4), "y": round(iy, 4)}
+    frame = np.float32([[RW * ix, RH * iy], [RW * (1 - ix), RH * iy],
+                        [RW * (1 - ix), RH * (1 - iy)], [RW * ix, RH * (1 - iy)]])
     Minv = cv2.invertAffineTransform(M)
     mapped = frame @ Minv[:, :2].T + Minv[:, 2]                    # working-scale card px
     x1, y1 = float(mapped[:, 0].min()), float(mapped[:, 1].min())

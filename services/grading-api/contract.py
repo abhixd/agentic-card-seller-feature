@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = "1.8.0"   # 1.8.0: + registration.outer_tightened (anchored per-side sleeve-overhang tightening, additive)
+CONTRACT_VERSION = "1.9.0"   # 1.9.0: + registration.frame_insets (render-detected print-frame datum, additive)
 # 1.5.0: + optional ?stability=1 grade input → centering.stability block (additive)
 # 1.4.0: + optional `contour` grade input (manual 4-corner boundary → skips SAM3, additive)
 # 1.3.0: + defect_boxes (per-pillar defect outline rectangles, optional, additive)
@@ -51,6 +51,8 @@ class Registration(BaseModel):
                                                        # rescued cut line, 0..1; low = extrapolated → low conf
     outer_tightened: Optional[Dict[str, float]] = None  # sides moved inward (px) by the anchored sleeve-
                                                        # overhang tightener (PRINT_REG_TIGHTEN=1)
+    frame_insets: Optional[Dict[str, float]] = None    # render-detected print-frame depth per axis (x/y,
+                                                       # fractions) — the datum the margins are measured from
 
 
 class Stability(BaseModel):
