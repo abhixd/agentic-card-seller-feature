@@ -224,6 +224,30 @@ def _candidate_ids(identity):
 _IMG_URLS: dict = {}                                                # cid → the API's own images.large URL
 
 
+def first_token_pool(name, k=12, exclude=()):
+    """LAST-RESORT candidate tier: every catalog card whose name shares the identity's FIRST TOKEN
+    (newest set first). Exists because the vision ID can hallucinate an entirely wrong card for a
+    glare-heavy photo (ex_1_front: 'Charizard GX 147/147 Burning Shadows' for a MEW Charizard ex) —
+    wrong name suffix AND set AND number, so both the exact pool and the number-stripped retry miss.
+    Text only needs to get the right card INTO the list; registration rejects the rest (never observed
+    a false accept). Cost bounded by k."""
+    first = (str(name or "").split() or [""])[0].lower()
+    if len(first) < 4:
+        return []
+    out = []
+    for r in _local_cards(first, None):
+        cid = r.get("id")
+        if not cid or "-" not in cid or cid in exclude or cid in out:
+            continue
+        url = ((r.get("images") or {}).get("large")) or ((r.get("images") or {}).get("small"))
+        if url:
+            _IMG_URLS[cid] = url
+        out.append(cid)
+        if len(out) >= k:
+            break
+    return out
+
+
 def _fetch_render(cid):
     """Official render for a pokemontcg id, disk-cached. Prefers the API's own images URL (the constructed
     {set}/{num}_hires.png 404s on some sets); falls back to the hires pattern. (None, reason) on failure."""
@@ -948,15 +972,17 @@ def apply_to_result(result, identity):
                             and MAX_SCALE_DEV < abs((m.get("scale") or 1) - 1.0) <= _RESCUE_MAX_DEV):
                         scale_rejects.append((m["inliers"], cid, ref,      # scale-ONLY reject: rescue candidate
                                               abs((m.get("scale") or 1) - 1.0)))  # if big enough, else demote-only
-                    if m["inliers"] >= 25 and (m.get("resid_px") or 9) <= MAX_RESID:
+                    if (m["inliers"] >= 25 and (m.get("resid_px") or 9) <= MAX_RESID
+                            and abs((m.get("scale") or 0) - 1.0) <= _RESCUE_MAX_DEV):
                         weak_fits.append((m["inliers"], cid, ref))         # real artwork match → rewarp-diagnosable
                 else:
                     tried.append(f"{cid}:{m.get('reason', 'rej')}")
             return None
 
         meta = _try_loop(cands)
-        if (meta is None and not scale_rejects and (identity or {}).get("number") and tried
-                and all(("ransac failed" in t or "too few" in t or "http" in t) for t in tried)):
+        # "No real fit yet" = neither a scale-reject nor a weak fit — every attempt was wrong ARTWORK
+        # (ransac fail / too few / fetch error / degenerate fit). String-free signal for the retry tiers.
+        if (meta is None and not scale_rejects and not weak_fits and (identity or {}).get("number") and tried):
             # Wrong-artwork signature WITH a number present = the number was misread (case glare picks a
             # digit run off the label/art). Retry the resolution NUMBER-STRIPPED — deterministic, no second
             # vision roll needed; the prefix name pool + the registration verifier take it from there.
@@ -965,6 +991,16 @@ def apply_to_result(result, identity):
             if extra:
                 tried.append("(number-stripped retry)")
                 meta = _try_loop(extra)
+        if meta is None and not scale_rejects and not weak_fits and (identity or {}).get("name") and tried:
+            # LAST RESORT — every candidate from every tier was the wrong ARTWORK. The vision ID can
+            # hallucinate a whole different card on glare-heavy foil (wrong name suffix AND set AND
+            # number), so derive nothing from it except the first name token and let registration
+            # verify a wide newest-first pool.
+            done = {t.split(":", 1)[0] for t in tried if ":" in t}
+            extra2 = first_token_pool(identity.get("name"), k=12, exclude=done)
+            if extra2:
+                tried.append("(first-token retry)")
+                meta = _try_loop(extra2)
         rescueable = [t for t in scale_rejects if t[3] >= _RESCUE_MIN_DEV]
         gray_diag = None
         if meta is None and OUTER_RESCUE and rescueable:
@@ -990,6 +1026,14 @@ def apply_to_result(result, identity):
                 tried.append(f"{cid}:gray-zone-tightened(sc→{meta.get('scale')})")
         if meta is None:
             cen["registration"] = {"accepted": False, "reason": "no candidate registered", "tried": tried}
+            if not scale_rejects and not weak_fits and any(":" in t for t in tried):
+                # Wrong-artwork signature survived every retry tier: we believe we know this card, yet NO
+                # render fits it visually. Either the identity is still wrong or the image is too degraded
+                # to anchor — both mean the selector read is UNVERIFIED (a cased card measuring its case
+                # shows exactly this and used to sail through at stability-only 0.86). Cap at medium.
+                cur = cen.get("confidence")
+                cen["confidence"] = round(min(cur if cur is not None else 1.0, 0.7), 3)
+                cen["registration"]["reason"] = "no candidate registered (no render fit — read unverified)"
             if scale_rejects:
                 # The right card WAS found — its render fit densely but at non-unit scale, which is anchor
                 # evidence that the warp crop is card + case/sleeve ring — and the rescue couldn't verify a
@@ -1009,6 +1053,10 @@ def apply_to_result(result, identity):
                         corners, dev, ninl = d
                         cen["registration"]["rewarp"] = {"corners_frac": corners, "dev_px": dev,
                                                          "h_inliers": ninl, "ref_id": cid_w}
+                        # The diagnosis itself is evidence the warp is bad — cap until the re-warp
+                        # verifies (on success main.py replaces this whole result).
+                        cur = cen.get("confidence")
+                        cen["confidence"] = round(min(cur if cur is not None else 1.0, 0.5), 3)
                 except Exception:
                     pass
             return

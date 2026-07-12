@@ -456,7 +456,8 @@ async def grade_card_endpoint(
             # right — no retry then.)
             _reg = (result.get("centering") or {}).get("registration") or {}
             _all_ransac = bool(_reg.get("tried")) and all(
-                ("ransac failed" in t or "too few" in t or "http" in t) for t in (_reg.get("tried") or []))
+                ("ransac failed" in t or "too few" in t or "http" in t or t.startswith("("))
+                for t in (_reg.get("tried") or []))
             if (not _reg.get("accepted") and str(_reg.get("reason", "")).startswith("no candidate")
                     and (not (ident or {}).get("number") or _all_ransac)):
                 try:
