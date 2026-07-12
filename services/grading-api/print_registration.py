@@ -1087,7 +1087,17 @@ def apply_to_result(result, identity):
             if _vid.ENABLED:
                 # Visual retrieval (RAG over renders) leads: image-native candidates, text as backup.
                 # Vintage renders are SCANS (their own print offset) — same gate as the text path.
-                for vcid, _sim in _vid.candidates(card):
+                for rank, (vcid, _sim) in enumerate(_vid.candidates(card)):
+                    if vcid.startswith("_cardback"):
+                        # Reference CARD-BACK embeddings live in the index (backs match each other at
+                        # ~0.93 cross-holder but fronts at only ~0.66, so magnitude alone can't separate).
+                        # Top-ranked back = this photo is a back: registration is meaningless and the
+                        # wrong-artwork cap must not fire (a back's selector read is legitimately good).
+                        if rank == 0:
+                            cen["registration"] = {"accepted": False,
+                                                   "reason": f"card back (matched back reference, sim {_sim:.2f})"}
+                            return
+                        continue                                     # never a registration candidate
                     if vis_top_sim is None or _sim > vis_top_sim:
                         vis_top_sim = _sim
                     url, rd = _catalog_meta(vcid)
