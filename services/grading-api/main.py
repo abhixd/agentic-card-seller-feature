@@ -467,6 +467,29 @@ async def grade_card_endpoint(
                         _preg.apply_to_result(result, ident)
                 except Exception:
                     pass
+            # RE-WARP LOOP (PRINT_REG_REWARP=1): registration failed, but the homography diagnosis says the
+            # WARP itself is locally distorted (a bad SAM3 quad corner — e.g. a shadow bulge that clips the
+            # opposite corner out of frame). Re-grade ONCE on the anchor-corrected corners via the Modal
+            # contour path, and keep the re-warp ONLY if registration then verifies on it. One iteration:
+            # the corrected warp may still carry a small ring, which the gray-zone tightener handles.
+            _reg = (result.get("centering") or {}).get("registration") or {}
+            _rw = _reg.get("rewarp")
+            if _rw and getattr(_preg, "REWARP", False):
+                try:
+                    src_corners = _preg.map_warp_frac_to_source(result, _rw["corners_frac"])
+                    if src_corners:
+                        import remote_grade as _rg
+                        result2 = await loop.run_in_executor(
+                            None, lambda: _rg.grade_contour(img_bgr, src_corners, bool(zoom), raw_bytes=raw_front))
+                        if isinstance(result2, dict) and not result2.get("error"):
+                            _preg.apply_to_result(result2, ident)
+                            reg2 = (result2.get("centering") or {}).get("registration") or {}
+                            if reg2.get("accepted"):
+                                reg2["rewarped"] = {"dev_px": _rw["dev_px"], "ref_id": _rw.get("ref_id")}
+                                result2["_rewarped"] = True
+                                result = result2
+                except Exception:
+                    pass
             if probe_res is not None:
                 _preg.apply_to_result(probe_res, ident)
         except Exception:

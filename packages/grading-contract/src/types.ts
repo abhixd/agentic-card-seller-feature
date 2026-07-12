@@ -74,6 +74,10 @@ export interface Registration {
   frame_insets?: Record<string, number> | null;
   /** sides moved inward (px) by the gray-zone recovery (1-3% oversize warp, tighten + full re-verify) */
   gray_zone_tightened?: Record<string, number> | null;
+  /** bad-warp diagnosis on a failed registration: homography-corrected corners + deviation px */
+  rewarp?: Record<string, unknown> | null;
+  /** set on an accepted registration produced by the re-warp loop (dev_px corrected, ref_id) */
+  rewarped?: Record<string, unknown> | null;
 }
 
 export interface Pillar {

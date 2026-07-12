@@ -55,6 +55,12 @@ _RESCUE_BAND = (0.2, 1.8)       # the cut is searched within [0.2, 1.8] × nomin
 # and (c) the resulting print→cut margin stays plausible. Diagnostic over my_cards: fires on 1/44 sides —
 # card_025 R, whose sleeve overhangs the die-cut by ~11px (confirmed in the original photo).
 TIGHTEN = os.environ.get("PRINT_REG_TIGHTEN", "").strip().lower() in ("1", "true", "yes", "on")
+# Re-warp loop: when registration fails but a real-but-weak fit exists, a HOMOGRAPHY fit against the render
+# can diagnose a locally-bad SAM3 quad (one corner off → perspective component the similarity fit can't
+# see) and produce corrected corners. print_registration only PROPOSES (registration.rewarp); main.py
+# executes ONE re-grade via the Modal contour path and keeps it only if registration then verifies.
+REWARP = os.environ.get("PRINT_REG_REWARP", "").strip().lower() in ("1", "true", "yes", "on")
+_REWARP_DEV = float(os.environ.get("PRINT_REG_REWARP_DEV", "8"))     # working-px corner deviation to propose
 _TIGHTEN_EP_MAX = float(os.environ.get("PRINT_REG_TIGHTEN_EP_MAX", "1.5"))   # edge "absent" below this ratio
 _TIGHTEN_PP_MIN = float(os.environ.get("PRINT_REG_TIGHTEN_PP_MIN", "5.0"))   # candidate line must be this coherent
 NOMINAL_INSET = 0.034            # per_side_selector.CENTER — the expected print-frame inset on a modern card
@@ -431,9 +437,8 @@ def register(card_bgr, ref_bgr, gates=None):
 
 
 # ── outer-anchor rescue (cased/slabbed/sleeved raw cards) ───────────────────────────────────────────
-def _fit_loose(card_bgr, ref_bgr):
-    """Gate-free registration fit → (card_work, ref_work, M) or None. Used only to locate the print frame
-    when the gated register() refused on scale — the rescue's final acceptance re-runs the FULL gates."""
+def _sift_matches(card_bgr, ref_bgr):
+    """Shared working-scale SIFT matching → (card_work, ref_work, src_pts, dst_pts) or None."""
     Hn = 1024
     sc = Hn / card_bgr.shape[0]
     card = cv2.resize(card_bgr, (int(card_bgr.shape[1] * sc), Hn))
@@ -456,11 +461,85 @@ def _fit_loose(card_bgr, ref_bgr):
         return None
     src = np.float32([kc[m.queryIdx].pt for m in good])
     dst = np.float32([kr[m.trainIdx].pt for m in good])
+    return card, ref, src, dst
+
+
+def _fit_loose(card_bgr, ref_bgr):
+    """Gate-free registration fit → (card_work, ref_work, M) or None. Used only to locate the print frame
+    when the gated register() refused on scale — the rescue's final acceptance re-runs the FULL gates."""
+    sm = _sift_matches(card_bgr, ref_bgr)
+    if sm is None:
+        return None
+    card, ref, src, dst = sm
     cv2.setRNGSeed(1234567)
     M, inl = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=3.0, maxIters=10000)
     if M is None or inl is None or int(inl.sum()) < 20:
         return None
     return card, ref, M
+
+
+def _diagnose_rewarp(card_bgr, ref_bgr):
+    """BAD-WARP diagnosis: warp↔render should be a SIMILARITY when the warp's quad was right — a similarity
+    fit is blind to a single bad quad corner (global scale stays ~1; ex_1_front read sc 0.9999 while its
+    bottom-left quad corner was 35px off). A full HOMOGRAPHY exposes it: any perspective component means
+    the quad was wrong, and the render's corners mapped through the inverse homography ARE the true die-cut
+    corners in warp coords — i.e. the correction. Returns (corners_frac 4x[x,y], dev_px, h_inliers) or None
+    (warp fine / can't judge / implausible)."""
+    sm = _sift_matches(card_bgr, ref_bgr)
+    if sm is None:
+        return None
+    card_w, ref_w, src, dst = sm
+    cv2.setRNGSeed(1234567)
+    Hm, inl = cv2.findHomography(src, dst, cv2.RANSAC, 3.0, maxIters=10000)
+    if Hm is None or inl is None or int(inl.sum()) < 30:
+        return None
+    CW, CH = card_w.shape[1], card_w.shape[0]
+    RW, RH = ref_w.shape[1], ref_w.shape[0]
+    rc = np.float32([[0, 0], [RW, 0], [RW, RH], [0, RH]])
+    pts = np.hstack([rc, np.ones((4, 1), np.float32)]) @ np.linalg.inv(Hm).T
+    if np.any(np.abs(pts[:, 2]) < 1e-6):
+        return None
+    tc = pts[:, :2] / pts[:, 2:3]
+    wc = np.float32([[0, 0], [CW, 0], [CW, CH], [0, CH]])
+    dev = float(np.abs(tc - wc).max())
+    if dev < _REWARP_DEV or dev > 0.25 * min(CW, CH):
+        return None                                                  # fine, or implausibly broken
+    if not cv2.isContourConvex(tc.astype(np.float32)):
+        return None
+    return ([[round(float(x) / CW, 4), round(float(y) / CH, 4)] for x, y in tc],
+            round(dev, 1), int(inl.sum()))
+
+
+def map_warp_frac_to_source(result, corners_frac):
+    """Corrected corners (warp-fraction coords) → SOURCE-photo pixels, through the inverse of the
+    quad→rect perspective used to build the warp. Sanity: area within [0.7, 1.4]× the original quad,
+    convex, corners clipped to ±5% of the source bounds. Returns [[x,y],...] or None."""
+    import base64
+    quad = result.get("_quad_padded")
+    wj = result.get("_warped_jpeg_b64")
+    if not quad or len(quad) != 4 or not wj:
+        return None
+    img = cv2.imdecode(np.frombuffer(base64.b64decode(wj), np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    Hh, Ww = img.shape[:2]
+    Hq = cv2.getPerspectiveTransform(np.float32(quad), np.float32([[0, 0], [Ww, 0], [Ww, Hh], [0, Hh]]))
+    pts = np.float32([[fx * Ww, fy * Hh, 1.0] for fx, fy in corners_frac]) @ np.linalg.inv(Hq).T
+    if np.any(np.abs(pts[:, 2]) < 1e-6):
+        return None
+    src = pts[:, :2] / pts[:, 2:3]
+    a1 = cv2.contourArea(np.float32(quad))
+    a2 = cv2.contourArea(src.astype(np.float32))
+    if not (0.7 * a1 <= a2 <= 1.4 * a1) or not cv2.isContourConvex(src.astype(np.float32)):
+        return None
+    od = result.get("_orig_dims") or []
+    out = []
+    for x, y in src:
+        if len(od) >= 2 and od[0] and od[1]:
+            x = min(max(float(x), -0.05 * od[0]), 1.05 * od[0])
+            y = min(max(float(y), -0.05 * od[1]), 1.05 * od[1])
+        out.append([round(float(x), 1), round(float(y), 1)])
+    return out
 
 
 def _band_cut_search(card_work, frame_px, size_meas=None):
@@ -848,7 +927,7 @@ def apply_to_result(result, identity):
         # TRY-AND-VERIFY: text matching only needs to get the right card into the top-K — registration
         # itself is the verifier (a wrong card's artwork cannot produce a dense unit-scale RANSAC fit;
         # observed rejecting wrong Pokémon, wrong prints, even a card-back placeholder render).
-        meta, tried, scale_rejects = None, [], []
+        meta, tried, scale_rejects, weak_fits = None, [], [], []
 
         def _try_loop(cand_list):
             for cid in cand_list:
@@ -869,6 +948,8 @@ def apply_to_result(result, identity):
                             and MAX_SCALE_DEV < abs((m.get("scale") or 1) - 1.0) <= _RESCUE_MAX_DEV):
                         scale_rejects.append((m["inliers"], cid, ref,      # scale-ONLY reject: rescue candidate
                                               abs((m.get("scale") or 1) - 1.0)))  # if big enough, else demote-only
+                    if m["inliers"] >= 25 and (m.get("resid_px") or 9) <= MAX_RESID:
+                        weak_fits.append((m["inliers"], cid, ref))         # real artwork match → rewarp-diagnosable
                 else:
                     tried.append(f"{cid}:{m.get('reason', 'rej')}")
             return None
@@ -917,6 +998,19 @@ def apply_to_result(result, identity):
                                                  + (f"; {gray_diag}" if gray_diag else ""))
                 cur = cen.get("confidence")
                 cen["confidence"] = round(min(cur if cur is not None else 1.0, 0.4), 3)
+            if REWARP and weak_fits:
+                # PROPOSE a re-warp: a real artwork match exists but registration can't accept — check
+                # whether the WARP itself is the problem (homography exposes a locally-bad quad corner).
+                # main.py executes the proposal (one Modal contour re-grade, verify-or-discard).
+                try:
+                    _, cid_w, ref_w2 = max(weak_fits)
+                    d = _diagnose_rewarp(card, ref_w2)
+                    if d is not None:
+                        corners, dev, ninl = d
+                        cen["registration"]["rewarp"] = {"corners_frac": corners, "dev_px": dev,
+                                                         "h_inliers": ninl, "ref_id": cid_w}
+                except Exception:
+                    pass
             return
         meta["tried"] = tried
         filter_ctx = meta.pop("_filter_ctx", None)                  # numpy arrays — never serialize

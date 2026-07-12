@@ -450,6 +450,32 @@
           ],
           "default": null,
           "title": "Gray Zone Tightened"
+        },
+        "rewarp": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rewarp"
+        },
+        "rewarped": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rewarped"
         }
       },
       "required": [
@@ -672,5 +698,5 @@
   "title": "GradeResponse",
   "type": "object",
   "$id": "https://acs/grading-contract/grade-response.schema.json",
-  "x-contract-version": "1.10.0"
+  "x-contract-version": "1.11.0"
 }
