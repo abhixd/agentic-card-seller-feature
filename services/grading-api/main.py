@@ -503,7 +503,12 @@ async def grade_card_endpoint(
                 except Exception:
                     pass
             if probe_res is not None:
-                _preg.apply_to_result(probe_res, ident)
+                # Register the probe ONLY when the main result registered: on failure the probe would
+                # repeat the entire candidate sweep (visual + retries) for nothing — main and probe both
+                # fall back to the selector, so the stability delta stays same-source and meaningful.
+                _main_reg2 = (result.get("centering") or {}).get("registration") or {}
+                if _main_reg2.get("accepted"):
+                    _preg.apply_to_result(probe_res, ident)
         except Exception:
             pass
     if probe_res is not None:

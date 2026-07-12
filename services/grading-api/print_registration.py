@@ -842,6 +842,80 @@ def _rescue_outer(card_bgr, ref_bgr):
                                "y1": round(float(mapped_cr[:, 1].min()) / Hw, 4),
                                "x2": round(float(mapped_cr[:, 0].max()) / Ww, 4),
                                "y2": round(float(mapped_cr[:, 1].max()) / Hw, 4)}
+    # Photometric OUTWARD-ONLY snap: pokemontcg renders depict SIR/etched borders as a flat gray
+    # PLACEHOLDER whose width differs from the physical etch, so the extrapolated corners can land on the
+    # frame line instead of the die-cut (card_035 top: 25px inside). Where an actual coherent line exists
+    # outward of the extrapolation (the physical cut vs the case), snap to it; invisible sides keep the
+    # extrapolation (their low cut_edge_support keeps confidence honest).
+    try:
+        gx2, gy2 = _grad_mags(card_w)
+        cr2 = meta2["content_region"]
+        m_nx = NOMINAL_INSET / (1 - 2 * NOMINAL_INSET) * (cr2["x2"] - cr2["x1"]) * Ww
+        m_ny = NOMINAL_INSET / (1 - 2 * NOMINAL_INSET) * (cr2["y2"] - cr2["y1"]) * Hw
+        box = {"L": bx1, "T": by1, "R": bx2, "B": by2}
+        fr_px = {"L": cr2["x1"] * Ww, "T": cr2["y1"] * Hw, "R": cr2["x2"] * Ww, "B": cr2["y2"] * Hw}
+        snapped = {}
+        thr = float(os.environ.get("PRINT_REG_SNAP_PROM", "2.5"))
+        for side in ("L", "T", "R", "B"):
+            horiz = side in ("T", "B")
+            mag = gy2 if horiz else gx2
+            lo2, hi2 = (0, Ww) if horiz else (0, Hw)
+            lim = Hw if horiz else Ww
+            band = int(0.035 * (Hw if horiz else Ww))
+            m_nom_s = m_ny if horiz else m_nx
+            quals = []
+            for d in range(6, band + 1):
+                pp = box[side] - d if side in ("L", "T") else box[side] + d
+                if not (2 <= pp < lim - 2):
+                    break
+                r_ = _line_prominence(mag, pp, lo2, hi2, horiz, Hw, Ww)
+                if r_ >= thr:
+                    quals.append((d, pp, r_))
+            if not quals:
+                continue
+            # outermost qualifying LINE: the contiguous run containing the largest d, at its prominence
+            # PEAK (the raw outermost pixel is the edge's outer shoulder — it overshoots the cut by a
+            # few px and can trip the margin cap).
+            quals.sort()
+            run = [quals[-1]]
+            for q in reversed(quals[:-1]):
+                if run[-1][0] - q[0] > 3:
+                    break
+                run.append(q)
+            best = max(run, key=lambda t: t[2])[1]
+            marg = abs(best - fr_px[side])                           # frame→cut must stay plausible
+            if not (0.35 * m_nom_s <= marg <= 1.9 * m_nom_s):
+                continue
+            snapped[side] = int(abs(best - box[side]))
+            box[side] = best
+        if snapped:
+            # Per-axis MIRROR: the placeholder-border width error is symmetric (the render's gray band is
+            # uniform), so a snap on one side calibrates the whole axis. Mirror the shift to the opposite
+            # side unless that side has its own photometric line at its current position (evidence wins).
+            # Without this, a one-sided snap mixes corrected and biased margins (card_035: false 69/31).
+            mirrored = {}
+            for s1, s2 in (("T", "B"), ("B", "T"), ("L", "R"), ("R", "L")):
+                if s1 in snapped and s2 not in snapped and s2 not in mirrored:
+                    horiz2 = s2 in ("T", "B")
+                    mag2 = gy2 if horiz2 else gx2
+                    lo3, hi3 = (0, Ww) if horiz2 else (0, Hw)
+                    ratio = _line_prominence(mag2, int(round(box[s2])), lo3, hi3, horiz2, Hw, Ww)
+                    if (ratio - 1.0) / 0.8 < 0.5:
+                        box[s2] = box[s2] - snapped[s1] if s2 in ("L", "T") else box[s2] + snapped[s1]
+                        mirrored[s2] = snapped[s1]
+            if mirrored:
+                meta2["cut_mirror"] = mirrored
+            meta2["cut_snap"] = snapped
+            bx1, by1, bx2, by2 = box["L"], box["T"], box["R"], box["B"]
+            L, R = fr_px["L"] - bx1, bx2 - fr_px["R"]                # UNCLIPPED margins for the read
+            T, B = fr_px["T"] - by1, by2 - fr_px["B"]
+            if min(L, R, T, B) > 0:                                  # read from photometric cut evidence
+                meta2["lr"] = f"{round(L / (L + R) * 100)}/{round(R / (L + R) * 100)}"
+                meta2["tb"] = f"{round(T / (T + B) * 100)}/{round(B / (T + B) * 100)}"
+    except Exception:
+        pass
+    bx1, by1 = max(bx1, 0), max(by1, 0)                              # display box clipped to the warp
+    bx2, by2 = min(bx2, Ww - 1), min(by2, Hw - 1)
     meta2["cut_box"] = [round(bx1 / Ww, 4), round(by1 / Hw, 4), round(bx2 / Ww, 4), round(by2 / Hw, 4)]
     meta2["outer_corrected"] = True
     try:                                                             # coords are working-scale → probe card_w
