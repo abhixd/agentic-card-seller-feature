@@ -57,6 +57,10 @@ function ScanDetails({ cen }: { cen: CenteringDetails }) {
           <DetailRow k="Anchor quality"
             v={`${reg?.inliers ?? '—'} anchor points · ${reg?.resid_px ?? '—'}px residual · scale ${reg?.scale ?? '—'}`} />
         )}
+        {anchored && reg?.outer_tightened && (
+          <DetailRow k="Outer tightened"
+            v={`${Object.entries(reg.outer_tightened).map(([s, v]) => `${s} ${v}px`).join(' · ')} — sleeve overhang beyond the die-cut excluded (verified against the anchored print position)`} />
+        )}
         {anchored && reg?.outer_corrected && (
           <DetailRow k="Cut edge visibility"
             v={reg?.cut_edge_support

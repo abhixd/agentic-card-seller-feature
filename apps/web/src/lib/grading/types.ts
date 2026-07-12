@@ -49,6 +49,8 @@ export interface CenteringResult {
     outer_corrected?: boolean | null
     /** per-side (T/B/L/R) photometric confirmability of the rescued cut line, 0..1 */
     cut_edge_support?: Record<string, number> | null
+    /** sides moved inward (px) by the anchored sleeve-overhang tightener */
+    outer_tightened?: Record<string, number> | null
   } | null
 }
 

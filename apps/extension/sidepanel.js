@@ -678,6 +678,10 @@ function renderPSAResult(r, listing) {
     if (cen._source === "print_reg" && reg?.accepted) {
       row("Read method", `⚓ print-anchored to the official render${reg.ref_id ? ` (${reg.ref_id})` : ""}`);
       row("Anchor quality", `${reg.inliers ?? "—"} anchors · ${reg.resid_px ?? "—"}px residual · scale ${reg.scale ?? "—"}`);
+      if (reg.outer_tightened) {
+        row("Outer tightened", Object.entries(reg.outer_tightened).map(([s, v]) => `${s} ${v}px`).join(" · ")
+          + " — sleeve overhang beyond the die-cut excluded");
+      }
       if (reg.outer_corrected) {
         const sup = reg.cut_edge_support;
         row("Cut edge visibility", sup

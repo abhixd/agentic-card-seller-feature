@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = "1.7.0"   # 1.7.0: + registration.outer_corrected/cut_edge_support/tried/gate (rescue observability, additive)
+CONTRACT_VERSION = "1.8.0"   # 1.8.0: + registration.outer_tightened (anchored per-side sleeve-overhang tightening, additive)
 # 1.5.0: + optional ?stability=1 grade input → centering.stability block (additive)
 # 1.4.0: + optional `contour` grade input (manual 4-corner boundary → skips SAM3, additive)
 # 1.3.0: + defect_boxes (per-pillar defect outline rectangles, optional, additive)
@@ -49,6 +49,8 @@ class Registration(BaseModel):
     outer_corrected: Optional[bool] = None             # True = outer-anchor rescue relocated the die-cut
     cut_edge_support: Optional[Dict[str, float]] = None  # per-side (T/B/L/R) photometric confirmability of the
                                                        # rescued cut line, 0..1; low = extrapolated → low conf
+    outer_tightened: Optional[Dict[str, float]] = None  # sides moved inward (px) by the anchored sleeve-
+                                                       # overhang tightener (PRINT_REG_TIGHTEN=1)
 
 
 class Stability(BaseModel):

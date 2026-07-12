@@ -43,6 +43,15 @@ SCRATCH_NOVEL_THR = float(os.environ.get("PRINT_REG_SCRATCH_THR", "0.30"))
 OUTER_RESCUE = os.environ.get("PRINT_REG_OUTER", "").strip().lower() in ("1", "true", "yes", "on")
 _RESCUE_MAX_DEV = 0.25          # beyond ±25% scale the "ring" story is implausible — abstain
 _RESCUE_BAND = (0.2, 1.8)       # the cut is searched within [0.2, 1.8] × nominal margin outside the print frame
+# Anchored outer tightening (per-side sleeve overhang on otherwise-registered cards): a side is moved
+# INWARD only when (a) the current warp edge has ~no line prominence (photometrically absent — we never
+# override real evidence), (b) a strong coherent line exists inside the anchored miscut band, away from
+# the known print-frame position (the anchors tell us exactly where the frame is, so it can't be latched),
+# and (c) the resulting print→cut margin stays plausible. Diagnostic over my_cards: fires on 1/44 sides —
+# card_025 R, whose sleeve overhangs the die-cut by ~11px (confirmed in the original photo).
+TIGHTEN = os.environ.get("PRINT_REG_TIGHTEN", "").strip().lower() in ("1", "true", "yes", "on")
+_TIGHTEN_EP_MAX = float(os.environ.get("PRINT_REG_TIGHTEN_EP_MAX", "1.5"))   # edge "absent" below this ratio
+_TIGHTEN_PP_MIN = float(os.environ.get("PRINT_REG_TIGHTEN_PP_MIN", "5.0"))   # candidate line must be this coherent
 NOMINAL_INSET = 0.034            # per_side_selector.CENTER — the expected print-frame inset on a modern card
 _CACHE = os.path.join(tempfile.gettempdir(), "print_reg_refs")
 os.makedirs(_CACHE, exist_ok=True)
@@ -462,42 +471,105 @@ def _band_cut_search(card_work, frame_px, size_meas=None):
     return {"L": xp[0], "T": yp[0], "R": xp[1], "B": yp[1]}
 
 
-def _cut_edge_support(card_bgr, box_px):
-    """Is the claimed die-cut line photometrically CONFIRMABLE? Per side: LINE PROMINENCE — the
-    perpendicular gradient integrated along the full side, as a function of offset from the claimed line.
-    A real cut is a coherent line: the profile peaks sharply within ±2px of the claim. Texture (a sparkle
-    case around a sparkle border — the card_035 situation) has strong gradients EVERYWHERE, so the profile
-    is flat and prominence ≈ 0. (A per-point 'any peak near the line' test saturates on texture — same
-    failure mode as the band-search surround tests; line-integration is what distinguishes cut from case.)
-    Returns per-side scores in [0,1]: peak-over-background ratio, 1.0 at ≥1.8× the offset median."""
-    x1, y1, x2, y2 = [int(round(v)) for v in box_px]
+def _line_prominence(mag, fixed, lo, hi, horiz, H, W, R=10):
+    """LINE PROMINENCE ratio: perpendicular gradient integrated along the full line at `fixed`, divided by
+    the same statistic at parallel offset lines (|d| ≥ 4px). A real cut is a coherent line — sharp peak
+    within ±2px. Texture (sparkle case, sleeve plastic) has strong gradients EVERYWHERE, so the profile is
+    flat and the ratio ≈ 1. (A per-point 'any peak near the line' test saturates on texture — same failure
+    mode as the band-search surround tests; line-integration is what distinguishes cut from case.)"""
+    pts = np.linspace(lo + 0.08 * (hi - lo), hi - 0.08 * (hi - lo), 60).astype(int)
+    prof = {}
+    for d in range(-R, R + 1):
+        p = fixed + d
+        if horiz:
+            if not (0 <= p < H):
+                continue
+            prof[d] = float(mag[p, pts].mean())
+        else:
+            if not (0 <= p < W):
+                continue
+            prof[d] = float(mag[pts, p].mean())
+    near = [v for d, v in prof.items() if abs(d) <= 2]
+    bg = [v for d, v in prof.items() if abs(d) >= 4]
+    if not near or len(bg) < 4:
+        return 0.0
+    return max(near) / (float(np.median(bg)) + 1e-6)
+
+
+def _grad_mags(card_bgr):
     gray = cv2.cvtColor(card_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    gx = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3))
-    gy = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
-    H, W = gray.shape
-    R = 10
-    def side(mag, fixed, lo, hi, horiz):
-        pts = np.linspace(lo + 0.08 * (hi - lo), hi - 0.08 * (hi - lo), 60).astype(int)
-        offs = range(-R, R + 1)
-        prof = {}
-        for d in offs:
-            p = fixed + d
-            if horiz:
-                if not (0 <= p < H):
-                    continue
-                prof[d] = float(mag[p, pts].mean())
-            else:
-                if not (0 <= p < W):
-                    continue
-                prof[d] = float(mag[pts, p].mean())
-        near = [v for d, v in prof.items() if abs(d) <= 2]
-        bg = [v for d, v in prof.items() if abs(d) >= 4]
-        if not near or len(bg) < 4:
-            return 0.0
-        ratio = max(near) / (float(np.median(bg)) + 1e-6)
+    return (np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)),
+            np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)))
+
+
+def _cut_edge_support(card_bgr, box_px):
+    """Per-side photometric confirmability of a claimed die-cut box, mapped to [0,1]:
+    prominence ratio 1.0 → 0, ≥1.8 → 1.0. Low = the line is extrapolated, not visible."""
+    x1, y1, x2, y2 = [int(round(v)) for v in box_px]
+    gx, gy = _grad_mags(card_bgr)
+    H, W = card_bgr.shape[:2]
+    def score(mag, fixed, lo, hi, horiz):
+        ratio = _line_prominence(mag, fixed, lo, hi, horiz, H, W)
         return round(max(0.0, min(1.0, (ratio - 1.0) / 0.8)), 3)
-    return {"T": side(gy, y1, x1, x2, True), "B": side(gy, y2, x1, x2, True),
-            "L": side(gx, x1, y1, y2, False), "R": side(gx, x2, y1, y2, False)}
+    return {"T": score(gy, y1, x1, x2, True), "B": score(gy, y2, x1, x2, True),
+            "L": score(gx, x1, y1, y2, False), "R": score(gx, x2, y1, y2, False)}
+
+
+def _tighten_outer(card, refw, M):
+    """Anchored per-side outer tightening (sleeve overhang over a dark border). Operates on the accepted
+    registration's working-scale ctx. A side moves INWARD only when ALL hold: the current warp edge has no
+    coherent line (prominence < _TIGHTEN_EP_MAX — we never override real photometric evidence), a strong
+    line (≥ _TIGHTEN_PP_MIN) exists inside the anchored miscut band but OUTSIDE the known print-frame
+    position (frame can't be latched — the anchors locate it exactly), and the resulting print→cut margin
+    stays in [0.35, 1.8]×nominal. Returns (cut{L,T,R,B} px, moved{side: px}, frame{L,T,R,B} px) or None."""
+    H, W = card.shape[:2]
+    RW, RH = refw.shape[1], refw.shape[0]
+    Minv = cv2.invertAffineTransform(M)
+    corners = np.float32([[0, 0], [RW, 0], [RW, RH], [0, RH]]) @ Minv[:, :2].T + Minv[:, 2]
+    anch = {"L": float(corners[:, 0].min()), "T": float(corners[:, 1].min()),
+            "R": float(corners[:, 0].max()), "B": float(corners[:, 1].max())}
+    ins = NOMINAL_INSET
+    fpx = np.float32([[RW * ins, RH * ins], [RW * (1 - ins), RH * ins],
+                      [RW * (1 - ins), RH * (1 - ins)], [RW * ins, RH * (1 - ins)]]) @ Minv[:, :2].T + Minv[:, 2]
+    fr = {"L": float(fpx[:, 0].min()), "T": float(fpx[:, 1].min()),
+          "R": float(fpx[:, 0].max()), "B": float(fpx[:, 1].max())}
+    m_nom = ins / (1 - 2 * ins) * (anch["R"] - anch["L"])
+    gx, gy = _grad_mags(card)
+    cut = {"L": 0.0, "T": 0.0, "R": float(W - 1), "B": float(H - 1)}
+    moved = {}
+    for side in ("L", "T", "R", "B"):
+        horiz = side in ("T", "B")
+        mag = gy if horiz else gx
+        lo, hi = (0, W) if horiz else (0, H)
+        lim = H if horiz else W
+        edge = int(round(cut[side]))
+        if _line_prominence(mag, edge, lo, hi, horiz, H, W) >= _TIGHTEN_EP_MAX:
+            continue                                                 # the warp edge IS a line — trust it
+        b0 = int(round(anch[side] - 1.5 * m_nom))
+        b1 = int(round(anch[side] + 1.5 * m_nom))
+        if side in ("L", "T"):
+            b0 = max(b0, edge + 1)                                   # inward moves only
+            b1 = min(b1, int(fr[side]) - 7, lim - 4)                 # never reach the print frame
+        else:
+            b1 = min(b1, edge - 1)
+            b0 = max(b0, int(fr[side]) + 7, 3)
+        best_p, best_s = None, -1.0
+        for p in range(b0, b1 + 1):
+            if not (3 <= p < lim - 3):
+                continue
+            s = _line_prominence(mag, p, lo, hi, horiz, H, W)
+            if s > best_s:
+                best_s, best_p = s, p
+        if best_p is None or best_s < _TIGHTEN_PP_MIN:
+            continue
+        marg = abs(best_p - fr[side])
+        if not (0.35 * m_nom <= marg <= 1.8 * m_nom):
+            continue
+        cut[side] = float(best_p)
+        moved[side] = round(abs(best_p - edge), 1)
+    if not moved:
+        return None
+    return cut, moved, fr
 
 
 def _rescue_outer(card_bgr, ref_bgr):
@@ -703,6 +775,22 @@ def apply_to_result(result, identity):
             return
         meta["tried"] = tried
         filter_ctx = meta.pop("_filter_ctx", None)                  # numpy arrays — never serialize
+        if TIGHTEN and not meta.get("outer_corrected") and filter_ctx is not None:
+            try:
+                t = _tighten_outer(*filter_ctx)
+            except Exception:
+                t = None
+            if t is not None:
+                tcut, moved, tfr = t
+                cw, ch = filter_ctx[0].shape[1], filter_ctx[0].shape[0]
+                L, R = tfr["L"] - tcut["L"], tcut["R"] - tfr["R"]
+                T, B = tfr["T"] - tcut["T"], tcut["B"] - tfr["B"]
+                if min(L, R, T, B) > 0:
+                    meta["lr"] = f"{round(L / (L + R) * 100)}/{round(R / (L + R) * 100)}"
+                    meta["tb"] = f"{round(T / (T + B) * 100)}/{round(B / (T + B) * 100)}"
+                    meta["outer_tightened"] = moved                  # px moved per side (working scale)
+                    result["_card_boundary"] = [round(tcut["L"] / cw, 4), round(tcut["T"] / ch, 4),
+                                                round((tcut["R"] + 1) / cw, 4), round((tcut["B"] + 1) / ch, 4)]
         cen["registration"] = {k: v for k, v in meta.items() if k != "content_region"}
         if meta.get("outer_corrected") and meta.get("cut_box"):
             # The true die-cut sits INSIDE the displayed warp (case/sleeve ring around it) — move the

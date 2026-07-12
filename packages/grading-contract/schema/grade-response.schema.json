@@ -405,6 +405,21 @@
           ],
           "default": null,
           "title": "Cut Edge Support"
+        },
+        "outer_tightened": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outer Tightened"
         }
       },
       "required": [
@@ -627,5 +642,5 @@
   "title": "GradeResponse",
   "type": "object",
   "$id": "https://acs/grading-contract/grade-response.schema.json",
-  "x-contract-version": "1.7.0"
+  "x-contract-version": "1.8.0"
 }
