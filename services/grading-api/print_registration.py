@@ -222,6 +222,14 @@ def _candidate_ids(identity):
 
 
 _IMG_URLS: dict = {}                                                # cid → the API's own images.large URL
+_CATALOG_META: dict = {}                                            # cid → (img_url, release_date)
+
+
+def _catalog_meta(cid):
+    if not _CATALOG_META:
+        for r in _load_index():
+            _CATALOG_META[r["id"]] = (r.get("img") or "", r.get("rd") or "")
+    return _CATALOG_META.get(cid) or ("", "")
 
 
 def first_token_pool(name, k=12, exclude=()):
@@ -940,13 +948,30 @@ def apply_to_result(result, identity):
         if not wj:
             cen["registration"] = {"accepted": False, "reason": "no warp"}
             return
-        cands, why = resolve_candidates(identity)
-        if not cands:
-            cen["registration"] = {"accepted": False, "reason": why}
-            return
         card = cv2.imdecode(np.frombuffer(base64.b64decode(wj), np.uint8), cv2.IMREAD_COLOR)
         if card is None:
             cen["registration"] = {"accepted": False, "reason": "warp decode"}
+            return
+        cands, why = resolve_candidates(identity)
+        vis_used = []
+        try:
+            import visual_id as _vid
+            if _vid.ENABLED:
+                # Visual retrieval (RAG over renders) leads: image-native candidates, text as backup.
+                # Vintage renders are SCANS (their own print offset) — same gate as the text path.
+                for vcid, _sim in _vid.candidates(card):
+                    url, rd = _catalog_meta(vcid)
+                    if rd and rd[:4] and int(rd[:4]) < MIN_YEAR:
+                        continue
+                    if url:
+                        _IMG_URLS[vcid] = url
+                    vis_used.append(vcid)
+        except Exception:
+            vis_used = []
+        if vis_used:
+            cands = list(dict.fromkeys(vis_used + (cands or [])))
+        if not cands:
+            cen["registration"] = {"accepted": False, "reason": why}
             return
         # TRY-AND-VERIFY: text matching only needs to get the right card into the top-K — registration
         # itself is the verifier (a wrong card's artwork cannot produce a dense unit-scale RANSAC fit;

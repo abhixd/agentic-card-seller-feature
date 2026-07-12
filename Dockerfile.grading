@@ -25,6 +25,12 @@ RUN grep -vE "^torch|^torchvision" /tmp/requirements.txt \
     | sed 's/opencv-python/opencv-python-headless/' \
     | pip install --no-cache-dir -r /dev/stdin
 
+# Pre-bake the DINOv2-small weights for visual_id (visual candidate retrieval) — otherwise the first
+# visual grade pays a ~90MB HF download at request time.
+RUN python -c "from transformers import AutoImageProcessor, AutoModel; \
+AutoImageProcessor.from_pretrained('facebook/dinov2-small'); \
+AutoModel.from_pretrained('facebook/dinov2-small')"
+
 # Copy backend source
 # Backend source: product API (main/inference/schemas/comps) + the grading
 # pipeline (grader/aggregator/grade_comps/grade_model) used by /grade.
@@ -41,6 +47,7 @@ COPY services/grading-api/main.py services/grading-api/inference.py services/gra
      services/grading-api/remote_detect.py services/grading-api/remote_grade.py services/grading-api/quad_refine.py \
      services/grading-api/rect_check.py services/grading-api/rect_correct.py \
      services/grading-api/print_registration.py services/grading-api/ptcg_index.json.gz \
+     services/grading-api/visual_id.py services/grading-api/ptcg_dino.npz \
      services/grading-api/grade_model.json services/grading-api/feedback_to_yolo.py ./
 
 # per-side selector model + bundled base training set (for /admin/train server-side retrain)
