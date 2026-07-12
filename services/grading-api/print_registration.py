@@ -743,27 +743,40 @@ def apply_to_result(result, identity):
         # itself is the verifier (a wrong card's artwork cannot produce a dense unit-scale RANSAC fit;
         # observed rejecting wrong Pokémon, wrong prints, even a card-back placeholder render).
         meta, tried, scale_rejects = None, [], []
-        for cid in cands:
-            ref, ferr = _fetch_render(cid)
-            if ref is None:
-                tried.append(f"{cid}:{ferr}")
-                continue
-            m = register(card, ref)
-            if m.get("accepted"):
-                tried.append(f"{cid}:ok")
-            elif m.get("inliers") is not None:                       # a fit existed — say which gate failed
-                tried.append(f"{cid}:{m.get('reason', 'rej')}(inl={m.get('inliers')} "
-                             f"res={m.get('resid_px')} sc={m.get('scale')})")
-                if (m["inliers"] >= 40 and (m.get("resid_px") or 9) <= MAX_RESID
-                        and MAX_SCALE_DEV < abs((m.get("scale") or 1) - 1.0) <= _RESCUE_MAX_DEV):
-                    scale_rejects.append((m["inliers"], cid, ref))   # scale-ONLY reject → rescue candidate
-            else:
-                tried.append(f"{cid}:{m.get('reason', 'rej')}")
-            if m.get("accepted"):
-                meta = m
-                meta["ref_id"] = cid
-                mark_winner(identity, cid)
-                break
+
+        def _try_loop(cand_list):
+            for cid in cand_list:
+                ref, ferr = _fetch_render(cid)
+                if ref is None:
+                    tried.append(f"{cid}:{ferr}")
+                    continue
+                m = register(card, ref)
+                if m.get("accepted"):
+                    tried.append(f"{cid}:ok")
+                    m["ref_id"] = cid
+                    mark_winner(identity, cid)                       # keyed on the ORIGINAL identity — the
+                    return m                                         # next same-misread run goes straight here
+                if m.get("inliers") is not None:                     # a fit existed — say which gate failed
+                    tried.append(f"{cid}:{m.get('reason', 'rej')}(inl={m.get('inliers')} "
+                                 f"res={m.get('resid_px')} sc={m.get('scale')})")
+                    if (m["inliers"] >= 40 and (m.get("resid_px") or 9) <= MAX_RESID
+                            and MAX_SCALE_DEV < abs((m.get("scale") or 1) - 1.0) <= _RESCUE_MAX_DEV):
+                        scale_rejects.append((m["inliers"], cid, ref))  # scale-ONLY reject → rescue candidate
+                else:
+                    tried.append(f"{cid}:{m.get('reason', 'rej')}")
+            return None
+
+        meta = _try_loop(cands)
+        if (meta is None and not scale_rejects and (identity or {}).get("number") and tried
+                and all(("ransac failed" in t or "too few" in t or "http" in t) for t in tried)):
+            # Wrong-artwork signature WITH a number present = the number was misread (case glare picks a
+            # digit run off the label/art). Retry the resolution NUMBER-STRIPPED — deterministic, no second
+            # vision roll needed; the prefix name pool + the registration verifier take it from there.
+            nn = {k: v for k, v in identity.items() if k != "number"}
+            extra = [c for c in (resolve_candidates(nn)[0] or []) if c not in set(cands)]
+            if extra:
+                tried.append("(number-stripped retry)")
+                meta = _try_loop(extra)
         if meta is None and OUTER_RESCUE and scale_rejects:
             # The fit is real but the warp crop includes a case/sleeve ring — try the outer-anchor rescue
             # with the best-fitting candidate. Acceptance is the full-gate re-registration on the crop.
