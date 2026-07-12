@@ -42,6 +42,11 @@ SCRATCH_NOVEL_THR = float(os.environ.get("PRINT_REG_SCRATCH_THR", "0.30"))
 # geometric de-sleeve never had). Fires only when every candidate failed and a scale-only reject exists.
 OUTER_RESCUE = os.environ.get("PRINT_REG_OUTER", "").strip().lower() in ("1", "true", "yes", "on")
 _RESCUE_MAX_DEV = 0.25          # beyond ±25% scale the "ring" story is implausible — abstain
+_RESCUE_MIN_DEV = float(os.environ.get("PRINT_REG_RESCUE_MIN_DEV", "0.03"))
+# ^ the rescue needs an UNAMBIGUOUS ring: a case/toploader adds ≥3-5% (card_035: 9.9%). A 1-3% excess is
+#   just a slightly loose SAM3 warp — rescuing there INVENTS a cut inside the card (card_006 @1.48%: the
+#   mapped cut chopped 2% off the bottom and read a false 50/50 while the selector's 42/58 was correct).
+#   Gray zone (1-3%): keep the selector read, demote confidence (the scale excess is real outer evidence).
 _RESCUE_BAND = (0.2, 1.8)       # the cut is searched within [0.2, 1.8] × nominal margin outside the print frame
 # Anchored outer tightening (per-side sleeve overhang on otherwise-registered cards): a side is moved
 # INWARD only when (a) the current warp edge has ~no line prominence (photometrically absent — we never
@@ -812,7 +817,8 @@ def apply_to_result(result, identity):
                                  f"res={m.get('resid_px')} sc={m.get('scale')})")
                     if (m["inliers"] >= 40 and (m.get("resid_px") or 9) <= MAX_RESID
                             and MAX_SCALE_DEV < abs((m.get("scale") or 1) - 1.0) <= _RESCUE_MAX_DEV):
-                        scale_rejects.append((m["inliers"], cid, ref))  # scale-ONLY reject → rescue candidate
+                        scale_rejects.append((m["inliers"], cid, ref,      # scale-ONLY reject: rescue candidate
+                                              abs((m.get("scale") or 1) - 1.0)))  # if big enough, else demote-only
                 else:
                     tried.append(f"{cid}:{m.get('reason', 'rej')}")
             return None
@@ -828,10 +834,13 @@ def apply_to_result(result, identity):
             if extra:
                 tried.append("(number-stripped retry)")
                 meta = _try_loop(extra)
-        if meta is None and OUTER_RESCUE and scale_rejects:
-            # The fit is real but the warp crop includes a case/sleeve ring — try the outer-anchor rescue
-            # with the best-fitting candidate. Acceptance is the full-gate re-registration on the crop.
-            _, cid, ref = max(scale_rejects)
+        rescueable = [t for t in scale_rejects if t[3] >= _RESCUE_MIN_DEV]
+        if meta is None and OUTER_RESCUE and rescueable:
+            # The fit is real and the warp crop is UNAMBIGUOUSLY larger than the card (a case/sleeve/
+            # toploader ring) — try the outer-anchor rescue with the best-fitting candidate. Acceptance is
+            # the full-gate re-registration on the crop. Sub-threshold scale excess (a slightly loose warp)
+            # deliberately does NOT rescue: the selector read stands and confidence is demoted below.
+            _, cid, ref, _dev = max(rescueable)
             r = _rescue_outer(card, ref)
             if r is not None:
                 meta = r
