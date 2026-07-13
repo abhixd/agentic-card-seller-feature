@@ -425,7 +425,7 @@ async def grade_card_endpoint(
     # /grade has no identify step normally, so under the flag we vision-ID concurrently with the grade.
     ident_task = None
     import print_registration as _preg
-    if _preg.ENABLED and not ct:
+    if _preg.ENABLED:
         try:
             import identify as _identify
             ident_task = loop.run_in_executor(None, _identify.identify_card, img_bgr, api_key)
@@ -447,7 +447,22 @@ async def grade_card_endpoint(
             if isinstance(cen, dict):
                 cen["stability"] = {"delta_pts": None, "confidence": None,
                                     "error": f"probe failed: {type(e).__name__}"}
-    if ident_task is not None:
+    if ident_task is not None and ct:
+        # 2c — manual-contour grades get the FULL anchor stack: the user's boundary marks the crop
+        # (same machinery as the re-warp loop), registration verifies on it, the frame datum refines
+        # the inner border, and the render-verified scratch filter suppresses content FPs. The user's
+        # boundary is authoritative for the warp — the re-warp loop never fires here (anchor-evidence
+        # self-adjust of ≤3% may still refine the measured box; Scan details records it).
+        try:
+            ident = await ident_task
+            bb = _preg.quad_boundary_in_warp(result, ct)
+            if bb:
+                result["_card_boundary"] = bb
+                result["_rewarped_boundary"] = True
+            _preg.apply_to_result(result, ident)
+        except Exception:
+            pass
+    elif ident_task is not None:
         try:
             ident = await ident_task
             # Registration applies to the PROBE result too, so the stability delta measures the

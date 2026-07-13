@@ -1118,9 +1118,12 @@ def _novel_line_score(card_w, ref_dil, box_px):
     return min(raw / max(1.0 - coverage, 0.15), 1.5)
 
 
-def _filter_surface_boxes(result, cen, card_full, filter_ctx):
+def _filter_surface_boxes(result, cen, card_full, filter_ctx, crop_off=None):
     """Suppress RF-DETR surface boxes whose 'scratch' line exists in the registered render (printed content,
-    not damage). Suppress-only; kept boxes gain render_novel for observability. Non-fatal."""
+    not damage). Suppress-only; kept boxes gain render_novel for observability. Non-fatal.
+    crop_off = (bx1,by1,bx2,by2) px in FULL-warp coords when the registration ran on a boundary CROP
+    (re-warped / manual-contour grades): boxes are full-warp fractions and must be shifted into the crop
+    before scoring; boxes outside the crop (sleeve-region detections) score None and are kept."""
     boxes = (result.get("defect_boxes") or {}).get("surface")
     if not boxes:
         return
@@ -1130,13 +1133,19 @@ def _filter_surface_boxes(result, cen, card_full, filter_ctx):
     ref_dil = cv2.dilate(cv2.Canny(cv2.cvtColor(ref_on, cv2.COLOR_BGR2GRAY), 40, 120),
                          np.ones((3, 3), np.uint8))
     H, W = card_full.shape[:2]
-    sc = card_w.shape[0] / H
+    if crop_off is not None:
+        bx1, by1, _bx2, by2 = crop_off
+        sc = card_w.shape[0] / max(by2 - by1, 1)
+    else:
+        bx1 = by1 = 0
+        sc = card_w.shape[0] / H
     kept, suppressed = [], 0
     for b in boxes:
         try:
             x, y, w, h = b["box"]
             score = _novel_line_score(card_w, ref_dil,
-                                      (x * W * sc, y * H * sc, (x + w) * W * sc, (y + h) * H * sc))
+                                      ((x * W - bx1) * sc, (y * H - by1) * sc,
+                                       ((x + w) * W - bx1) * sc, ((y + h) * H - by1) * sc))
         except Exception:
             score = None
         if score is not None and score < SCRATCH_NOVEL_THR:
@@ -1469,7 +1478,6 @@ def apply_to_result(result, identity):
             # of the boundary lines (drives the confidence gate below), and skip the tightener + scratch
             # filter (their ctx is crop-frame; defect boxes are warp-frame).
             meta["boundary_registered"] = True
-            filter_ctx = None
             bx1, by1, bx2, by2 = cb_off
             cr = meta.get("content_region")
             if cr:
@@ -1509,7 +1517,8 @@ def apply_to_result(result, identity):
             cen["registration"]["scratch_filter"] = {"skipped": "outer-corrected (frame mismatch)"}
         if SCRATCH_FILTER and filter_ctx is not None:
             try:
-                _filter_surface_boxes(result, cen, card, filter_ctx)
+                _filter_surface_boxes(result, cen, card_full if cb_off is not None else card,
+                                      filter_ctx, crop_off=cb_off)
             except Exception as e:                                   # filter is optional polish — never fatal
                 cen["registration"]["scratch_filter"] = {"error": type(e).__name__}
         # Accepted → the registered read replaces the selector's. Score ladder stays byte-compatible.
