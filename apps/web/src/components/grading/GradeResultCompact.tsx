@@ -246,7 +246,7 @@ export function GradeResultCompact({
                 onPointerDown={(e) => onHandleDown(h.which, h.side, e)}
                 onPointerMove={(e) => onHandleMove(h.which, h.side, e)}
                 onPointerUp={(e) => onHandleUp(h.which, h.side, e)}
-                className={`absolute size-3 -translate-x-1/2 -translate-y-1/2 touch-none border border-white shadow ${h.cur} ${h.which === 'outer' ? 'rounded-sm' : 'rounded-full'}`}
+                className={`absolute size-2 -translate-x-1/2 -translate-y-1/2 touch-none border border-white/80 shadow ${h.cur} ${h.which === 'outer' ? 'rounded-[2px]' : 'rounded-full'}`}
                 style={{ left: `${h.x}%`, top: `${h.y}%`, background: h.which === 'outer' ? EDGE : BORDER }} />
             ))}
           </div>
