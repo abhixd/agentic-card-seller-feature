@@ -35,6 +35,10 @@ export async function POST(req: Request) {
   }
 
   const title = formData.get('title')
+  const contour = formData.get('contour')   // manual 4-corner boundary (source px) → grader skips SAM3
   const zoom = new URL(req.url).searchParams.get('zoom') === '1'   // high-res defect close-ups
-  return proxyGrade(file, typeof title === 'string' && title ? { title } : undefined, zoom)
+  const fields: Record<string, string> = {}
+  if (typeof title === 'string' && title) fields.title = title
+  if (typeof contour === 'string' && contour) fields.contour = contour
+  return proxyGrade(file, Object.keys(fields).length ? fields : undefined, zoom)
 }

@@ -12,6 +12,7 @@ import type { GradeResult, CardProfile } from '@/lib/grading/types'
 import { GradeResultCompact } from '@/components/grading/GradeResultCompact'
 import { GradeFeedback } from '@/components/grading/GradeFeedback'
 import { DefectsPanel } from '@/components/grading/DefectsPanel'
+import { CenteringCorrection } from '@/components/grading/CenteringCorrection'
 
 const SCAN_STEPS = [
   'Finding your card…',
@@ -58,6 +59,28 @@ export default function GradePage() {
       setLoading(false)
     }
   }, [])
+
+  // Re-run the grade with a user-corrected outer boundary (manual-contour path: SAM3 skipped, the
+  // warp is rebuilt from the corrected corners, and registration/retrieval get a clean crop).
+  const regradeWithContour = useCallback(async (corners: number[][]) => {
+    if (!lastFile) return
+    setError(null)
+    setLoading(true)
+    setScanStep(0)
+    try {
+      const fd = new FormData()
+      fd.append('image', lastFile)
+      fd.append('contour', JSON.stringify(corners))
+      const res = await fetch('/api/grade?zoom=1', { method: 'POST', body: fd })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error ?? 'Re-grade failed')
+      setResult(data as GradeResult)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Re-grade failed')
+    } finally {
+      setLoading(false)
+    }
+  }, [lastFile])
 
   // /grade returns the grade fast (CV); identity needs a Claude vision read, so fetch it from /scout
   // separately and let the profile (and the verdict's dollar figures) fill in once it resolves.
@@ -196,6 +219,16 @@ export default function GradePage() {
               )}
             </div>
           )}
+
+          <CenteringCorrection
+            centering={result.centering}
+            warpedJpegB64={result._warped_jpeg_b64}
+            cardBoundary={result._card_boundary as number[] | undefined}
+            borderType={result._border_type as string | undefined}
+            graderBackend={result._grader_backend as string | undefined}
+            quadPadded={result._quad_padded as number[][] | undefined}
+            onRegrade={regradeWithContour}
+          />
 
           <GradeFeedback
             aspect="centering"
