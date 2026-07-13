@@ -1350,8 +1350,12 @@ def apply_to_result(result, identity):
                           max(by1o + float(mcb[:, 1].min()) * sc_b, 0),
                           min(bx1o + float(mcb[:, 0].max()) * sc_b, Wf - 1),
                           min(by1o + float(mcb[:, 1].max()) * sc_b, Hf - 1))
-                    if (abs(nb[0] - bx1o) < 0.03 * Wf and abs(nb[1] - by1o) < 0.03 * Hf
-                            and abs(nb[2] - bx2o) < 0.03 * Wf and abs(nb[3] - by2o) < 0.03 * Hf
+                    _badj = float(os.environ.get("PRINT_REG_BADJ_MAX", "0.12"))
+                    # Generous cap: hand-dragged corners are routinely 5-10% off (ring slop from the
+                    # loop is <3%). Magnitude is NOT the safety gate — the full-gates re-registration
+                    # at unit scale is, plus support-gated confidence downstream.
+                    if (abs(nb[0] - bx1o) < _badj * Wf and abs(nb[1] - by1o) < _badj * Hf
+                            and abs(nb[2] - bx2o) < _badj * Wf and abs(nb[3] - by2o) < _badj * Hf
                             and nb[2] - nb[0] > 200 and nb[3] - nb[1] > 200):
                         crop2 = card_full[int(nb[1]):int(nb[3]), int(nb[0]):int(nb[2])]
                         # Rescue-verify gates: identity is pre-established by the anchor loop and the
