@@ -12,7 +12,6 @@ import type { GradeResult, CardProfile } from '@/lib/grading/types'
 import { GradeResultCompact } from '@/components/grading/GradeResultCompact'
 import { GradeFeedback } from '@/components/grading/GradeFeedback'
 import { DefectsPanel } from '@/components/grading/DefectsPanel'
-import { CenteringCorrection } from '@/components/grading/CenteringCorrection'
 
 const SCAN_STEPS = [
   'Finding your card…',
@@ -201,7 +200,7 @@ export default function GradePage() {
       {/* ── Reveal + explore ── */}
       {result && (
         <>
-          <GradeResultCompact result={result} profile={profile} profileLoading={profileLoading} onGradeAnother={reset} />
+          <GradeResultCompact result={result} profile={profile} profileLoading={profileLoading} onGradeAnother={reset} onRegrade={regradeWithContour} />
 
           <DefectsPanel warpedJpegB64={result._warped_jpeg_b64} defects={result.defect_boxes} />
 
@@ -219,16 +218,6 @@ export default function GradePage() {
               )}
             </div>
           )}
-
-          <CenteringCorrection
-            centering={result.centering}
-            warpedJpegB64={result._warped_jpeg_b64}
-            cardBoundary={result._card_boundary as number[] | undefined}
-            borderType={result._border_type as string | undefined}
-            graderBackend={result._grader_backend as string | undefined}
-            quadPadded={result._quad_padded as number[][] | undefined}
-            onRegrade={regradeWithContour}
-          />
 
           <GradeFeedback
             aspect="centering"

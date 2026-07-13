@@ -13,6 +13,7 @@
 import { useRef, useState } from 'react'
 import type { GradeResult, CardIdentity, CardProfile } from '@/lib/grading/types'
 import { type Box, ratiosFromBox, centeringScore, overallScore, psaLabel } from '@/lib/grading/score'
+import { warpBoxToSourceCorners } from '@/lib/grading/homography'
 import { centeringPhrase, confidencePhrase, pillarNote, verdict, badgeWord } from '@/lib/grading/plain'
 import { PillarVisualDialog } from './PillarVisualDialog'
 import { CardProfileModal } from './CardProfileModal'
@@ -65,11 +66,14 @@ export function GradeResultCompact({
   profile,
   profileLoading,
   onGradeAnother,
+  onRegrade,
 }: {
   result: GradeResult
   profile?: CardProfile | null
   profileLoading?: boolean
   onGradeAnother?: () => void
+  /** re-run the grade with user-corrected OUTER corners (source px) via the manual-contour path */
+  onRegrade?: (corners: number[][]) => void
 }) {
   const cb = result._card_boundary && result._card_boundary.length === 4 ? result._card_boundary : null
   const cr0 = result.centering.content_region ?? null
@@ -77,6 +81,7 @@ export function GradeResultCompact({
 
   const [editing, setEditing] = useState(false)
   const [box, setBox] = useState<Box | null>(cr0 ? { ...cr0 } : null)
+  const [outer, setOuter] = useState<Box | null>(cb ? { x1: cb[0], y1: cb[1], x2: cb[2], y2: cb[3] } : null)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -85,13 +90,15 @@ export function GradeResultCompact({
   const [showProfile, setShowProfile] = useState(false)
   const [showZooms, setShowZooms] = useState(false)
   const wrap = useRef<HTMLDivElement>(null)
-  const drag = useRef<Side | null>(null)
+  const img = useRef<HTMLImageElement>(null)
+  const drag = useRef<{ which: 'inner' | 'outer'; side: Side } | null>(null)
   const pv = result.pillar_visuals
   const hasVisual = (p: string) => !!pv && !!pv[p as keyof typeof pv]
   const identity = profile?.identity
 
-  // Live scores: server values until the user edits, then recompute from the dragged box.
-  const liveRatios = box && cb && dirty ? ratiosFromBox(box, cb) : null
+  // Live scores: server values until the user edits, then recompute from the dragged boxes.
+  const cbLive = outer ? [outer.x1, outer.y1, outer.x2, outer.y2] : cb
+  const liveRatios = box && cbLive && dirty ? ratiosFromBox(box, cbLive) : null
   const [lr0, tb0] = [parseRatio(result.centering.left_right), parseRatio(result.centering.top_bottom)]
   const lr = liveRatios ? [liveRatios.lr, 100 - liveRatios.lr] : lr0
   const tb = liveRatios ? [liveRatios.tb, 100 - liveRatios.tb] : tb0
@@ -116,16 +123,17 @@ export function GradeResultCompact({
     const r = wrap.current!.getBoundingClientRect()
     return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) }
   }
-  function onHandleDown(side: Side, e: React.PointerEvent) {
+  function onHandleDown(which: 'inner' | 'outer', side: Side, e: React.PointerEvent) {
     e.preventDefault()
     e.currentTarget.setPointerCapture(e.pointerId)
-    drag.current = side
+    drag.current = { which, side }
   }
-  function onHandleMove(side: Side, e: React.PointerEvent) {
-    if (drag.current !== side) return
+  function onHandleMove(which: 'inner' | 'outer', side: Side, e: React.PointerEvent) {
+    if (drag.current?.which !== which || drag.current?.side !== side) return
     const { x, y } = norm(e)
     setDirty(true)
-    setBox((b) => {
+    const set = which === 'inner' ? setBox : setOuter
+    set((b) => {
       if (!b) return b
       const n = { ...b }
       if (side === 'top') n.y1 = Math.min(y, b.y2 - 0.02)
@@ -135,11 +143,22 @@ export function GradeResultCompact({
       return n
     })
   }
-  function onHandleUp(side: Side, e: React.PointerEvent) {
-    if (drag.current === side) {
+  function onHandleUp(which: 'inner' | 'outer', side: Side, e: React.PointerEvent) {
+    if (drag.current?.which === which && drag.current?.side === side) {
       e.currentTarget.releasePointerCapture(e.pointerId)
       drag.current = null
     }
+  }
+
+  function regrade() {
+    const qp = result._quad_padded as number[][] | undefined
+    if (!outer || !qp || !onRegrade) return
+    const W = img.current?.naturalWidth ?? 0
+    const H = img.current?.naturalHeight ?? 0
+    const corners = W && H ? warpBoxToSourceCorners(qp, W, H, outer) : null
+    if (!corners) { setErr('Could not map the boundary back to the photo.'); return }
+    setEditing(false)
+    onRegrade(corners)
   }
 
   async function save() {
@@ -149,7 +168,7 @@ export function GradeResultCompact({
       const res = await fetch('/api/grade/corrections', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          originalContentRegion: cr0, correctedContentRegion: box, cardBoundary: cb,
+          originalContentRegion: cr0, correctedContentRegion: box, cardBoundary: outer ?? cb,
           originalLeftRight: result.centering.left_right, originalTopBottom: result.centering.top_bottom,
           leftRight: `${lr[0]}/${lr[1]}`, topBottom: `${tb[0]}/${tb[1]}`,
           borderType: result._border_type, graderBackend: result._grader_backend, warpedJpegB64: warped,
@@ -164,14 +183,13 @@ export function GradeResultCompact({
   }
 
   const showOverlay = !!(warped && cb && box)
-  const handles: { side: Side; x: number; y: number; cur: string }[] = box
-    ? [
-        { side: 'top', x: ((box.x1 + box.x2) / 2) * 100, y: box.y1 * 100, cur: 'cursor-ns-resize' },
-        { side: 'bottom', x: ((box.x1 + box.x2) / 2) * 100, y: box.y2 * 100, cur: 'cursor-ns-resize' },
-        { side: 'left', x: box.x1 * 100, y: ((box.y1 + box.y2) / 2) * 100, cur: 'cursor-ew-resize' },
-        { side: 'right', x: box.x2 * 100, y: ((box.y1 + box.y2) / 2) * 100, cur: 'cursor-ew-resize' },
-      ]
-    : []
+  const mkHandles = (b: Box, which: 'inner' | 'outer') => [
+    { which, side: 'top' as Side, x: ((b.x1 + b.x2) / 2) * 100, y: b.y1 * 100, cur: 'cursor-ns-resize' },
+    { which, side: 'bottom' as Side, x: ((b.x1 + b.x2) / 2) * 100, y: b.y2 * 100, cur: 'cursor-ns-resize' },
+    { which, side: 'left' as Side, x: b.x1 * 100, y: ((b.y1 + b.y2) / 2) * 100, cur: 'cursor-ew-resize' },
+    { which, side: 'right' as Side, x: b.x2 * 100, y: ((b.y1 + b.y2) / 2) * 100, cur: 'cursor-ew-resize' },
+  ]
+  const handles = [...(outer ? mkHandles(outer, 'outer') : []), ...(box ? mkHandles(box, 'inner') : [])]
 
   const defectCount = (result.defect_boxes?.surface?.length ?? 0) + (result.defect_boxes?.edges?.length ?? 0) + (result.defect_boxes?.corners?.length ?? 0)
 
@@ -213,23 +231,23 @@ export function GradeResultCompact({
           <div ref={wrap} className={`relative overflow-hidden rounded-lg border ${editing ? 'touch-none select-none ring-2 ring-emerald-500/40' : ''}`}>
             {warped ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={`data:image/jpeg;base64,${warped}`} alt="graded card" className="block w-full" draggable={false} />
+              <img ref={img} src={`data:image/jpeg;base64,${warped}`} alt="graded card" className="block w-full" draggable={false} />
             ) : (
               <div className="flex aspect-[5/7] w-full items-center justify-center text-xs text-muted-foreground">no preview</div>
             )}
             {showOverlay && editing && (
               <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="pointer-events-none absolute inset-0 size-full">
-                <rect x={cb![0] * 100} y={cb![1] * 100} width={(cb![2] - cb![0]) * 100} height={(cb![3] - cb![1]) * 100} fill="none" stroke={EDGE} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+                <rect x={outer!.x1 * 100} y={outer!.y1 * 100} width={(outer!.x2 - outer!.x1) * 100} height={(outer!.y2 - outer!.y1) * 100} fill="none" stroke={EDGE} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
                 <rect x={box!.x1 * 100} y={box!.y1 * 100} width={(box!.x2 - box!.x1) * 100} height={(box!.y2 - box!.y1) * 100} fill="none" stroke={BORDER} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
               </svg>
             )}
             {editing && handles.map((h) => (
-              <span key={h.side}
-                onPointerDown={(e) => onHandleDown(h.side, e)}
-                onPointerMove={(e) => onHandleMove(h.side, e)}
-                onPointerUp={(e) => onHandleUp(h.side, e)}
-                className={`absolute size-3 -translate-x-1/2 -translate-y-1/2 touch-none rounded-full border border-white bg-emerald-500 shadow ${h.cur}`}
-                style={{ left: `${h.x}%`, top: `${h.y}%` }} />
+              <span key={`${h.which}-${h.side}`}
+                onPointerDown={(e) => onHandleDown(h.which, h.side, e)}
+                onPointerMove={(e) => onHandleMove(h.which, h.side, e)}
+                onPointerUp={(e) => onHandleUp(h.which, h.side, e)}
+                className={`absolute size-3 -translate-x-1/2 -translate-y-1/2 touch-none border border-white shadow ${h.cur} ${h.which === 'outer' ? 'rounded-sm' : 'rounded-full'}`}
+                style={{ left: `${h.x}%`, top: `${h.y}%`, background: h.which === 'outer' ? EDGE : BORDER }} />
             ))}
           </div>
           <p className="mt-1.5 text-center text-[11px] text-muted-foreground">
@@ -238,14 +256,25 @@ export function GradeResultCompact({
           {saved ? (
             <p className="mt-1 text-center text-[11px] text-emerald-600">✓ Saved — thanks, this trains the grader.</p>
           ) : editing ? (
-            <div className="mt-1 flex gap-2">
-              <button onClick={save} disabled={saving || !dirty} className="flex-1 rounded-md bg-foreground px-2 py-1.5 text-xs font-medium text-background disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
-              <button onClick={() => { setEditing(false); setBox(cr0 ? { ...cr0 } : null); setDirty(false) }} className="rounded-md border px-2 py-1.5 text-xs">Cancel</button>
+            <div className="mt-1 space-y-1.5">
+              <p className="text-center text-[10px] leading-snug text-muted-foreground">
+                <span style={{ color: EDGE }}>■ card edge</span> · <span style={{ color: BORDER }}>● print border</span>
+              </p>
+              <div className="flex gap-2">
+                <button onClick={save} disabled={saving || !dirty} className="flex-1 rounded-md bg-foreground px-2 py-1.5 text-xs font-medium text-background disabled:opacity-50">{saving ? 'Saving…' : 'Save'}</button>
+                <button onClick={() => { setEditing(false); setBox(cr0 ? { ...cr0 } : null); setOuter(cb ? { x1: cb[0], y1: cb[1], x2: cb[2], y2: cb[3] } : null); setDirty(false) }} className="rounded-md border px-2 py-1.5 text-xs">Cancel</button>
+              </div>
+              {onRegrade && !!result._quad_padded && (
+                <button onClick={regrade} disabled={!dirty} title="Re-run the grade using your corrected card edge as the boundary — use when the auto boundary grabbed a sleeve or case"
+                  className="w-full rounded-md bg-emerald-600 px-2 py-1.5 text-xs font-medium text-white disabled:opacity-50">
+                  Re-grade with these borders
+                </button>
+              )}
             </div>
           ) : (
             showOverlay && (
               <button onClick={() => setEditing(true)} className="mt-1 w-full text-center text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground">
-                Centering off? ✏️ Adjust borders
+                Borders off? ✏️ Adjust card edge &amp; print border
               </button>
             )
           )}
