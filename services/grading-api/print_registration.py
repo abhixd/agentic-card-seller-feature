@@ -605,6 +605,65 @@ def diagnose_result(result, cid):
         return None
 
 
+# ── ECC layout anchor (haze/glare tier: SIFT descriptors die, dense gradients survive) ─────────────
+def _ecc_prep(img, h=360):
+    im = cv2.resize(img, (int(img.shape[1] * h / img.shape[0]), h))
+    g = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY))
+    gx = cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)
+    m = cv2.magnitude(gx, gy)
+    return (m / (m.max() + 1e-6)).astype(np.float32), im.shape[1], im.shape[0]
+
+
+def _ecc_align(card_bgr, ref_bgr, iters=150):
+    """Dense affine alignment render→card on gradient-magnitude images. Returns
+    (cc, corners_frac[4x2 in card coords], rel_scale) or None. Haze corrupts SIFT DESCRIPTORS
+    (card_017: 5,348 keypoints but 60-100 matches yield only 7-13 true inliers) while the card's
+    LAYOUT gradients (frame, text boxes, borders) survive — ECC correlates the whole field."""
+    try:
+        cg, Cw, Ch = _ecc_prep(card_bgr)
+        rg, Rw, Rh = _ecc_prep(ref_bgr)
+        warp0 = np.array([[Cw / Rw, 0, 0], [0, Ch / Rh, 0]], np.float32)
+        cc, W = cv2.findTransformECC(rg, cg, warp0.copy(), cv2.MOTION_AFFINE,
+                                     (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, iters, 1e-5),
+                                     None, 5)
+        mc = np.float32([[0, 0], [Rw, 0], [Rw, Rh], [0, Rh]]) @ W[:, :2].T + W[:, 2]
+        rel = float(np.sqrt(abs(W[0, 0] * W[1, 1] - W[0, 1] * W[1, 0]))) / (Cw / Rw)
+        corners = [[round(float(x) / Cw, 4), round(float(y) / Ch, 4)] for x, y in mc]
+        return float(cc), corners, rel
+    except cv2.error:
+        return None
+
+
+def ecc_verify(result, ref_id, cc_before):
+    """Verify an ECC-origin re-warp by IMPROVEMENT: on the corrected warp the correlation must rise and
+    the alignment scale must sit at unit (the crop matches the render span). Geometry-only acceptance —
+    reads stay with the selector on the cleaned warp; confidence is capped by the caller."""
+    try:
+        import base64
+        ref, _err = _fetch_render(ref_id)
+        wj = result.get("_warped_jpeg_b64")
+        if ref is None or not wj:
+            return None
+        card = cv2.imdecode(np.frombuffer(base64.b64decode(wj), np.uint8), cv2.IMREAD_COLOR)
+        if card is None:
+            return None
+        cb = result.get("_card_boundary") or [0, 0, 1, 1]
+        H0, W0 = card.shape[:2]
+        x1, y1 = int(round(cb[0] * W0)), int(round(cb[1] * H0))
+        x2, y2 = int(round(cb[2] * W0)), int(round(cb[3] * H0))
+        if x2 - x1 > 200 and y2 - y1 > 200:
+            card = card[y1:y2, x1:x2]
+        r = _ecc_align(card, ref)
+        if r is None:
+            return None
+        cc2, _corners, rel = r
+        ok = cc2 >= cc_before + 0.005 and 0.97 <= rel <= 1.03
+        return {"ok": bool(ok), "cc": round(cc2, 4), "rel_scale": round(rel, 4)}
+    except Exception:
+        return None
+
+
 def quad_boundary_in_warp(result, src_corners):
     """Where the caller's SOURCE-coords quad sits inside the (padded) contour-path display warp, as a
     normalized bbox — the _card_boundary for a re-warped grade, so registration can use the crop directly."""
@@ -1348,6 +1407,44 @@ def apply_to_result(result, identity):
                         # verifies (on success main.py replaces this whole result).
                         cur = cen.get("confidence")
                         cen["confidence"] = round(min(cur if cur is not None else 1.0, 0.5), 3)
+                except Exception:
+                    pass
+            if (cb_off is None and REWARP and not cen["registration"].get("rewarp")
+                    and os.environ.get("PRINT_REG_ECC", "").strip().lower() in ("1", "true", "yes", "on")):
+                # ECC layout-anchor tier (last resort): every SIFT fit failed — haze/glare kills
+                # descriptors, but dense LAYOUT gradients survive. Scan the already-ranked candidates by
+                # ECC correlation; the best same-layout render anchors the GEOMETRY (cut position) even
+                # when exact identity stays uncertain. Emits a re-warp proposal only — never a read; the
+                # loop verifies by ECC improvement and the adopted result keeps the selector read capped.
+                try:
+                    ecc_pool = [t.split(":", 1)[0] if not t.startswith(("ja:", "de:", "fr:", "it:", "es:"))
+                                else ":".join(t.split(":", 2)[:2]) for t in tried if "retry" not in t]
+                    ecc_pool = list(dict.fromkeys(ecc_pool))[:12]
+                    best = None
+                    for ecid in ecc_pool:
+                        eref, _e = _fetch_render(ecid)
+                        if eref is None:
+                            continue
+                        r = _ecc_align(card, eref)
+                        if r is None:
+                            continue
+                        cc_, corners_, rel_ = r
+                        if best is None or cc_ > best[0]:
+                            best = (cc_, ecid, corners_, rel_)
+                    if best is not None:
+                        cc_, ecid, corners_, rel_ = best
+                        c_arr = np.float32(corners_)
+                        convex = cv2.isContourConvex(c_arr.reshape(-1, 1, 2))
+                        inb = bool((c_arr > -0.03).all() and (c_arr < 1.03).all())
+                        if cc_ >= 0.18 and 0.85 <= rel_ <= 1.02 and convex and inb:
+                            dev = float(np.abs(c_arr - np.float32([[0, 0], [1, 0], [1, 1], [0, 1]])).max())
+                            cen["registration"]["rewarp"] = {"corners_frac": corners_,
+                                                             "dev_px": round(dev * card.shape[0], 1),
+                                                             "ref_id": ecid, "ecc": round(cc_, 4)}
+                            cen["registration"]["ecc_anchor"] = {"ref_id": ecid, "cc": round(cc_, 4),
+                                                                 "rel_scale": round(rel_, 4)}
+                            cur = cen.get("confidence")
+                            cen["confidence"] = round(min(cur if cur is not None else 1.0, 0.5), 3)
                 except Exception:
                     pass
             if (not scale_rejects and any(":" in t for t in tried)

@@ -528,6 +528,21 @@ async def grade_card_endpoint(
                         _preg.apply_to_result(result2, ident)
                         reg2 = (result2.get("centering") or {}).get("registration") or {}
                         if not reg2.get("accepted"):
+                            if _rw.get("ecc") is not None:
+                                # ECC-origin proposal: SIFT can't verify on haze — verify by ECC
+                                # IMPROVEMENT instead. Geometry-only adoption: the selector re-read the
+                                # cleaned warp; confidence stays capped (0.5 at proposal, min'd again
+                                # here) and the anchor is labeled a LAYOUT match, not an identity claim.
+                                _ev = _preg.ecc_verify(result2, _rw["ref_id"], _rw["ecc"])
+                                if _ev and _ev.get("ok"):
+                                    reg2["ecc_verified"] = _ev
+                                    reg2["rewarped"] = {"dev_px": _rw["dev_px"], "ref_id": _rw.get("ref_id"),
+                                                        "iter": _it, "ecc": True}
+                                    result2["_rewarped"] = True
+                                    _c2 = (result2.get("centering") or {})
+                                    _cur2 = _c2.get("confidence")
+                                    _c2["confidence"] = round(min(_cur2 if _cur2 is not None else 1.0, 0.5), 3)
+                                    result = result2
                             break                                    # verify-or-discard: keep best
                         reg2["rewarped"] = {"dev_px": _rw["dev_px"], "ref_id": _rw.get("ref_id"), "iter": _it}
                         result2["_rewarped"] = True
