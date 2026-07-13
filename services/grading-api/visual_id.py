@@ -19,6 +19,8 @@ ENABLED = os.environ.get("PRINT_REG_VISUAL_ID", "").strip().lower() in ("1", "tr
 _K = int(os.environ.get("PRINT_REG_VISUAL_K", "5"))
 _MODEL_ID = "facebook/dinov2-small"
 _NPZ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ptcg_dino.npz")
+_NPZ_TCGDEX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tcgdex_dino.npz")   # optional:
+# multi-language renders (ids "{lang}:{cid}") — same embedder, merged at load when present
 
 _STATE: dict = {}
 
@@ -31,8 +33,14 @@ def _load():
             import torch
             from transformers import AutoImageProcessor, AutoModel
             z = np.load(_NPZ, allow_pickle=True)
-            _STATE["ids"] = [str(i) for i in z["ids"]]
-            _STATE["emb"] = z["emb"].astype(np.float32)              # (N, 384), rows L2-normalized
+            ids = [str(i) for i in z["ids"]]
+            emb = z["emb"].astype(np.float32)                        # (N, 384), rows L2-normalized
+            if os.path.exists(_NPZ_TCGDEX):
+                z2 = np.load(_NPZ_TCGDEX, allow_pickle=True)
+                ids += [str(i) for i in z2["ids"]]
+                emb = np.vstack([emb, z2["emb"].astype(np.float32)])
+            _STATE["ids"] = ids
+            _STATE["emb"] = emb
             _STATE["proc"] = AutoImageProcessor.from_pretrained(_MODEL_ID)
             _STATE["model"] = AutoModel.from_pretrained(_MODEL_ID).eval()
             _STATE["torch"] = torch

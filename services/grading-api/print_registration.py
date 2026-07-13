@@ -229,6 +229,15 @@ def _catalog_meta(cid):
     if not _CATALOG_META:
         for r in _load_index():
             _CATALOG_META[r["id"]] = (r.get("img") or "", r.get("rd") or "")
+        try:
+            import gzip
+            fp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tcgdex_index.json.gz")
+            if os.path.exists(fp):
+                with gzip.open(fp, "rt") as f:
+                    for r in json.loads(f.read()):
+                        _CATALOG_META[r["id"]] = (r.get("img") or "", r.get("rd") or "")
+        except Exception:
+            pass
     return _CATALOG_META.get(cid) or ("", "")
 
 
@@ -258,7 +267,26 @@ def first_token_pool(name, k=12, exclude=()):
 
 def _fetch_render(cid):
     """Official render for a pokemontcg id, disk-cached. Prefers the API's own images URL (the constructed
-    {set}/{num}_hires.png 404s on some sets); falls back to the hires pattern. (None, reason) on failure."""
+    {set}/{num}_hires.png 404s on some sets); falls back to the hires pattern. Language-variant ids
+    ("{lang}:{cid}", from the TCGdex index) fetch the TCGdex high-quality asset instead.
+    (None, reason) on failure."""
+    if ":" in cid:
+        fp = os.path.join(_CACHE, cid.replace(":", "_").replace(".", "_").replace("-", "_") + ".webp")
+        try:
+            if not os.path.exists(fp):
+                import requests as _rq
+                url, _rd = _catalog_meta(cid)
+                if not url:
+                    return None, "no tcgdex url"
+                r = _rq.get(url + "/high.webp", timeout=30, headers={"User-Agent": "card-grader/1.0"})
+                if r.status_code != 200 or len(r.content) < 10_000:
+                    return None, f"render http {r.status_code}"
+                with open(fp, "wb") as f:
+                    f.write(r.content)
+            ref = cv2.imread(fp)
+            return (ref, cid) if ref is not None else (None, "render decode")
+        except Exception as e:
+            return None, f"render {type(e).__name__}"
     set_id, num = cid.rsplit("-", 1)
     fp = os.path.join(_CACHE, f"{set_id}_{num}.png")
     try:
@@ -1131,7 +1159,9 @@ def apply_to_result(result, identity):
             if _vid.ENABLED:
                 # Visual retrieval (RAG over renders) leads: image-native candidates, text as backup.
                 # Vintage renders are SCANS (their own print offset) — same gate as the text path.
-                for rank, (vcid, _sim) in enumerate(_vid.candidates(card)):
+                seen_family = set()
+                en_kept, lang_kept, rank_of = [], [], {}
+                for rank, (vcid, _sim) in enumerate(_vid.candidates(card, k=15)):
                     if vcid.startswith("_cardback"):
                         # Reference CARD-BACK embeddings live in the index (backs match each other at
                         # ~0.93 cross-holder but fronts at only ~0.66, so magnitude alone can't separate).
@@ -1142,6 +1172,10 @@ def apply_to_result(result, identity):
                                                    "reason": f"card back (matched back reference, sim {_sim:.2f})"}
                             return
                         continue                                     # never a registration candidate
+                    fam = vcid.split(":", 1)[-1]                 # same card across languages = one family
+                    if fam in seen_family:
+                        continue
+                    seen_family.add(fam)
                     if vis_top_sim is None or _sim > vis_top_sim:
                         vis_top_sim = _sim
                     url, rd = _catalog_meta(vcid)
@@ -1149,7 +1183,12 @@ def apply_to_result(result, identity):
                         continue
                     if url:
                         _IMG_URLS[vcid] = url
-                    vis_used.append(vcid)
+                    rank_of[vcid] = rank
+                    (lang_kept if ":" in vcid else en_kept).append(vcid)
+                # Language twins rank high on shared ART but fit sparsely on text (a JP twin at 33
+                # inliers crowded out the EN render that fits densely) — cap twins and ALWAYS include
+                # the best same-language (unprefixed) candidates, in overall rank order.
+                vis_used = sorted(set(lang_kept[:3] + en_kept[:3]), key=lambda c: rank_of[c])
         except Exception:
             vis_used = []
         if vis_top_sim is not None and vis_top_sim < float(os.environ.get("PRINT_REG_VISUAL_MIN_SIM", "0.42")):
@@ -1286,14 +1325,6 @@ def apply_to_result(result, identity):
                 tried.append(f"{cid}:gray-zone-tightened(sc→{meta.get('scale')})")
         if meta is None:
             cen["registration"] = {"accepted": False, "reason": "no candidate registered", "tried": tried}
-            if not scale_rejects and not weak_fits and any(":" in t for t in tried):
-                # Wrong-artwork signature survived every retry tier: we believe we know this card, yet NO
-                # render fits it visually. Either the identity is still wrong or the image is too degraded
-                # to anchor — both mean the selector read is UNVERIFIED (a cased card measuring its case
-                # shows exactly this and used to sail through at stability-only 0.86). Cap at medium.
-                cur = cen.get("confidence")
-                cen["confidence"] = round(min(cur if cur is not None else 1.0, 0.7), 3)
-                cen["registration"]["reason"] = "no candidate registered (no render fit — read unverified)"
             if scale_rejects:
                 # The right card WAS found — its render fit densely but at non-unit scale, which is anchor
                 # evidence that the warp crop is card + case/sleeve ring — and the rescue couldn't verify a
@@ -1319,6 +1350,14 @@ def apply_to_result(result, identity):
                         cen["confidence"] = round(min(cur if cur is not None else 1.0, 0.5), 3)
                 except Exception:
                     pass
+            if (not scale_rejects and any(":" in t for t in tried)
+                    and not cen["registration"].get("rewarp")):
+                # UNVERIFIED read: either no render fit at all, or only a sparse fit that the rewarp
+                # diagnosis couldn't act on. Both mean the selector read has no anchor evidence — cap at
+                # medium (a weak-fit-undiagnosable case previously escaped uncapped at 0.9).
+                cur = cen.get("confidence")
+                cen["confidence"] = round(min(cur if cur is not None else 1.0, 0.7), 3)
+                cen["registration"]["reason"] = "no candidate registered (no render fit — read unverified)"
             return
         meta["tried"] = tried
         filter_ctx = meta.pop("_filter_ctx", None)                  # numpy arrays — never serialize
