@@ -658,7 +658,7 @@ def ecc_verify(result, ref_id, cc_before):
         if r is None:
             return None
         cc2, _corners, rel = r
-        ok = cc2 >= cc_before + 0.005 and 0.97 <= rel <= 1.03
+        ok = cc2 >= max(cc_before + 0.02, 0.32) and 0.97 <= rel <= 1.03
         return {"ok": bool(ok), "cc": round(cc2, 4), "rel_scale": round(rel, 4)}
     except Exception:
         return None
@@ -1436,7 +1436,12 @@ def apply_to_result(result, identity):
                         c_arr = np.float32(corners_)
                         convex = cv2.isContourConvex(c_arr.reshape(-1, 1, 2))
                         inb = bool((c_arr > -0.03).all() and (c_arr < 1.03).all())
-                        if cc_ >= 0.18 and 0.85 <= rel_ <= 1.02 and convex and inb:
+                        # cc >= 0.30: user red-lines falsified a 0.249 anchor on card_017 — at that
+                        # correlation ECC can lock onto the SLEEVE's frame-like gradients and the weak
+                        # verify (+0.005) waves it through. Below the bar the tier ABSTAINS (honest
+                        # fallback beats confident-wrong geometry — the system's core doctrine).
+                        if cc_ >= float(os.environ.get("PRINT_REG_ECC_MIN_CC", "0.30")) \
+                                and 0.85 <= rel_ <= 1.02 and convex and inb:
                             dev = float(np.abs(c_arr - np.float32([[0, 0], [1, 0], [1, 1], [0, 1]])).max())
                             cen["registration"]["rewarp"] = {"corners_frac": corners_,
                                                              "dev_px": round(dev * card.shape[0], 1),
