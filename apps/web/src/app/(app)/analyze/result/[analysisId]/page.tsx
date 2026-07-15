@@ -43,17 +43,11 @@ function Section({
   accentColor?: string
 }) {
   return (
-    <div
-      className="rounded-2xl border p-5 space-y-4"
-      style={{
-        background:  'rgba(24,24,27,0.7)',
-        borderColor: 'rgba(63,63,70,0.6)',
-      }}
-    >
+    <div className="glass-panel card-lift p-5 space-y-4">
       <div className="flex items-center gap-2.5">
         <div
           className="flex items-center justify-center w-7 h-7 rounded-lg shrink-0"
-          style={{ background: `${accentColor}20`, border: `1px solid ${accentColor}35` }}
+          style={{ background: `${accentColor}20`, border: `1px solid ${accentColor}35`, boxShadow: `0 0 14px ${accentColor}25` }}
         >
           <Icon className="h-3.5 w-3.5" style={{ color: accentColor }} />
         </div>

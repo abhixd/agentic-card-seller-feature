@@ -102,6 +102,26 @@ function getBestPrice(meta: Record<string, any> | null): number | null {
   return bestMarket(prices)
 }
 
+/** Real 30-day % change from the stored price history, when the row has it. */
+function chg30dFromMeta(meta: Record<string, any> | null): number | null {
+  const pts: { date?: string; price?: number }[] = meta?.tcg_history?.points ?? []
+  if (!Array.isArray(pts) || pts.length < 2) return null
+  const clean = pts
+    .filter((p) => typeof p?.date === 'string' && typeof p?.price === 'number' && p.price! > 0)
+    .sort((a, b) => a.date!.localeCompare(b.date!))
+  if (clean.length < 2) return null
+  const target = Date.now() - 30 * 86_400_000
+  let best: { date?: string; price?: number } | null = null
+  let bestDiff = Infinity
+  for (const p of clean) {
+    const d = Math.abs(new Date(p.date!).getTime() - target)
+    if (d < bestDiff) { bestDiff = d; best = p }
+  }
+  if (!best || bestDiff > 6 * 86_400_000) return null
+  const latest = clean[clean.length - 1].price!
+  return ((latest - best.price!) / best.price!) * 100
+}
+
 function fmt(n: number | null | undefined): string {
   if (n == null) return '—'
   return `$${n.toFixed(2)}`
@@ -529,19 +549,22 @@ function CardResultRow({ card, searchQuery }: { card: CardSearchResult; searchQu
   const [expanded, setExpanded] = useState(false)
   const meta   = card.metadata_json
   const price  = getBestPrice(meta)
+  const chg30d = chg30dFromMeta(meta)
   const types: string[] = meta?.types ?? []
   const hp     = meta?.hp ?? null
   const rarity = meta?.rarity ?? card.variant ?? null
 
   return (
-    <div className="border-b border-border/25 last:border-0 hover:bg-muted/[0.04] transition-colors">
-      <div className="flex items-center gap-3 px-4 py-3">
+    <div className="group/row border-b border-border/25 last:border-0 hover:bg-white/[0.035] transition-colors relative">
+      {/* hover accent bar */}
+      <span aria-hidden className="absolute left-0 top-0 bottom-0 w-[2px] bg-gradient-to-b from-indigo-400 to-violet-500 opacity-0 group-hover/row:opacity-100 transition-opacity" />
+      <div className="flex items-center gap-3.5 px-4 py-3">
 
-        {/* Thumbnail */}
-        <div className="shrink-0 w-10 h-14 rounded-lg overflow-hidden bg-muted/20 relative">
+        {/* Thumbnail — larger, framed, lifts on hover */}
+        <div className="shrink-0 w-11 h-[62px] rounded-lg overflow-hidden bg-black/30 relative ring-1 ring-white/10 shadow-md shadow-black/30 transition-transform duration-200 group-hover/row:scale-105">
           {card.canonical_image_url ? (
             <Image src={card.canonical_image_url} alt={card.card_name}
-              fill className="object-contain" sizes="40px" unoptimized />
+              fill className="object-cover object-top" sizes="44px" unoptimized />
           ) : (
             <div className="w-full h-full flex items-center justify-center text-muted-foreground text-[9px] text-center px-1">
               No image
@@ -553,7 +576,7 @@ function CardResultRow({ card, searchQuery }: { card: CardSearchResult; searchQu
         <Link href={`/analyze/${card.catalog_id}${searchQuery ? `?q=${encodeURIComponent(searchQuery)}` : ''}`} className="flex-1 min-w-0 group"
           data-testid="search-result-item">
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="font-semibold text-sm group-hover:text-primary transition-colors leading-tight">
+            <span className="font-semibold text-[15px] tracking-tight group-hover:text-primary transition-colors leading-tight">
               {card.card_name}
             </span>
             {types.map((t) => (
@@ -563,7 +586,7 @@ function CardResultRow({ card, searchQuery }: { card: CardSearchResult; searchQu
             ))}
             {hp && <span className="text-[10px] text-muted-foreground">HP {hp}</span>}
           </div>
-          <div className="flex items-center gap-1 mt-0.5 flex-wrap text-xs text-muted-foreground leading-tight">
+          <div className="flex items-center gap-1 mt-1 flex-wrap text-xs text-muted-foreground leading-tight">
             <span>{card.set_name}</span>
             {card.year && <><span>·</span><span>{card.year}</span></>}
             {card.card_number && <><span>·</span><span className="font-mono">#{card.card_number}</span></>}
@@ -571,12 +594,24 @@ function CardResultRow({ card, searchQuery }: { card: CardSearchResult; searchQu
           </div>
         </Link>
 
+        {/* 30d momentum chip (only when real history exists) */}
+        {chg30d != null && Math.abs(chg30d) >= 1 && (
+          <span className={[
+            'hidden sm:inline-flex shrink-0 items-center text-[10px] font-bold tabular-nums px-1.5 py-0.5 rounded-md border',
+            chg30d > 0
+              ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/25'
+              : 'text-red-300 bg-red-500/10 border-red-500/25',
+          ].join(' ')}>
+            {chg30d > 0 ? '▲' : '▼'} {Math.abs(chg30d).toFixed(0)}% 30d
+          </span>
+        )}
+
         {/* Price + expand */}
         <div className="shrink-0 flex items-center gap-1.5">
           {price != null ? (
             <div className="text-right">
               <p className="text-[9px] text-muted-foreground uppercase tracking-widest leading-tight">TCGPlayer</p>
-              <p className="text-sm font-bold tabular-nums text-primary leading-tight">{fmt(price)}</p>
+              <p className="stat-num text-[15px] font-bold tabular-nums text-white leading-tight">{fmt(price)}</p>
             </div>
           ) : (
             <span className="text-xs text-muted-foreground w-12 text-right">—</span>
@@ -691,7 +726,7 @@ export function SearchResults({ results, query, isLoading, hasSearched, sortKey 
       </div>
 
       <div
-        className="rounded-2xl border border-border/25 overflow-hidden bg-card shadow-sm"
+        className="glass-panel overflow-hidden"
         data-testid="search-results"
         role="list"
         aria-label={`${results.length} search result${results.length !== 1 ? 's' : ''}`}

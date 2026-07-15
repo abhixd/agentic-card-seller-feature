@@ -72,43 +72,55 @@ export function RecommendationBanner({ type, rationale }: Props) {
   return (
     <div
       data-testid="recommendation-banner"
-      className="rounded-2xl border p-5 space-y-3"
+      className="relative overflow-hidden rounded-2xl border p-6"
       style={{ background: c.bg, borderColor: c.border }}
     >
-      {/* Top row: icon + label */}
-      <div className="flex items-center gap-3">
-        <div
-          className="flex items-center justify-center w-10 h-10 rounded-xl shrink-0"
-          style={{ background: c.iconBg }}
-        >
-          <c.Icon className="h-5 w-5" style={{ color: c.iconColor }} />
-        </div>
-        <div>
-          <div className="flex items-center gap-2">
-            {/* Status dot */}
-            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: c.dot }} />
-            <span
-              data-testid="recommendation-type"
-              className="font-bold text-base"
-              style={{ color: c.textColor }}
-            >
-              {c.label}
-            </span>
-          </div>
-          <p className="text-xs mt-0.5" style={{ color: `${c.iconColor}99` }}>
-            {c.sublabel}
-          </p>
-        </div>
-      </div>
+      <style>{`
+        @keyframes verdictRise { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: none } }
+        @keyframes verdictGlow { 0%,100% { opacity: .22 } 50% { opacity: .42 } }
+      `}</style>
+      {/* Ambient verdict-colored glow */}
+      <div aria-hidden className="pointer-events-none absolute -top-14 -right-10 h-44 w-44 rounded-full blur-3xl"
+        style={{ background: `radial-gradient(circle, ${c.dot} 0%, transparent 70%)`, animation: 'verdictGlow 5s ease-in-out infinite' }} />
 
-      {/* Rationale */}
-      <p
-        data-testid="recommendation-rationale"
-        className="text-sm leading-relaxed"
-        style={{ color: `${c.textColor}cc` }}
-      >
-        {rationale}
-      </p>
+      <div className="relative space-y-3.5" style={{ animation: 'verdictRise .5s cubic-bezier(.22,1,.36,1)' }}>
+        {/* The verdict */}
+        <div className="flex items-center gap-4">
+          <div
+            className="flex items-center justify-center w-14 h-14 rounded-2xl shrink-0"
+            style={{ background: c.iconBg, boxShadow: `0 0 24px ${c.dot}55, inset 0 1px 0 rgba(255,255,255,0.08)` }}
+          >
+            <c.Icon className="h-7 w-7" style={{ color: c.iconColor }} />
+          </div>
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.18em]" style={{ color: `${c.iconColor}88` }}>
+              The verdict
+            </p>
+            <div className="flex items-center gap-2.5">
+              <span
+                data-testid="recommendation-type"
+                className="font-extrabold text-2xl sm:text-[28px] tracking-tight leading-tight"
+                style={{ color: c.textColor }}
+              >
+                {c.label}
+              </span>
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ background: c.dot, boxShadow: `0 0 8px ${c.dot}` }} />
+            </div>
+            <p className="text-xs mt-0.5" style={{ color: `${c.iconColor}99` }}>
+              {c.sublabel}
+            </p>
+          </div>
+        </div>
+
+        {/* Rationale */}
+        <p
+          data-testid="recommendation-rationale"
+          className="text-sm leading-relaxed border-l-2 pl-3"
+          style={{ color: `${c.textColor}cc`, borderColor: `${c.dot}55` }}
+        >
+          {rationale}
+        </p>
+      </div>
     </div>
   )
 }
