@@ -1182,7 +1182,10 @@ def _line_stats(line_mask, minlen, maxgap=4, ang_lo=None, ang_hi=None):
         return 0, 0.0, 0.0, 0.0, []
     segs = []
     angles = []
-    for x1, y1, x2, y2 in lines[:, 0, :]:
+    # OpenCV returned (N,1,4) for years; newer builds return (N,4). reshape = version-proof
+    # (an unpinned opencv bump in a Railway rebuild broke `lines[:, 0, :]` here → every /scout
+    # grade with any detected line 500'd with IndexError).
+    for x1, y1, x2, y2 in np.asarray(lines).reshape(-1, 4):
         ln = float(np.hypot(x2 - x1, y2 - y1))
         ang = (np.degrees(np.arctan2(y2 - y1, x2 - x1)) % 180.0)
         if ang_lo is not None:

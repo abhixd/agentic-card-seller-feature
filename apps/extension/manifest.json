@@ -1,9 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Card Seller OS — Grader",
-  "version": "1.0.0",
+  "name": "Card Seller OS \u2014 Grader",
+  "version": "1.1.0",
   "description": "Instant PSA grade estimates + buy/skip decisions for eBay card listings.",
-
   "permissions": [
     "activeTab",
     "scripting",
@@ -11,7 +10,6 @@
     "storage",
     "contextMenus"
   ],
-
   "host_permissions": [
     "https://www.ebay.com/*",
     "https://ebay.com/*",
@@ -21,37 +19,37 @@
     "http://127.0.0.1:3000/*",
     "http://127.0.0.1:8000/*"
   ],
-
   "action": {
     "default_title": "Card Seller OS",
     "default_icon": {
-      "16":  "icons/icon16.png",
-      "32":  "icons/icon32.png",
-      "48":  "icons/icon48.png",
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     }
   },
-
   "side_panel": {
     "default_path": "sidepanel.html"
   },
-
   "background": {
     "service_worker": "background.js"
   },
-
   "content_scripts": [
     {
-      "matches": ["https://www.ebay.com/itm/*", "https://ebay.com/itm/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://www.ebay.com/itm/*",
+        "https://ebay.com/itm/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ],
-
   "icons": {
-    "16":  "icons/icon16.png",
-    "32":  "icons/icon32.png",
-    "48":  "icons/icon48.png",
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   }
 }

@@ -5,7 +5,7 @@ export * from "./types";
 import type { GradeResponse } from "./types";
 
 /** Bump in lockstep with services/grading-api/contract.py CONTRACT_VERSION. */
-export const CONTRACT_VERSION = "1.3.0";
+export const CONTRACT_VERSION = "1.5.0";
 
 export interface GradeInput {
   image: Blob | File;
@@ -13,6 +13,21 @@ export interface GradeInput {
   title?: string;
   price?: number;
   shipping?: number;
+  /**
+   * Optional MANUAL card outline — the user's 4 corners as [[x,y],...] in SOURCE-image pixels (the pixels of
+   * `image`, ordered any way; the grader orders them). When set, SAM3 auto-segmentation is SKIPPED and the whole
+   * grade (warp → centering → pillars) runs on this boundary. Use it to let a user override an inaccurate
+   * auto-detected warp: grade once normally, and if the warped card looks wrong, re-grade with the picked corners.
+   */
+  contour?: [number, number][];
+  /**
+   * Run the test–retest stability probe: the grader also grades a perturbed copy (98% resize + JPEG
+   * re-encode) and returns `centering.stability` {delta_pts, confidence}; `centering.confidence` comes back
+   * MIN-combined with it. ~Free latency (the probe runs concurrently) but 2× grading compute — meant for
+   * batch flows that need to triage cards into auto-certified / needs-a-look / manual-assist buckets.
+   * Ignored when `contour` is set (a human already intervened).
+   */
+  stability?: boolean;
 }
 
 export interface GradeOptions extends Omit<RequestInit, "method" | "body"> {
@@ -31,7 +46,9 @@ export async function gradeCard(baseUrl: string, input: GradeInput, opts: GradeO
   if (input.title != null) fd.set("title", input.title);
   if (input.price != null) fd.set("price", String(input.price));
   if (input.shipping != null) fd.set("shipping", String(input.shipping));
-  const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/grade`, { method: "POST", body: fd, ...opts });
+  if (input.contour != null) fd.set("contour", JSON.stringify(input.contour));   // manual-boundary override → skips SAM3
+  const qs = input.stability ? "?stability=1" : "";
+  const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/grade${qs}`, { method: "POST", body: fd, ...opts });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     throw new Error(`grade failed: ${res.status} ${detail}`.trim());

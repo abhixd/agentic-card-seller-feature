@@ -52,6 +52,28 @@
           ],
           "default": null,
           "title": "Confidence"
+        },
+        "stability": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Stability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "registration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Registration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -250,6 +272,284 @@
       ],
       "title": "Pillar",
       "type": "object"
+    },
+    "Registration": {
+      "description": "Print-registration read (PRINT_REG=1): the identified card's official render is SIFT-registered\nagainst the die-cut warp; when accepted, left_right/top_bottom/content_region come from the registered\nprint position (sub-pixel; solves full-arts with no detectable inner frame). accepted=False = the\nselector read was kept; this block then only explains why (reason).",
+      "properties": {
+        "accepted": {
+          "title": "Accepted",
+          "type": "boolean"
+        },
+        "inliers": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inliers"
+        },
+        "matches": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Matches"
+        },
+        "resid_px": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resid Px"
+        },
+        "scale": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scale"
+        },
+        "ref_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ref Id"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "gate": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gate"
+        },
+        "tried": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tried"
+        },
+        "outer_corrected": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outer Corrected"
+        },
+        "cut_edge_support": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cut Edge Support"
+        },
+        "outer_tightened": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outer Tightened"
+        },
+        "frame_insets": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frame Insets"
+        },
+        "gray_zone_tightened": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gray Zone Tightened"
+        },
+        "rewarp": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rewarp"
+        },
+        "rewarped": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rewarped"
+        }
+      },
+      "required": [
+        "accepted"
+      ],
+      "title": "Registration",
+      "type": "object"
+    },
+    "Stability": {
+      "description": "Test\u2013retest stability probe (?stability=1): the card is graded a second time on a label-preserving\nperturbation (98% resize + JPEG re-encode) and delta_pts is the largest centering margin-share move in\npoints. Stable reads sit at ~1pt; fragile reads (faint sleeve edges) flip by 3\u201329pt while LOOKING\nconfident. `confidence` is the 0..1 ramp of delta_pts, already MIN-combined into centering.confidence.",
+      "properties": {
+        "delta_pts": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delta Pts"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
+        "probe_left_right": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Probe Left Right"
+        },
+        "probe_top_bottom": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Probe Top Bottom"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        }
+      },
+      "title": "Stability",
+      "type": "object"
     }
   },
   "additionalProperties": true,
@@ -398,5 +698,5 @@
   "title": "GradeResponse",
   "type": "object",
   "$id": "https://acs/grading-contract/grade-response.schema.json",
-  "x-contract-version": "1.3.0"
+  "x-contract-version": "1.11.0"
 }

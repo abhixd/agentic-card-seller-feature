@@ -279,14 +279,21 @@ def _get_grade_mods():
 _STRIP = {"_raw", "_analytical_centering"}
 
 
-def _grade_one(img_bgr, api_key: str = "", zoom: bool = False, raw_bytes: bytes | None = None) -> dict:
+def _grade_one(img_bgr, api_key: str = "", zoom: bool = False, raw_bytes: bytes | None = None,
+               contour: list | None = None) -> dict:
     """Grade one card. GRADE_BACKEND=modal runs the WHOLE grade on Modal in one /fullgrade call (no warp bounce);
     otherwise the local detect_and_grade (which may still offload seg/detect to Modal). Identical return shape.
     raw_bytes = the ORIGINAL upload bytes, forwarded UNTOUCHED on the modal path — the previous decode→
-    re-encode transcode measurably shifted the segmentation (see remote_grade.full_grade)."""
+    re-encode transcode measurably shifted the segmentation (see remote_grade.full_grade).
+    contour = an optional MANUAL 4-corner boundary ([[x,y],...] in source px); when given, SAM3 is skipped and the
+    grade runs on that boundary (Modal /gradecontour) — the user's override for an inaccurate auto-segmentation."""
     if os.environ.get("GRADE_BACKEND", "local").lower() == "modal":
         import remote_grade
+        if contour:
+            return remote_grade.grade_contour(img_bgr, contour, zoom, raw_bytes=raw_bytes)
         return remote_grade.full_grade(img_bgr, zoom, raw_bytes=raw_bytes)
+    if contour:
+        raise ValueError("Manual-boundary grading requires GRADE_BACKEND=modal")
     return _get_grader().detect_and_grade(img_bgr, api_key, zoom)
 
 def _decode(raw: bytes):
@@ -294,6 +301,73 @@ def _decode(raw: bytes):
     if img is None:
         raise ValueError("Unsupported image format")
     return img
+
+
+# ── Stability probe (?stability=1): test–retest confidence for batch grading ──────────────────────────
+# Grade the card a SECOND time on a label-preserving perturbation (resize 98% + JPEG q95 re-encode) and
+# measure how far the centering read moves. The pipeline is deterministic on identical bytes, so any move
+# is real sensitivity: Δ(margin shares) ≈ distance to the pipeline's decision boundary ≈ P(read error).
+# Validated on 109 cards (2026-07-10): catches confidently-WRONG cards the existing confidence misses
+# (card_017 sleeve: conf 0.944 but Δ=29pt — the majority side flips under a 2% resize; card_40 conf 0.976,
+# Δ=24pt) while stable cards sit at Δ≈1pt. COMPLEMENTARY to the existing confidence (which catches
+# stable-wrong cards like the sleeve-lip latch) → combine via MIN, never replace. Input-level perturbation
+# only — contour-level jitter false-fires by toggling the crop-bypass outer logic on tight crops.
+
+def _stability_probe_bytes(img_bgr):
+    """The perturbed input: 98% resize + JPEG q95. Label-preserving (margin SHARES are scale-invariant)."""
+    im2 = cv2.resize(img_bgr, None, fx=0.98, fy=0.98, interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", im2, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+    if not ok:
+        raise ValueError("probe encode failed")
+    return im2, buf.tobytes()
+
+
+def _margin_shares(result: dict):
+    """(L-share, T-share) in points from the content_region/_card_boundary FLOATS (the rounded '51/49'
+    strings carry ±1pt quantization noise — never diff those)."""
+    cb = result.get("_card_boundary")
+    cr = (result.get("centering") or {}).get("content_region")
+    if not cb or not cr:
+        return None
+    L = cr["x1"] - cb[0]; R = cb[2] - cr["x2"]; T = cr["y1"] - cb[1]; B = cb[3] - cr["y2"]
+    if min(L, R, T, B) <= 0 or (L + R) <= 0 or (T + B) <= 0:
+        return None
+    return (L / (L + R) * 100.0, T / (T + B) * 100.0)
+
+
+def _apply_stability(result: dict, probe: dict) -> None:
+    """Attach centering.stability {delta_pts, confidence, probe_*} and demote centering.confidence via MIN.
+    Non-fatal: if either read is unusable the block carries an error and confidence is left untouched."""
+    cen = result.get("centering")
+    if not isinstance(cen, dict):
+        return
+    a, b = _margin_shares(result), _margin_shares(probe)
+    if a is None or b is None:
+        cen["stability"] = {"delta_pts": None, "confidence": None, "error": "unreadable probe margins"}
+        return
+    # Like-for-like only: if the baseline and probe reads came from different methods (e.g. print
+    # registration accepted on the original but fell back to the selector on the resized probe), the delta
+    # measures METHOD disagreement, not test-retest fragility — report it but don't demote confidence.
+    src_a = cen.get("_source"); src_b = (probe.get("centering") or {}).get("_source")
+    d = max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+    if src_a != src_b or bool(result.get("_rewarped")) != bool(probe.get("_rewarped")):
+        # Like-for-like also requires the same GEOMETRY pipeline: the probe never runs the re-warp loop
+        # (cost), so comparing a re-warped main against a first-warp probe measures the correction, not
+        # test-retest fragility — that was falsely demoting evidence-backed re-warped reads to ~0.1.
+        cen["stability"] = {"delta_pts": round(d, 2), "confidence": None,
+                            "note": f"cross-method ({src_a}{'+rewarp' if result.get('_rewarped') else ''} "
+                                    f"vs {src_b}) — delta not used for confidence"}
+        return
+    # Ramp calibrated on the 109-card probe run (clean ≈1pt, flippers 3–29pt), saturation re-tuned on user
+    # feedback: saturating at 6 lumped a GOOD detection with a ±3pt wobble (card_025, Δ6.8 — boundaries
+    # verified correct) together with catastrophic majority-side flippers (card_017 Δ29). Saturate at 15:
+    # Δ6.8→0.68 (medium badge), Δ3.3→0.89, Δ≥15 (true flippers 24–29) still floored at 0.2.
+    sconf = 1.0 if d <= 1.5 else (0.2 if d >= 15.0 else round(1.0 - (d - 1.5) / 13.5 * 0.8, 3))
+    pc = probe.get("centering") or {}
+    cen["stability"] = {"delta_pts": round(d, 2), "confidence": sconf,
+                        "probe_left_right": pc.get("left_right"), "probe_top_bottom": pc.get("top_bottom")}
+    old = cen.get("confidence")
+    cen["confidence"] = sconf if old is None else round(min(float(old), sconf), 3)
 
 FEEDBACK_DIR = _HERE / "feedback"
 
@@ -305,8 +379,10 @@ async def grade_card_endpoint(
     title:    str   = Form(""),
     price:    float = Form(0.0),
     shipping: float = Form(0.0),
+    contour:  str   = Form(""),   # optional JSON [[x,y],...] MANUAL card outline in source px → skip SAM3, grade on it
     zoom:     int   = 0,          # query param: ?zoom=1 → attach high-res per-defect close-ups (pillar_zooms)
-):
+    stability: int  = 0,          # query param: ?stability=1 → grade a 2nd, perturbed copy (resize98+jpeg95) and
+):                                #   report centering.stability {delta_pts, confidence}; confidence = MIN-combined.
     """
     Detailed PSA grading via YOLO OBB detection + Claude vision.
 
@@ -325,15 +401,184 @@ async def grade_card_endpoint(
     except Exception as e:                                # path forwards raw_front untouched (no transcode)
         raise HTTPException(status_code=400, detail=f"Image decode error: {e}")
 
+    ct = None
+    if contour:
+        try:
+            ct = json.loads(contour)
+            assert isinstance(ct, list) and len(ct) >= 4 and all(len(p) == 2 for p in ct)
+        except Exception:
+            raise HTTPException(status_code=400, detail="contour must be JSON [[x,y],...] with >= 4 points")
+
     aggregator, grade_comps = _get_grade_mods()
     loop = asyncio.get_event_loop()
+    # Stability probe (skipped for manual-contour grades — the human already intervened, and the contour's
+    # source-pixel coordinates wouldn't survive the resize). Probe runs CONCURRENTLY with the baseline, so
+    # the added latency is ~0 on the modal path.
+    probe_task = None
+    if stability and not ct:
+        try:
+            probe_img, probe_bytes = _stability_probe_bytes(img_bgr)
+            probe_task = loop.run_in_executor(None, _grade_one, probe_img, api_key, False, probe_bytes, None)
+        except Exception:
+            probe_task = None
+    # Print-registration (PRINT_REG=1): identity-anchored centering needs to know WHICH card this is.
+    # /grade has no identify step normally, so under the flag we vision-ID concurrently with the grade.
+    ident_task = None
+    import print_registration as _preg
+    if _preg.ENABLED:
+        try:
+            import identify as _identify
+            ident_task = loop.run_in_executor(None, _identify.identify_card, img_bgr, api_key)
+        except Exception:
+            ident_task = None
     try:
-        result = await loop.run_in_executor(None, _grade_one, img_bgr, api_key, bool(zoom), raw_front)
+        result = await loop.run_in_executor(None, _grade_one, img_bgr, api_key, bool(zoom), raw_front, ct)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Grading error: {type(e).__name__}: {e}")
+    probe_res = None
+    if probe_task is not None:
+        try:
+            probe_res = await probe_task
+        except Exception as e:                            # non-fatal by construction
+            cen = result.get("centering")
+            if isinstance(cen, dict):
+                cen["stability"] = {"delta_pts": None, "confidence": None,
+                                    "error": f"probe failed: {type(e).__name__}"}
+    if ident_task is not None and ct:
+        # 2c — manual-contour grades get the FULL anchor stack: the user's boundary marks the crop
+        # (same machinery as the re-warp loop), registration verifies on it, the frame datum refines
+        # the inner border, and the render-verified scratch filter suppresses content FPs. The user's
+        # boundary is authoritative for the warp — the re-warp loop never fires here (anchor-evidence
+        # self-adjust of ≤3% may still refine the measured box; Scan details records it).
+        try:
+            ident = await ident_task
+            bb = _preg.quad_boundary_in_warp(result, ct)
+            if bb:
+                result["_card_boundary"] = bb
+                result["_rewarped_boundary"] = True
+            _preg.apply_to_result(result, ident)
+        except Exception:
+            pass
+    elif ident_task is not None:
+        try:
+            ident = await ident_task
+            # Registration applies to the PROBE result too, so the stability delta measures the
+            # registration read's test-retest (not selector-vs-registration disagreement).
+            _preg.apply_to_result(result, ident)
+            # The vision ID is nondeterministic: it occasionally returns a vague identity (name without a
+            # collector number, or a MISREAD number) whose candidates are all the wrong art → every render
+            # RANSAC-fails. When that signature occurs, retry the identify ONCE — a second read usually
+            # recovers the number. (A number that produced a real-but-gated fit means the identity was
+            # right — no retry then.)
+            _reg = (result.get("centering") or {}).get("registration") or {}
+            _all_ransac = bool(_reg.get("tried")) and all(
+                ("ransac failed" in t or "too few" in t or "http" in t or t.startswith("("))
+                for t in (_reg.get("tried") or []))
+            if (not _reg.get("accepted") and str(_reg.get("reason", "")).startswith("no candidate")
+                    and (not (ident or {}).get("number") or _all_ransac)):
+                try:
+                    import identify as _identify2
+                    # Escalate the retry to Opus: Sonnet deterministically HALLUCINATES a different card on
+                    # some glare-heavy foils (ex_1: 'Charizard GX 147/147' for the MEW Charizard ex, 3/3
+                    # runs, warp input didn't help) while Opus reads the same photo correctly (2/2). Rare
+                    # path (wrong-artwork signature only) → the extra cost is per-flake, not per-grade.
+                    _esc = os.environ.get("IDENTIFY_RETRY_MODEL", "claude-opus-4-8")
+                    ident2 = await loop.run_in_executor(
+                        None, lambda: _identify2.identify_card(img_bgr, api_key, model=_esc))
+                    if ident2.get("number") or (ident2.get("name") and ident2.get("name") != (ident or {}).get("name")):
+                        ident = ident2
+                        _preg.apply_to_result(result, ident)
+                        _r2 = (result.get("centering") or {}).get("registration")
+                        if isinstance(_r2, dict):                     # observability: how often the Opus
+                            _r2["identify_retry"] = _esc              # escalation fires + what it changed
+                        print(f"[identify-retry] escalated to {_esc}: "
+                              f"{(ident or {}).get('name')!r} {(ident or {}).get('number')!r}", flush=True)
+                except Exception:
+                    pass
+            # RE-WARP LOOP (PRINT_REG_REWARP=1): registration failed, but the homography diagnosis says the
+            # WARP itself is locally distorted (a bad SAM3 quad corner — e.g. a shadow bulge that clips the
+            # opposite corner out of frame). Re-grade ONCE on the anchor-corrected corners via the Modal
+            # contour path, and keep the re-warp ONLY if registration then verifies on it. One iteration:
+            # the corrected warp may still carry a small ring, which the gray-zone tightener handles.
+            if getattr(_preg, "REWARP", False):
+                # ITERATIVE re-warp: diagnose → correct corners in SOURCE coords → /gradecontour →
+                # verify. Corrections compose on the corner ESTIMATE (the original photo is warped once
+                # per estimate — no resample accumulation) and the render is an absolute reference, so
+                # the loop contracts. Guards: keep an iterate only if registration accepts on it; iterate
+                # again only if the measured bend DECREASED; hard cap on passes (each is a Modal call).
+                _max_iters = int(os.environ.get("PRINT_REG_REWARP_ITERS", "2"))
+                _prev_dev = None
+                for _it in range(1, _max_iters + 1):
+                    try:
+                        _reg = (result.get("centering") or {}).get("registration") or {}
+                        _rw = _reg.get("rewarp")                     # failure-path proposal, or…
+                        if (_rw is None and _reg.get("accepted") and _reg.get("ref_id")
+                                and (result.get("_rewarped") or _reg.get("outer_corrected"))):
+                            # Residual-bend diagnosis ONLY on results already in the correction chain
+                            # (re-warped or rescued). A clean first-pass registration is anchor-verified —
+                            # re-warping it trades a verified read for correction-path noise (audit: 8px
+                            # homography deviation is common SIFT noise on perfectly good warps).
+                            _d = _preg.diagnose_result(result, _reg["ref_id"])
+                            if _d is not None:
+                                _rw = {"corners_frac": _d[0], "dev_px": _d[1], "ref_id": _reg["ref_id"]}
+                        if _rw is None:
+                            break                                    # converged or undiagnosable
+                        if _prev_dev is not None and _rw["dev_px"] >= _prev_dev:
+                            break                                    # not improving — keep best
+                        src_corners = _preg.map_warp_frac_to_source(result, _rw["corners_frac"])
+                        if not src_corners:
+                            break
+                        import remote_grade as _rg
+                        result2 = await loop.run_in_executor(
+                            None, lambda: _rg.grade_contour(img_bgr, src_corners, bool(zoom), raw_bytes=raw_front))
+                        if not isinstance(result2, dict) or result2.get("error"):
+                            break
+                        _bb = _preg.quad_boundary_in_warp(result2, src_corners)
+                        if _bb:                                      # mark the corrected quad inside the padded
+                            result2["_card_boundary"] = _bb          # warp → registration uses the CROP directly
+                            result2["_rewarped_boundary"] = True     # (no ring-rescue detour)
+                        _preg.apply_to_result(result2, ident)
+                        reg2 = (result2.get("centering") or {}).get("registration") or {}
+                        if not reg2.get("accepted"):
+                            if _rw.get("ecc") is not None:
+                                # ECC-origin proposal: SIFT can't verify on haze — verify by ECC
+                                # IMPROVEMENT instead. Geometry-only adoption: the selector re-read the
+                                # cleaned warp; confidence stays capped (0.5 at proposal, min'd again
+                                # here) and the anchor is labeled a LAYOUT match, not an identity claim.
+                                _ev = _preg.ecc_verify(result2, _rw["ref_id"], _rw["ecc"])
+                                if _ev and _ev.get("ok"):
+                                    reg2["ecc_verified"] = _ev
+                                    reg2["rewarped"] = {"dev_px": _rw["dev_px"], "ref_id": _rw.get("ref_id"),
+                                                        "iter": _it, "ecc": True}
+                                    result2["_rewarped"] = True
+                                    _c2 = (result2.get("centering") or {})
+                                    _cur2 = _c2.get("confidence")
+                                    _c2["confidence"] = round(min(_cur2 if _cur2 is not None else 1.0, 0.5), 3)
+                                    result = result2
+                            break                                    # verify-or-discard: keep best
+                        reg2["rewarped"] = {"dev_px": _rw["dev_px"], "ref_id": _rw.get("ref_id"), "iter": _it}
+                        result2["_rewarped"] = True
+                        result = result2
+                        _prev_dev = _rw["dev_px"]
+                    except Exception:
+                        break
+            if probe_res is not None:
+                # Register the probe ONLY when the main result registered: on failure the probe would
+                # repeat the entire candidate sweep (visual + retries) for nothing — main and probe both
+                # fall back to the selector, so the stability delta stays same-source and meaningful.
+                _main_reg2 = (result.get("centering") or {}).get("registration") or {}
+                if _main_reg2.get("accepted"):
+                    _preg.apply_to_result(probe_res, ident)
+        except Exception:
+            pass
+    if probe_res is not None:
+        try:
+            _apply_stability(result, probe_res)
+        except Exception:
+            pass
 
     # ── Optional back side → combined (worst-side) grade ──
     overall_for_econ = result.get("overall_score") or 0
@@ -391,7 +636,8 @@ async def scout_card(
     compute_economics() as /grade and degrade to NO DATA when comps are unavailable."""
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
     try:
-        img_bgr = _decode(await image.read())
+        raw_front = await image.read()
+        img_bgr = _decode(raw_front)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Image decode error: {e}")
 
@@ -406,16 +652,46 @@ async def scout_card(
             identity = {"title": "", "error": f"{type(e).__name__}: {e}"}
     use_title = (identity.get("title") or title or "").strip()
 
-    # ── grade (reuses the production grader) ──
-    grader = _get_grader()
+    # ── grade — the SAME path as /grade (_grade_one → Modal when GRADE_BACKEND=modal, original bytes
+    # forwarded) plus the stability probe, so a card scores and reports confidence IDENTICALLY whether it
+    # comes through Scout batch or the grade page. (Previously scout graded locally on Railway with a
+    # different seg backend → grades/confidence could disagree with /grade for the same image.) Scout IS
+    # the batch-triage flow, so the test–retest probe is always on here.
     aggregator, grade_comps = _get_grade_mods()
+    probe_task = None
     try:
-        result = await loop.run_in_executor(None, grader.detect_and_grade, img_bgr, api_key)
+        probe_img, probe_bytes = _stability_probe_bytes(img_bgr)
+        probe_task = loop.run_in_executor(None, _grade_one, probe_img, api_key, False, probe_bytes, None)
+    except Exception:
+        probe_task = None
+    try:
+        result = await loop.run_in_executor(None, _grade_one, img_bgr, api_key, False, raw_front, None)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Grading error: {type(e).__name__}: {e}")
+    probe_res = None
+    if probe_task is not None:
+        try:
+            probe_res = await probe_task
+        except Exception:
+            probe_res = None
+    # Print-registration (PRINT_REG=1): scout already has the identity — anchor the centering on the
+    # official render when the match passes the gate (applied to the probe too so Δ is like-for-like).
+    try:
+        import print_registration as _preg
+        if _preg.ENABLED:
+            _preg.apply_to_result(result, identity)
+            if probe_res is not None:
+                _preg.apply_to_result(probe_res, identity)
+    except Exception:
+        pass
+    if probe_res is not None:
+        try:
+            _apply_stability(result, probe_res)
+        except Exception:
+            pass
 
     overall = result.get("overall_score") or 0
     confidence = result.get("_confidence") or ("low" if result.get("_truncated") else "high")

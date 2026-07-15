@@ -59,6 +59,28 @@ export default function GradePage() {
     }
   }, [])
 
+  // Re-run the grade with a user-corrected outer boundary (manual-contour path: SAM3 skipped, the
+  // warp is rebuilt from the corrected corners, and registration/retrieval get a clean crop).
+  const regradeWithContour = useCallback(async (corners: number[][]) => {
+    if (!lastFile) return
+    setError(null)
+    setLoading(true)
+    setScanStep(0)
+    try {
+      const fd = new FormData()
+      fd.append('image', lastFile)
+      fd.append('contour', JSON.stringify(corners))
+      const res = await fetch('/api/grade?zoom=1', { method: 'POST', body: fd })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error ?? 'Re-grade failed')
+      setResult(data as GradeResult)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Re-grade failed')
+    } finally {
+      setLoading(false)
+    }
+  }, [lastFile])
+
   // /grade returns the grade fast (CV); identity needs a Claude vision read, so fetch it from /scout
   // separately and let the profile (and the verdict's dollar figures) fill in once it resolves.
   async function identifyCard(f: File) {
@@ -178,7 +200,7 @@ export default function GradePage() {
       {/* ── Reveal + explore ── */}
       {result && (
         <>
-          <GradeResultCompact result={result} profile={profile} profileLoading={profileLoading} onGradeAnother={reset} />
+          <GradeResultCompact result={result} profile={profile} profileLoading={profileLoading} onGradeAnother={reset} onRegrade={regradeWithContour} />
 
           <DefectsPanel warpedJpegB64={result._warped_jpeg_b64} defects={result.defect_boxes} />
 

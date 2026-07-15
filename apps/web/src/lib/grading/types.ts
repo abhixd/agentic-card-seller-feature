@@ -20,9 +20,38 @@ export interface CenteringResult {
   left_right: string      // e.g. "55/45"
   top_bottom: string
   reliable?: boolean
-  confidence?: number     // 0..1 graded reliability (min per-side P)
+  confidence?: number     // 0..1 graded reliability (min of selector / geometry / stability signals)
   content_region?: CenteringBox   // inner printed-border rect, normalized to the warped image
   notes?: string
+  /** which method produced the read: "print_reg" (registration) | "perside" | "coherentframe" */
+  _source?: string
+  /** test–retest probe (grade requested with ?stability=1) */
+  stability?: {
+    delta_pts?: number | null
+    confidence?: number | null
+    probe_left_right?: string | null
+    probe_top_bottom?: string | null
+    note?: string | null
+    error?: string | null
+  } | null
+  /** print-registration attempt against the official render (grading service PRINT_REG=1) */
+  registration?: {
+    accepted?: boolean
+    inliers?: number | null
+    matches?: number | null
+    resid_px?: number | null
+    scale?: number | null
+    ref_id?: string | null
+    reason?: string | null
+    gate?: string | null
+    tried?: string[] | null
+    /** true = outer-anchor rescue relocated the die-cut (cased/sleeved card) */
+    outer_corrected?: boolean | null
+    /** per-side (T/B/L/R) photometric confirmability of the rescued cut line, 0..1 */
+    cut_edge_support?: Record<string, number> | null
+    /** sides moved inward (px) by the anchored sleeve-overhang tightener */
+    outer_tightened?: Record<string, number> | null
+  } | null
 }
 
 /** Per-pillar overlay images (base64 jpeg) for click-to-inspect popups (contract v1.1.0). */

@@ -10,6 +10,23 @@ export interface ContentRegion {
   y2: number;
 }
 
+/**
+ * Test–retest stability probe (grade called with ?stability=1): the card is graded a second time on a
+ * label-preserving perturbation (98% resize + JPEG re-encode); delta_pts = the largest centering
+ * margin-share move in points. Stable reads ≈1pt; fragile reads (faint sleeve edges) flip 3–29pt while
+ * LOOKING confident. `confidence` (0..1 ramp of delta_pts) is already MIN-combined into
+ * Centering.confidence — use this block for display/triage detail.
+ */
+export interface Stability {
+  /** null when the probe read was unusable (see error) */
+  delta_pts?: number | null;
+  confidence?: number | null;
+  /** the perturbed read, for display/debugging */
+  probe_left_right?: string | null;
+  probe_top_bottom?: string | null;
+  error?: string | null;
+}
+
 export interface Centering {
   /** 1..10 display score */
   score: number;
@@ -23,7 +40,44 @@ export interface Centering {
   content_region?: ContentRegion | null;
   /** 0..1 read reliability (faint-edge / thin-border aware). null until the grading side fills it in. */
   confidence?: number | null;
+  /** present only when the grade was requested with ?stability=1 */
+  stability?: Stability | null;
+  /** present only when PRINT_REG=1 on the grading service and a card identity resolved */
+  registration?: Registration | null;
   [internal: string]: unknown;
+}
+
+/** Print-registration read (PRINT_REG=1): the identified card's official render SIFT-registered against
+ *  the die-cut warp. accepted=true → left_right/top_bottom/content_region come from the registered print
+ *  position (sub-pixel; solves full-arts with no detectable inner frame); false → selector read kept. */
+export interface Registration {
+  accepted: boolean;
+  inliers?: number | null;
+  matches?: number | null;
+  resid_px?: number | null;
+  scale?: number | null;
+  /** matched pokemontcg.io card id, e.g. "sv3-22" */
+  ref_id?: string | null;
+  /** why not accepted (gate / vintage / no match / ...) */
+  reason?: string | null;
+  /** which acceptance gate passed (secondary / rescue-verify) */
+  gate?: string | null;
+  /** per-candidate attempt log ("cid:ok" / "cid:gate(...)") */
+  tried?: string[] | null;
+  /** true = outer-anchor rescue relocated the die-cut (cased/sleeved card) */
+  outer_corrected?: boolean | null;
+  /** per-side (T/B/L/R) photometric confirmability of the rescued cut line, 0..1; low = extrapolated → low confidence */
+  cut_edge_support?: Record<string, number> | null;
+  /** sides moved inward (px) by the anchored sleeve-overhang tightener (PRINT_REG_TIGHTEN=1) */
+  outer_tightened?: Record<string, number> | null;
+  /** render-detected print-frame depth per axis (x/y, fractions) — the datum margins are measured from */
+  frame_insets?: Record<string, number> | null;
+  /** sides moved inward (px) by the gray-zone recovery (1-3% oversize warp, tighten + full re-verify) */
+  gray_zone_tightened?: Record<string, number> | null;
+  /** bad-warp diagnosis on a failed registration: homography-corrected corners + deviation px */
+  rewarp?: Record<string, unknown> | null;
+  /** set on an accepted registration produced by the re-warp loop (dev_px corrected, ref_id) */
+  rewarped?: Record<string, unknown> | null;
 }
 
 export interface Pillar {

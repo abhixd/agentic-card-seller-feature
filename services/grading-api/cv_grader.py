@@ -353,7 +353,62 @@ def extract_pillar_zooms(img_bgr, quad_padded, raw, corner_crops_b64):
     return out
 
 
-def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=False, cropped=False, **_ignore) -> dict:
+def _crop_display_to_card(result, cb):
+    """PRESENTATIONAL ONLY: crop the DISPLAY warp + its warp-frame overlays to the card boundary `cb`, so EVERY
+    card renders as a tight cropped-and-warped image. Backdrop-cropped inputs (a card on a coloured surface) hit
+    crop-bypass and their warp is the full frame incl. the backdrop ring → they look 'not warped' next to normal
+    cards whose perspective warp is already tight. Grades and the centering RATIOS are computed upstream on the
+    full warp and are INVARIANT under this linear (crop+rescale) remap — left/(left+right) is unchanged — so only
+    the displayed pixels and the overlay coordinates move; no score changes. No-op unless the boundary is
+    meaningfully inset (>1.2% on some side), so normal + tight-crop cards (cb≈[0,0,1,1]) are byte-identical."""
+    x1, y1, x2, y2 = cb
+    dx, dy = (x2 - x1), (y2 - y1)
+    if dx <= 0 or dy <= 0 or max(x1, y1, 1 - x2, 1 - y2) <= 0.012:
+        return
+    import base64
+    _rx = lambda v: (v - x1) / dx
+    _ry = lambda v: (v - y1) / dy
+
+    def _crop_b64(b64):                                    # crop a 630x880 warp image to `cb`, resize back
+        try:
+            im = cv2.imdecode(np.frombuffer(base64.b64decode(b64), np.uint8), cv2.IMREAD_COLOR)
+            if im is None:
+                return b64
+            H, W = im.shape[:2]
+            a, b_, c, d = max(int(round(x1 * W)), 0), max(int(round(y1 * H)), 0), \
+                          min(int(round(x2 * W)), W), min(int(round(y2 * H)), H)
+            if c - a < 2 or d - b_ < 2:
+                return b64
+            return grader.encode_image(cv2.resize(im[b_:d, a:c], (W, H)))["data"]
+        except Exception:
+            return b64
+
+    if result.get("_warped_jpeg_b64"):
+        result["_warped_jpeg_b64"] = _crop_b64(result["_warped_jpeg_b64"])
+    pv = result.get("pillar_visuals")
+    if isinstance(pv, dict):                               # centering/edges/surface are baked warp overlays
+        for k in ("centering", "edges", "surface"):        # (corners = original-frame crops → leave as-is)
+            if isinstance(pv.get(k), str):
+                pv[k] = _crop_b64(pv[k])
+    result["_card_boundary"] = [0.0, 0.0, 1.0, 1.0]        # outer die-cut now sits at the frame edge
+    cwp = result.get("_card_contour_warped")               # remap the warp-frame outline (contour or rect)
+    if cwp:
+        result["_card_contour_warped"] = [[round(_rx(px), 5), round(_ry(py), 5)] for px, py in cwp]
+    cr = (result.get("centering") or {}).get("content_region")
+    if cr:
+        cr["x1"], cr["x2"] = _rx(cr["x1"]), _rx(cr["x2"])
+        cr["y1"], cr["y2"] = _ry(cr["y1"]), _ry(cr["y2"])
+    db = result.get("defect_boxes")
+    if isinstance(db, dict):                               # boxes are [x, y, w, h] fractional
+        for cat in db.values():
+            for bx in (cat or []):
+                v = bx.get("box")
+                if v and len(v) == 4:
+                    bx["box"] = [round(_rx(v[0]), 5), round(_ry(v[1]), 5), round(v[2] / dx, 5), round(v[3] / dy, 5)]
+
+
+def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=False, cropped=False,
+                  contour_raw=None, **_ignore) -> dict:
     """Grade a card with the classical-CV pipeline. Same signature/return shape as
     grader.grade_card() (minus the api_key — no VLM call)."""
     if quad_padded is None and quad_raw is not None:
@@ -372,14 +427,71 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
         cw = (grader._contour_to_warped_norm(contour, quad_padded)
               if (contour is not None and quad_padded is not None) else N._FULL_FRAME_CW)
         cb_feat   = grader.refine_cb_in_warped(warped, cb0, balance=False)            # grading features (model-matched; no expand)
-        # Crop-bypass: the image IS the card (fills the frame), so the outer die-cut edge = the image edge.
-        # refine_cb_in_warped searches inward and can latch onto a strong CONTENT edge (e.g. the title row) →
-        # undershoots the outer top (card_030: top pulled to ~3% → centering 43/57 vs the true ~55/45). On a
-        # cropped input, trust the image edge for the centering/display boundary. (cb_feat is left untouched so
-        # the grading-feature model is unaffected.)
-        cb_center = ([0.0, 0.0, 1.0, 1.0] if cropped
-                     else grader.refine_cb_in_warped(warped, cb0, balance=True,        # centering: balance + contour-expand
-                                                      cw=(cw if contour is not None else None)))
+        if cropped:
+            # Two crop-bypass inputs are geometrically identical (card ~fills the frame) but need different outers:
+            #   (a) TIGHT CROP / catalog (card_030): NO background — the true die-cut = the IMAGE edge; SAM3
+            #       undershoots, leaving a thin CARD-coloured margin → outer must be [0,0,1,1].
+            #   (b) SOLID BACKDROP (card_003/008): the card sits ~3% inside a uniform backdrop → the true die-cut =
+            #       the SAM3 contour; extending to the image edge OVERSHOOTS into the backdrop.
+            # Discriminate by CONTENT: per side, compare the margin strip (image-edge→contour) to the card border
+            # just inside it — similar colour = SAM3 undershot into the card (no backdrop that side); different =
+            # backdrop. Vote GLOBALLY (a single dark card edge, e.g. card_030's top, is outvoted): ≥2 "no-backdrop"
+            # sides ⇒ tight crop ⇒ [0,0,1,1]; else trust the SAM3 contour bbox. (cb_feat untouched → grades unmoved.)
+            # Margins come from the RAW (unsmoothed) contour: Gaussian smoothing pulls the extremes INWARD —
+            # ~0.5% typically but 1.5%+ where the edge is ragged (card_004's yellow-on-gray right side) — and
+            # since the display warp is cropped to cb_center, that shave visibly removed the card border.
+            # Robust p0.5/99.5 bbox = the die-cut without single-pixel spike inflation (raw minmax +0.2%).
+            craw = (grader._contour_to_warped_norm(contour_raw, quad_padded)
+                    if (contour_raw is not None and quad_padded is not None) else None)
+            cwp = np.asarray(craw if craw is not None else cw, np.float32).reshape(-1, 2)
+            Lm, Tm = float(np.percentile(cwp[:, 0], 0.5)), float(np.percentile(cwp[:, 1], 0.5))
+            Rm, Bm = float(1 - np.percentile(cwp[:, 0], 99.5)), float(1 - np.percentile(cwp[:, 1], 99.5))
+            Hw, Ww = warped.shape[:2]
+
+            def _margin_is_card(m, side):                                              # margin strip ≈ card border?
+                b = max(int(m * (Hw if side in "TB" else Ww)), 1)
+                if   side == "T": o, i = warped[:b],         warped[b:2 * b]
+                elif side == "B": o, i = warped[Hw - b:],    warped[Hw - 2 * b:Hw - b]
+                elif side == "L": o, i = warped[:, :b],      warped[:, b:2 * b]
+                else:             o, i = warped[:, Ww - b:], warped[:, Ww - 2 * b:Ww - b]
+                if o.size == 0 or i.size == 0:
+                    return False
+                return float(np.abs(o.reshape(-1, 3).mean(0) - i.reshape(-1, 3).mean(0)).sum()) < 25.0
+
+            def _flat_run(m, side):
+                # How far the image-edge colour stays flat, scanned PAST the contour (to m+4%). A real backdrop
+                # boundary ends the flat region AT SAM3's line (run ≈ m); when the flat colour CONTINUES past it,
+                # SAM3's line floats mid-region — it undershot into a flat card border (card_004: yellow border on
+                # a catalog render reads as "backdrop" to the colour vote; the yellow runs on to the frame line).
+                n = Hw if side in "TB" else Ww
+                ext = min(int((m + 0.04) * n) + 1, n // 3)
+                if   side == "T": blk = warped[:ext, int(Ww * 0.2):int(Ww * 0.8)]
+                elif side == "B": blk = warped[Hw - ext:, int(Ww * 0.2):int(Ww * 0.8)][::-1]
+                elif side == "L": blk = warped[int(Hw * 0.2):int(Hw * 0.8), :ext].transpose(1, 0, 2)
+                else:             blk = warped[int(Hw * 0.2):int(Hw * 0.8), Ww - ext:].transpose(1, 0, 2)[::-1]
+                med = np.median(blk.astype(np.float32), axis=1)          # per-row median colour, edge → inward
+                ref = med[:2].mean(0)
+                bad = np.abs(med - ref).sum(1) > 90.0
+                run = int(np.argmax(bad)) if bad.any() else ext
+                return run / n
+
+            votes = 0
+            for m, s in ((Lm, "L"), (Tm, "T"), (Rm, "R"), (Bm, "B")):
+                if _margin_is_card(m, s):                                # colour ≈ card interior (existing test)
+                    votes += 1
+                elif _flat_run(m, s) > m + 0.005:                        # "backdrop" colour floats past SAM3's line
+                    votes += 1
+            if max(Lm, Tm, Rm, Bm) < 0.015:
+                # ALL margins tiny → no room for a real backdrop; a tight crop where SAM3 undershot a few px
+                # (card_37: contour bottom 7px inside the true edge). The content-vote is unreliable here — its
+                # reference strip is only ~margin-wide → lands on the border/art transition → false 'backdrop'
+                # (card_37's silver bottom). Trust the frame edge. Real-backdrop cards carry a ≥~2.5% margin.
+                cb_center = [0.0, 0.0, 1.0, 1.0]
+            else:
+                cb_center = [0.0, 0.0, 1.0, 1.0] if votes >= 2 else [Lm, Tm, 1 - Rm, 1 - Bm]
+        else:
+            cb_center = grader.refine_cb_in_warped(warped, cb0, balance=True,          # centering: balance + contour-expand
+                                                   cw=(cw if contour is not None else None))
     else:
         warped = grader._warp_card(img_bgr, None) if False else img_bgr.copy()
         cb_feat = cb_center = [0.0, 0.0, 1.0, 1.0]
@@ -411,6 +523,15 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
     # ring. Non-cropped: mask the table background to the card contour so remnants don't contaminate the read.
     warped_cen = warped if cropped else grader.mask_background_to_contour(warped, cw)
     inn = _perside_inner_frame(warped_cen, cb_center) or IF.find_inner_frame(warped_cen, cb_center)
+    # INNER_HIJACK_CORRECT: rescue extreme per-side selector hijacks (a full-art inner edge that latched onto the
+    # outer holo edge) via an RF-DETR-bounded photometric band search. Conservative + non-fatal; no-op unless a
+    # side is extremely asymmetric AND RF-DETR disagrees AND a strong inward frame edge exists. See the module.
+    if os.environ.get("INNER_HIJACK_CORRECT", "0").lower() in ("1", "true", "yes", "on"):
+        try:
+            import inner_boundary_correct as IBC
+            inn = IBC.correct(warped_cen, cb_center, inn)
+        except Exception as _ie:
+            print(f"[inner-correct] skipped: {type(_ie).__name__}: {_ie}", flush=True)
     # ── RECT_CHECK=1: post-warp rectification check — a MIN-only geometric veto on centering confidence. ──
     # Measures the physical die-cut edge in the UNMASKED warp against the output-inset invariant (card must sit
     # at [PF,1-PF] with zero tilt). Can only LOWER confidence / clear reliable; never moves a ratio or grade.
@@ -476,7 +597,8 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
         "centering": {"score": cen_score, "left_right": lr, "top_bottom": tb,
                       "content_region": content_region, "reliable": bool(inn["reliable"]),
                       "confidence": inn.get("confidence"),   # graded 0..1 (perside only; None on coherentframe fallback)
-                      "notes": cen_note, "_source": inn.get("_source", "coherentframe")},
+                      "notes": cen_note, "_source": inn.get("_source", "coherentframe"),
+                      "_inner_corrected": bool(inn.get("_inner_corrected", False))},
         "corners": {"score": corners_s, "worst_severity": corners_w},
         "edges":   {"score": edges_s,   "worst_severity": edges_w},
         "surface": {"score": surface_s, "worst_severity": surface_w},
@@ -557,6 +679,12 @@ def grade_card_cv(img_bgr, quad_raw=None, quad_padded=None, contour=None, zoom=F
             ec = ec_detect.defect_boxes(warped_cen)            # {edges:[...], corners:[...], surface:[]}
             db["edges"], db["corners"] = ec["edges"], ec["corners"]
             result["defect_boxes"] = db
+    except Exception:
+        pass
+    # Presentational: unify the DISPLAY warp so backdrop-cropped cards render tight like every other card
+    # (grade-neutral — see _crop_display_to_card; no-op for cb≈[0,0,1,1]).
+    try:
+        _crop_display_to_card(result, cb_center)
     except Exception:
         pass
     return result
