@@ -209,9 +209,10 @@ async function gradeImage(front, back, meta = null) {
     form.append("shipping", String(meta.shipping ?? 0));
   }
 
-  // stability=1: the grader also grades a perturbed copy (concurrently) and MIN-combines the test–retest
-  // stability into centering.confidence — same as the web app, so both surfaces report identical confidence.
-  const res  = await fetch(`${pythonBase}/grade?stability=1`, { method: "POST", body: form });
+  // NOTE: no stability=1 — the probe is a second full grade that serializes on the single-container SAM3
+  // backend (~+10s), which pushed grades past timeouts and doubled GPU cost. Matches the web app; confidence
+  // still comes from registration support + warp geometry. Re-add only if the backend probe runs async.
+  const res  = await fetch(`${pythonBase}/grade`, { method: "POST", body: form });
   const data = await res.json();
   if (!res.ok) throw new Error(data.detail || `Server error ${res.status}`);
   return data;

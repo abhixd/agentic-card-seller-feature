@@ -53,11 +53,13 @@ async function proxyImageTo(
 
 /** Forward a card image (+ optional listing fields) to the grading service /grade endpoint.
  *  `zoom` requests high-res per-defect close-ups (pillar_zooms) via /grade?zoom=1.
- *  stability=1 is always requested: the grader also grades a perturbed copy (concurrently — ~no added
- *  latency) and MIN-combines the test–retest stability into centering.confidence, catching fragile reads
- *  (faint sleeve edges) that otherwise LOOK confident. The grader skips it on manual-contour re-grades. */
+ *  NOTE: stability=1 is intentionally NOT requested here. The probe grades a SECOND full copy, and on the
+ *  single-container Modal backend SAM3 serializes, so it added ~10s — pushing interactive grades past
+ *  Vercel's 60s function limit (and doubling GPU cost per grade). Confidence still comes from registration
+ *  support + warp geometry; the stability MIN stays on the /scout + batch paths where latency isn't
+ *  user-facing. Re-add here only if the backend runs the probe without serializing (or async). */
 export function proxyGrade(image: File, fields?: Record<string, string>, zoom = false): Promise<NextResponse> {
-  return proxyImageTo(`/grade?stability=1${zoom ? '&zoom=1' : ''}`, image, fields, 'grade')
+  return proxyImageTo(`/grade${zoom ? '?zoom=1' : ''}`, image, fields, 'grade')
 }
 
 /** Forward one card photo (+ ask/shipping/title) to the Sourcing-scout /scout endpoint. */
