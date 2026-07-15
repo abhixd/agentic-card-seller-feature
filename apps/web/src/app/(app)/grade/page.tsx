@@ -21,6 +21,31 @@ const SCAN_STEPS = [
   'Scoring…',
 ]
 
+/** One grade attempt. Throws an error tagged `retryable` when the failure looks like a cold-start
+ *  timeout — a Vercel function that exceeds its 60s limit returns an HTML/text gateway page (not JSON),
+ *  and our proxy surfaces service-unreachable as 5xx; both mean "the container is (now) warming, retry". */
+async function gradeOnce(f: File): Promise<GradeResult> {
+  const fd = new FormData()
+  fd.append('image', f)
+  let res: Response
+  try {
+    res = await fetch('/api/grade?zoom=1', { method: 'POST', body: fd }) // include high-res defect close-ups
+  } catch {
+    throw Object.assign(new Error('The grading service is unreachable.'), { retryable: true })
+  }
+  const isJson = (res.headers.get('content-type') ?? '').includes('application/json')
+  if (!isJson) {
+    // Gateway timeout / error page — never valid JSON. Treat as a (retryable) cold-start timeout.
+    throw Object.assign(new Error('The grader timed out while warming up.'), { retryable: true })
+  }
+  const data = (await res.json().catch(() => null)) as (GradeResult & { error?: string }) | null
+  if (!res.ok) {
+    throw Object.assign(new Error(data?.error ?? 'Grading failed'), { retryable: res.status >= 500 })
+  }
+  if (!data) throw Object.assign(new Error('Grading returned no data.'), { retryable: true })
+  return data
+}
+
 export default function GradePage() {
   const [preview, setPreview] = useState<string | null>(null)
   const [lastFile, setLastFile] = useState<File | null>(null)
@@ -28,6 +53,7 @@ export default function GradePage() {
   const [profile, setProfile] = useState<CardProfile | null>(null)
   const [profileLoading, setProfileLoading] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [warming, setWarming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showOriginal, setShowOriginal] = useState(false)
   const [dragOver, setDragOver] = useState(false)
@@ -40,22 +66,38 @@ export default function GradePage() {
     setResult(null)
     setProfile(null)
     setError(null)
+    setWarming(false)
     setShowOriginal(false)
     setPreview(URL.createObjectURL(f))
     setLoading(true)
     setScanStep(0)
     try {
-      const fd = new FormData()
-      fd.append('image', f)
-      const res = await fetch('/api/grade?zoom=1', { method: 'POST', body: fd })   // include high-res defect close-ups
-      const data = await res.json()
-      if (!res.ok) throw new Error(data?.error ?? 'Grading failed')
-      setResult(data as GradeResult)
+      let out: GradeResult
+      try {
+        out = await gradeOnce(f)
+      } catch (e) {
+        // The grading GPU container scales to zero when idle; the first grade after a lull cold-starts it
+        // (~40s to load SAM3) and can exceed the 60s serverless limit → the platform returns a non-JSON
+        // timeout page. That first request still BOOTS the container, so retry ONCE — the retry lands on a
+        // now-warm container and completes in ~15s. Non-retryable failures (bad image, 4xx) rethrow.
+        if (!(e as { retryable?: boolean })?.retryable) throw e
+        setWarming(true)
+        setScanStep(0)
+        await new Promise((r) => setTimeout(r, 2500))
+        out = await gradeOnce(f)
+      }
+      setResult(out)
       void identifyCard(f)   // hydrate identity + comps from /scout (same photo); non-blocking
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Grading failed')
+      const retryable = (err as { retryable?: boolean })?.retryable
+      setError(
+        retryable
+          ? 'The grader was warming up and the request timed out. Give it a few seconds and try again — grading is fast once it’s warm.'
+          : err instanceof Error ? err.message : 'Grading failed',
+      )
     } finally {
       setLoading(false)
+      setWarming(false)
     }
   }, [])
 
@@ -183,7 +225,9 @@ export default function GradePage() {
             <div className="absolute inset-0 bg-black/10" />
             <div className="scan-sweep absolute inset-x-0 h-16" />
           </div>
-          <p className="mt-3 text-center text-sm text-muted-foreground" aria-live="polite">{SCAN_STEPS[scanStep]}</p>
+          <p className="mt-3 text-center text-sm text-muted-foreground" aria-live="polite">
+            {warming ? 'Warming up the grader (first grade after a lull)…' : SCAN_STEPS[scanStep]}
+          </p>
           <style jsx>{`
             .scan-sweep {
               background: linear-gradient(to bottom, transparent, rgba(16, 185, 129, 0.25), rgba(16, 185, 129, 0.5), rgba(16, 185, 129, 0.25), transparent);
