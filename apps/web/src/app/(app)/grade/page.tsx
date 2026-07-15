@@ -53,8 +53,8 @@ export default function GradePage() {
   const [profile, setProfile] = useState<CardProfile | null>(null)
   const [profileLoading, setProfileLoading] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [warming, setWarming] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [retryable, setRetryable] = useState(false)
   const [showOriginal, setShowOriginal] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [scanStep, setScanStep] = useState(0)
@@ -66,38 +66,30 @@ export default function GradePage() {
     setResult(null)
     setProfile(null)
     setError(null)
-    setWarming(false)
+    setRetryable(false)
     setShowOriginal(false)
     setPreview(URL.createObjectURL(f))
     setLoading(true)
     setScanStep(0)
     try {
-      let out: GradeResult
-      try {
-        out = await gradeOnce(f)
-      } catch (e) {
-        // The grading GPU container scales to zero when idle; the first grade after a lull cold-starts it
-        // (~40s to load SAM3) and can exceed the 60s serverless limit → the platform returns a non-JSON
-        // timeout page. That first request still BOOTS the container, so retry ONCE — the retry lands on a
-        // now-warm container and completes in ~15s. Non-retryable failures (bad image, 4xx) rethrow.
-        if (!(e as { retryable?: boolean })?.retryable) throw e
-        setWarming(true)
-        setScanStep(0)
-        await new Promise((r) => setTimeout(r, 2500))
-        out = await gradeOnce(f)
-      }
+      const out = await gradeOnce(f)
       setResult(out)
       void identifyCard(f)   // hydrate identity + comps from /scout (same photo); non-blocking
     } catch (err) {
-      const retryable = (err as { retryable?: boolean })?.retryable
+      // The grading GPU container scales to zero when idle; the first grade after a lull cold-starts it
+      // (~40s to load SAM3) and can exceed the 60s serverless limit → a non-JSON timeout page. We do NOT
+      // auto-retry (a retry would run a second billable GPU grade — and cards whose warm grade already
+      // exceeds 60s would just time out again at double cost). Instead we surface a one-click "Try again"
+      // so the second grade only runs on the user's explicit choice.
+      const canRetry = !!(err as { retryable?: boolean })?.retryable
+      setRetryable(canRetry)
       setError(
-        retryable
-          ? 'The grader was warming up and the request timed out. Give it a few seconds and try again — grading is fast once it’s warm.'
+        canRetry
+          ? 'The grader was warming up and the request timed out. Give it a few seconds, then tap Try again — it’s fast once warm.'
           : err instanceof Error ? err.message : 'Grading failed',
       )
     } finally {
       setLoading(false)
-      setWarming(false)
     }
   }, [])
 
@@ -210,9 +202,19 @@ export default function GradePage() {
         onChange={(e) => { const f = e.target.files?.[0]; if (f) void gradeFile(f) }} />
 
       {error && (
-        <div className="flex items-center justify-between rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2.5">
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2.5">
           <p className="text-sm text-red-600">{error}</p>
-          <button onClick={reset} className="shrink-0 rounded-md border px-3 py-1 text-xs hover:bg-muted">Try another photo</button>
+          <div className="flex shrink-0 gap-2">
+            {retryable && lastFile && (
+              <button
+                onClick={() => { const f = lastFile; if (f) void gradeFile(f) }}
+                className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-400"
+              >
+                Try again
+              </button>
+            )}
+            <button onClick={reset} className="rounded-md border px-3 py-1 text-xs hover:bg-muted">New photo</button>
+          </div>
         </div>
       )}
 
@@ -225,9 +227,7 @@ export default function GradePage() {
             <div className="absolute inset-0 bg-black/10" />
             <div className="scan-sweep absolute inset-x-0 h-16" />
           </div>
-          <p className="mt-3 text-center text-sm text-muted-foreground" aria-live="polite">
-            {warming ? 'Warming up the grader (first grade after a lull)…' : SCAN_STEPS[scanStep]}
-          </p>
+          <p className="mt-3 text-center text-sm text-muted-foreground" aria-live="polite">{SCAN_STEPS[scanStep]}</p>
           <style jsx>{`
             .scan-sweep {
               background: linear-gradient(to bottom, transparent, rgba(16, 185, 129, 0.25), rgba(16, 185, 129, 0.5), rgba(16, 185, 129, 0.25), transparent);
