@@ -72,6 +72,8 @@ export interface Registration {
   outer_tightened?: Record<string, number> | null;
   /** render-detected print-frame depth per axis (x/y, fractions) — the datum margins are measured from */
   frame_insets?: Record<string, number> | null;
+  /** RAG+registration-verified catalog card (id, name, number, set, image) — authoritative identity when accepted */
+  ref_card?: Record<string, unknown> | null;
   /** sides moved inward (px) by the gray-zone recovery (1-3% oversize warp, tighten + full re-verify) */
   gray_zone_tightened?: Record<string, number> | null;
   /** bad-warp diagnosis on a failed registration: homography-corrected corners + deviation px */

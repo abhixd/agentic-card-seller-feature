@@ -51,6 +51,9 @@ export interface CenteringResult {
     cut_edge_support?: Record<string, number> | null
     /** sides moved inward (px) by the anchored sleeve-overhang tightener */
     outer_tightened?: Record<string, number> | null
+    /** RAG+registration-VERIFIED catalog card (id, name, number, set, image, …) — authoritative
+     *  identity for the profile when accepted (beats the vision text-read) */
+    ref_card?: Record<string, unknown> | null
   } | null
 }
 

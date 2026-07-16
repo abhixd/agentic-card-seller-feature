@@ -74,7 +74,22 @@ export default function GradePage() {
     try {
       const out = await gradeOnce(f)
       setResult(out)
-      void identifyCard(f)   // hydrate identity + comps from /scout (same photo); non-blocking
+      // Identity: prefer the RAG+registration-VERIFIED catalog card from the grade itself (image-based,
+      // authoritative) over a separate vision text-read. The light /scout call still runs — for market
+      // comps, and as the best-guess identity when registration didn't verify.
+      const ref = out.centering.registration?.accepted ? out.centering.registration?.ref_card : null
+      if (ref?.name) {
+        setProfile({
+          identity: {
+            name: String(ref.name), set: (ref.set as string) ?? null, number: (ref.number as string) ?? null,
+            year: ref.year ? Number(ref.year) : null, language: (ref.language as string) ?? null,
+            rarity: null, variant: null, title: String(ref.name), confidence: 1,
+          },
+          comps: ref.image ? { card: { imageCdnUrl: String(ref.image) } } : null,
+          thumb_b64: null,
+        })
+      }
+      void identifyCard(f, !!ref?.name)   // comps (+ fallback identity if not registered); non-blocking
     } catch (err) {
       // The grading GPU container scales to zero when idle; the first grade after a lull cold-starts it
       // (~40s to load SAM3) and can exceed the 60s serverless limit → a non-JSON timeout page. We do NOT
@@ -117,21 +132,25 @@ export default function GradePage() {
 
   // /grade returns the grade fast (CV); identity needs a Claude vision read, so fetch it from /scout
   // separately and let the profile (and the verdict's dollar figures) fill in once it resolves.
-  async function identifyCard(f: File) {
+  async function identifyCard(f: File, haveVerifiedIdentity = false) {
     setProfileLoading(true)
     try {
       const fd = new FormData()
       fd.append('image', f)
-      // light=1 → identity + comps ONLY (no grade): the profile just needs the card name + market
-      // comps, and the full /scout re-grade timed out on hard cards ("card not identified").
+      // light=1 → identity + comps ONLY (no grade): fast enough not to time out on hard cards.
       const res = await fetch('/api/scout?light=1', { method: 'POST', body: fd })
       const data = await res.json().catch(() => null)
-      if (res.ok && data?.identity) {
-        setProfile({
-          identity: { ...data.identity, rarity: data.comps_detail?.card?.rarity ?? null },
-          comps: data.comps_detail ?? null,
-          thumb_b64: data.thumb_b64 ?? null,
-        })
+      if (res.ok) {
+        if (haveVerifiedIdentity) {
+          // Registration already gave us the authoritative card — keep it, just attach market comps.
+          setProfile((p) => p ? { ...p, comps: data?.comps_detail ?? p.comps } : p)
+        } else if (data?.identity?.name) {
+          setProfile({
+            identity: { ...data.identity, rarity: data.comps_detail?.card?.rarity ?? null },
+            comps: data.comps_detail ?? null,
+            thumb_b64: data.thumb_b64 ?? null,
+          })
+        }
       }
     } catch {
       /* identity is best-effort — a failed read just leaves "card not identified" */

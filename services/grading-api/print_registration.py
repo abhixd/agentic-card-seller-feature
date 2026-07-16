@@ -113,6 +113,32 @@ def _load_index():
     return [r for r in _INDEX if r]
 
 
+_INDEX_BY_ID: dict = {}
+
+
+def _card_by_id(cid):
+    """Resolve a REGISTERED ref_id (the RAG+registration-verified catalog card) to its display fields.
+    This is the AUTHORITATIVE identity when registration accepts — the profile should use it instead of a
+    separate vision text-read (which hallucinates on hard cards). Prefixed ids (ja:/de:/…) are TCGdex;
+    the offline pokemontcg index only has EN, so fall back to whatever _catalog_meta captured (image URL)."""
+    if not _INDEX_BY_ID:
+        for r in _load_index():
+            _INDEX_BY_ID[r["id"]] = r
+        _INDEX_BY_ID.setdefault("__loaded__", True)
+    r = _INDEX_BY_ID.get(cid)
+    lang = None
+    if r is None and ":" in cid:
+        lang, _, base = cid.partition(":")
+        r = _INDEX_BY_ID.get(base)                                  # EN twin of a language variant, for text
+    url, _rd = _catalog_meta(cid)
+    if r is None:
+        return {"id": cid, "image": url or _IMG_URLS.get(cid)} if (url or _IMG_URLS.get(cid)) else {"id": cid}
+    return {"id": cid, "name": r["n"].title(), "number": r["num"],
+            "number_total": r.get("pt") or r.get("tot"), "set": r["set"], "series": r["ser"],
+            "year": (r["rd"] or "")[:4] or None, "language": lang,
+            "image": url or r.get("img") or _IMG_URLS.get(cid)}
+
+
 def _local_cards(name, num):
     """Offline equivalent of the API queries: exact name + number → first-token + number → name-only.
     Returns rows shaped like API card objects (for the shared score())."""
@@ -1512,6 +1538,11 @@ def apply_to_result(result, identity):
                     result["_card_boundary"] = [round(tcut["L"] / cw, 4), round(tcut["T"] / ch, 4),
                                                 round((tcut["R"] + 1) / cw, 4), round((tcut["B"] + 1) / ch, 4)]
         cen["registration"] = {k: v for k, v in meta.items() if k != "content_region"}
+        if meta.get("ref_id"):
+            try:                                                    # the VERIFIED catalog card (RAG+register)
+                cen["registration"]["ref_card"] = _card_by_id(meta["ref_id"])
+            except Exception:
+                pass
         if (meta.get("outer_corrected") or meta.get("gray_zone_tightened")) and meta.get("cut_box"):
             # The true die-cut sits INSIDE the displayed warp (case/sleeve/slop ring around it) — move the
             # outer boundary so the UI's green rect hugs the actual card. content_region is already

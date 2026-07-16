@@ -436,6 +436,19 @@
           "default": null,
           "title": "Frame Insets"
         },
+        "ref_card": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ref Card"
+        },
         "gray_zone_tightened": {
           "anyOf": [
             {
@@ -698,5 +711,5 @@
   "title": "GradeResponse",
   "type": "object",
   "$id": "https://acs/grading-contract/grade-response.schema.json",
-  "x-contract-version": "1.11.0"
+  "x-contract-version": "1.12.0"
 }

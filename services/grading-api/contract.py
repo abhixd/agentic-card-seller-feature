@@ -17,7 +17,8 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field
 
-CONTRACT_VERSION = "1.11.0"  # 1.11.0: + registration.rewarp / rewarped (bad-warp diagnosis + verified re-warp loop, additive)
+CONTRACT_VERSION = "1.12.0"  # 1.12.0: + registration.ref_card (RAG-verified catalog card for the profile, additive)
+# 1.11.0: + registration.rewarp / rewarped (bad-warp diagnosis + verified re-warp loop, additive)
 # 1.10.0: + registration.gray_zone_tightened (anchored gray-zone recovery, additive)
 # 1.9.0: + registration.frame_insets (render-detected print-frame datum, additive)
 # 1.5.0: + optional ?stability=1 grade input → centering.stability block (additive)
@@ -55,6 +56,9 @@ class Registration(BaseModel):
                                                        # overhang tightener (PRINT_REG_TIGHTEN=1)
     frame_insets: Optional[Dict[str, float]] = None    # render-detected print-frame depth per axis (x/y,
                                                        # fractions) — the datum the margins are measured from
+    ref_card: Optional[Dict[str, Any]] = None          # the RAG+registration-VERIFIED catalog card (id, name,
+                                                       # number, set, image, ...) — authoritative identity for
+                                                       # the profile when accepted (beats the vision text-read)
     gray_zone_tightened: Optional[Dict[str, float]] = None  # sides moved inward (px) by the gray-zone
                                                        # recovery (1-3% oversize warp → tighten+re-verify)
     rewarp: Optional[Dict[str, Any]] = None            # bad-warp diagnosis on a FAILED registration: the
