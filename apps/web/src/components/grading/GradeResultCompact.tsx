@@ -95,6 +95,11 @@ export function GradeResultCompact({
   const pv = result.pillar_visuals
   const hasVisual = (p: string) => !!pv && !!pv[p as keyof typeof pv]
   const identity = profile?.identity
+  // The vision ID's self-reported confidence is unreliable on hard cards — it returns different cards at
+  // 0.85–0.95 across runs (card_017). The trustworthy signal is REGISTRATION: when the grade verified the
+  // card against its official render (accepted + ref_id), the identity is confirmed; otherwise the profile
+  // is a best guess and the catalog card shown may not match the uploaded photo. Gate the profile on it.
+  const idConfirmed = result.centering.registration?.accepted === true
 
   // Live scores: server values until the user edits, then recompute from the dragged boxes.
   const cbLive = outer ? [outer.x1, outer.y1, outer.x2, outer.y2] : cb
@@ -207,7 +212,9 @@ export function GradeResultCompact({
             <span className="min-w-0">
               <span className="block truncate text-[15px] font-medium">{identity.name}</span>
               <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                {[identity.set, identity.number && `#${identity.number}`, identity.rarity].filter(Boolean).join(' · ') || 'tap for details'}
+                {idConfirmed
+                  ? [identity.set, identity.number && `#${identity.number}`, identity.rarity].filter(Boolean).join(' · ') || 'tap for details'
+                  : 'best guess — couldn’t confirm this card from the photo'}
               </span>
             </span>
             <span className="shrink-0 self-center text-[11px] text-blue-600 dark:text-blue-400">profile ↗</span>
@@ -220,8 +227,10 @@ export function GradeResultCompact({
             </div>
           </div>
         )}
-        {identity?.confidence != null && (
-          <span className="shrink-0 rounded-full bg-muted px-2.5 py-1 text-[11px] text-muted-foreground">ID {Math.round(identity.confidence * 100)}%</span>
+        {identity?.name && (
+          idConfirmed
+            ? <span className="shrink-0 rounded-full bg-emerald-500/15 px-2.5 py-1 text-[11px] text-emerald-600 dark:text-emerald-400">✓ confirmed</span>
+            : <span className="shrink-0 rounded-full bg-amber-500/15 px-2.5 py-1 text-[11px] text-amber-600 dark:text-amber-400">unconfirmed</span>
         )}
       </div>
 
@@ -332,7 +341,7 @@ export function GradeResultCompact({
       </div>
 
       <PillarVisualDialog pillar={openPillar} visuals={result.pillar_visuals} centering={result.centering} onClose={() => setOpenPillar(null)} />
-      <CardProfileModal profile={showProfile ? profile ?? null : null} onClose={() => setShowProfile(false)} />
+      <CardProfileModal profile={showProfile ? profile ?? null : null} confirmed={idConfirmed} onClose={() => setShowProfile(false)} />
       <DefectZoomGallery zooms={showZooms ? result.pillar_zooms ?? null : null} onClose={() => setShowZooms(false)} />
     </div>
   )

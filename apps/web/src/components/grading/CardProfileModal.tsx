@@ -20,7 +20,7 @@ const gradeOrder = (g: string) => {
   return 300
 }
 
-export function CardProfileModal({ profile, onClose }: { profile: CardProfile | null; onClose: () => void }) {
+export function CardProfileModal({ profile, confirmed = true, onClose }: { profile: CardProfile | null; confirmed?: boolean; onClose: () => void }) {
   useEffect(() => {
     if (!profile) return
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
@@ -49,10 +49,20 @@ export function CardProfileModal({ profile, onClose }: { profile: CardProfile | 
           <button onClick={onClose} className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Close">✕</button>
         </div>
 
+        {!confirmed && (
+          <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+            ⚠️ We couldn’t confirm this exact card from your photo (glare, sleeve, or an unclear image). These
+            details — and the reference image — are a best guess and may not match the card you uploaded.
+          </div>
+        )}
+
         <div className="mt-4 flex gap-4">
           {img && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={img} alt={id.name || 'card'} className="w-28 shrink-0 self-start rounded-md border object-contain" />
+            <div className="shrink-0 self-start">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={img} alt={id.name || 'card'} className={`w-28 rounded-md border object-contain ${confirmed ? '' : 'opacity-60'}`} />
+              {!confirmed && <p className="mt-1 w-28 text-center text-[10px] text-amber-600 dark:text-amber-400">reference — may not match</p>}
+            </div>
           )}
           <dl className="min-w-0 flex-1 space-y-1 text-sm">
             <Row k="Set" v={id.set || c?.card?.setName} />
