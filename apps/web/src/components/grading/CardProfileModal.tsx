@@ -20,7 +20,7 @@ const gradeOrder = (g: string) => {
   return 300
 }
 
-export function CardProfileModal({ profile, confirmed = true, analyzeHref = null, onClose }: { profile: CardProfile | null; confirmed?: boolean; analyzeHref?: string | null; onClose: () => void }) {
+export function CardProfileModal({ profile, confirmed = true, analyzeHref = null, onOpenAnalysis, onClose }: { profile: CardProfile | null; confirmed?: boolean; analyzeHref?: string | null; onOpenAnalysis?: () => void; onClose: () => void }) {
   useEffect(() => {
     if (!profile) return
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
@@ -119,15 +119,21 @@ export function CardProfileModal({ profile, confirmed = true, analyzeHref = null
 
         {!c && <p className="mt-4 text-xs text-muted-foreground">No market match found yet — set &amp; identity shown from the photo read.</p>}
 
-        {analyzeHref && (
-          // Same-tab: the grade page persists its result to sessionStorage, so the browser Back button
-          // returns here with the graded card restored (no re-grade). Works on mobile too.
-          <a href={analyzeHref}
-             className="mt-4 flex items-center justify-between rounded-lg border border-blue-500/40 bg-blue-500/5 px-3 py-2.5 text-sm font-medium text-blue-700 hover:bg-blue-500/10 dark:text-blue-400">
+        {onOpenAnalysis ? (
+          // IN-CONTEXT: opens the full analysis as a slide-over ON the grade page — no navigation, the
+          // graded card stays right where it is; ✕ / Esc returns to it instantly.
+          <button type="button" onClick={onOpenAnalysis}
+             className="mt-4 flex w-full items-center justify-between rounded-lg border border-blue-500/40 bg-blue-500/5 px-3 py-2.5 text-sm font-medium text-blue-700 hover:bg-blue-500/10 dark:text-blue-400">
             <span>View full price history &amp; grading analysis</span>
             <span aria-hidden>→</span>
+          </button>
+        ) : analyzeHref ? (
+          <a href={analyzeHref}
+             className="mt-4 flex items-center justify-between rounded-lg border border-blue-500/40 bg-blue-500/5 px-3 py-2.5 text-sm font-medium text-blue-700 hover:bg-blue-500/10 dark:text-blue-400">
+            <span>Search this card in Analyze</span>
+            <span aria-hidden>→</span>
           </a>
-        )}
+        ) : null}
         <p className="mt-3 text-[11px] text-muted-foreground/70">Identified from your photo. Confirm set &amp; number before listing.</p>
       </div>
     </div>

@@ -16,6 +16,7 @@ import { type Box, ratiosFromBox, centeringScore, overallScore, psaLabel } from 
 import { warpBoxToSourceCorners } from '@/lib/grading/homography'
 import { centeringPhrase, confidencePhrase, pillarNote, verdict, badgeWord } from '@/lib/grading/plain'
 import { PillarVisualDialog } from './PillarVisualDialog'
+import { AnalysisSheet } from './AnalysisSheet'
 import { CardProfileModal } from './CardProfileModal'
 import { DefectZoomGallery } from './DefectZoomGallery'
 
@@ -104,16 +105,23 @@ export function GradeResultCompact({
   // For a VERIFIED card, resolve its ref_id → internal catalog_id for the direct detail page; else fall
   // back to the analyze search pre-filled with the card name.
   const [analyzeHref, setAnalyzeHref] = useState<string | null>(null)
+  const [analyzeCatalogId, setAnalyzeCatalogId] = useState<string | null>(null)
+  const [showAnalysis, setShowAnalysis] = useState(false)
   useEffect(() => {
     const refId = idConfirmed ? (result.centering.registration?.ref_id ?? null) : null
     const name = identity?.name ?? null
+    setAnalyzeCatalogId(null)
     if (!name && !refId) { setAnalyzeHref(null); return }
     const nameHref = name ? `/analyze?q=${encodeURIComponent(name)}` : null
     if (!refId) { setAnalyzeHref(nameHref); return }
     let alive = true
     fetch(`/api/catalog/resolve?ptcg=${encodeURIComponent(refId)}`)
       .then((r) => r.json()).catch(() => null)
-      .then((d) => { if (alive) setAnalyzeHref(d?.catalogId ? `/analyze/${d.catalogId}` : nameHref) })
+      .then((d) => {
+        if (!alive) return
+        setAnalyzeCatalogId(d?.catalogId ?? null)                       // → in-context analysis sheet
+        setAnalyzeHref(d?.catalogId ? null : nameHref)                  // link fallback only if unresolved
+      })
     return () => { alive = false }
   }, [idConfirmed, result.centering.registration?.ref_id, identity?.name])
 
@@ -357,7 +365,11 @@ export function GradeResultCompact({
       </div>
 
       <PillarVisualDialog pillar={openPillar} visuals={result.pillar_visuals} centering={result.centering} onClose={() => setOpenPillar(null)} />
-      <CardProfileModal profile={showProfile ? profile ?? null : null} confirmed={idConfirmed} analyzeHref={analyzeHref} onClose={() => setShowProfile(false)} />
+      <CardProfileModal profile={showProfile ? profile ?? null : null} confirmed={idConfirmed} analyzeHref={analyzeHref}
+        onOpenAnalysis={analyzeCatalogId ? () => { setShowProfile(false); setShowAnalysis(true) } : undefined}
+        onClose={() => setShowProfile(false)} />
+      <AnalysisSheet catalogId={showAnalysis ? analyzeCatalogId : null}
+        title={identity?.name ?? undefined} onClose={() => setShowAnalysis(false)} />
       <DefectZoomGallery zooms={showZooms ? result.pillar_zooms ?? null : null} onClose={() => setShowZooms(false)} />
     </div>
   )
