@@ -62,7 +62,9 @@ export function proxyGrade(image: File, fields?: Record<string, string>, zoom = 
   return proxyImageTo(`/grade${zoom ? '?zoom=1' : ''}`, image, fields, 'grade')
 }
 
-/** Forward one card photo (+ ask/shipping/title) to the Sourcing-scout /scout endpoint. */
-export function proxyScout(image: File, fields?: Record<string, string>): Promise<NextResponse> {
-  return proxyImageTo('/scout', image, fields, 'scout')
+/** Forward one card photo (+ ask/shipping/title) to the Sourcing-scout /scout endpoint.
+ *  `light` = identity + comps only (no grade) — the grade page's card profile, fast enough to not
+ *  time out on hard cards where the full grade+registration ran 60-90s. */
+export function proxyScout(image: File, fields?: Record<string, string>, light = false): Promise<NextResponse> {
+  return proxyImageTo(`/scout${light ? '?light=1' : ''}`, image, fields, 'scout')
 }

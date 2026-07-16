@@ -642,6 +642,7 @@ async def scout_card(
     ask:      float = Form(0.0),     # asking price (optional → enables buy/pass against the max-bid)
     shipping: float = Form(0.0),
     title:    str   = Form(""),      # optional identity override; else Claude vision-ID
+    light:    int   = 0,             # query: identity + comps ONLY (no grade) — the grade page's profile
 ):
     """Sourcing scout, one card: identify → grade → economics. Compact result for the buy/pass worklist.
     Identity comes from Claude vision (a photo dump has no listing title); the economics reuse the same
@@ -663,6 +664,32 @@ async def scout_card(
         except Exception as e:
             identity = {"title": "", "error": f"{type(e).__name__}: {e}"}
     use_title = (identity.get("title") or title or "").strip()
+
+    if light:
+        # Identity-only fast path for the grade page's card PROFILE: it needs identity + comps, not a grade
+        # (the grade page already has the grade from /grade). Skipping the full grade + stability probe +
+        # registration keeps this well under the caller's 60s limit on hard cards — where the full /scout
+        # ran 64-92s and timed out, leaving the profile blank ("card not identified").
+        price_detail = comps_source = comps_basis = price_matched = price_confidence = None
+        estimated = asking = False
+        if identity.get("name"):
+            try:
+                import price_sources
+                _pr = await loop.run_in_executor(None, price_sources.lookup, identity)
+                comps_source, comps_basis = _pr["source"], _pr["basis"]
+                price_matched, estimated = _pr["matched"], _pr["estimated"]
+                asking = _pr.get("asking", False)
+                price_confidence, price_detail = _pr.get("confidence"), _pr.get("detail")
+            except Exception as e:
+                comps_source = f"error: {type(e).__name__}"
+        return JSONResponse({
+            "identity": {k: identity.get(k) for k in
+                         ("name", "set", "number", "year", "variant", "language", "title", "confidence")},
+            "identify_error": identity.get("error"),
+            "comps_source": comps_source, "comps_basis": comps_basis,
+            "estimated": estimated, "asking": asking, "price_matched": price_matched,
+            "price_confidence": price_confidence, "comps_detail": price_detail, "light": True,
+        })
 
     # ── grade — the SAME path as /grade (_grade_one → Modal when GRADE_BACKEND=modal, original bytes
     # forwarded) plus the stability probe, so a card scores and reports confidence IDENTICALLY whether it

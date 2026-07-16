@@ -122,8 +122,10 @@ export default function GradePage() {
     try {
       const fd = new FormData()
       fd.append('image', f)
-      const res = await fetch('/api/scout', { method: 'POST', body: fd })
-      const data = await res.json()
+      // light=1 → identity + comps ONLY (no grade): the profile just needs the card name + market
+      // comps, and the full /scout re-grade timed out on hard cards ("card not identified").
+      const res = await fetch('/api/scout?light=1', { method: 'POST', body: fd })
+      const data = await res.json().catch(() => null)
       if (res.ok && data?.identity) {
         setProfile({
           identity: { ...data.identity, rarity: data.comps_detail?.card?.rarity ?? null },

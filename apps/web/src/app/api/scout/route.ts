@@ -32,5 +32,6 @@ export async function POST(req: Request) {
     const v = formData.get(k)
     if (typeof v === 'string' && v) fields[k] = v
   }
-  return proxyScout(file, Object.keys(fields).length ? fields : undefined)
+  const light = new URL(req.url).searchParams.get('light') === '1'
+  return proxyScout(file, Object.keys(fields).length ? fields : undefined, light)
 }
