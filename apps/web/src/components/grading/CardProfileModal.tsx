@@ -120,10 +120,12 @@ export function CardProfileModal({ profile, confirmed = true, analyzeHref = null
         {!c && <p className="mt-4 text-xs text-muted-foreground">No market match found yet — set &amp; identity shown from the photo read.</p>}
 
         {analyzeHref && (
-          <a href={analyzeHref}
+          // Opens in a NEW TAB so the grade result (ephemeral client state) isn't lost — the user keeps
+          // their graded card and explores the full analysis alongside it.
+          <a href={analyzeHref} target="_blank" rel="noopener noreferrer"
              className="mt-4 flex items-center justify-between rounded-lg border border-blue-500/40 bg-blue-500/5 px-3 py-2.5 text-sm font-medium text-blue-700 hover:bg-blue-500/10 dark:text-blue-400">
             <span>View full price history &amp; grading analysis</span>
-            <span aria-hidden>→</span>
+            <span aria-hidden>↗</span>
           </a>
         )}
         <p className="mt-3 text-[11px] text-muted-foreground/70">Identified from your photo. Confirm set &amp; number before listing.</p>
