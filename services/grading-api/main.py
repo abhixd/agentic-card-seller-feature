@@ -411,6 +411,10 @@ async def grade_card_endpoint(
 
     aggregator, grade_comps = _get_grade_mods()
     loop = asyncio.get_event_loop()
+    _t0 = time.time()   # wall-clock budget for the OPTIONAL re-warp enrichment (each pass = a Modal round
+    #                     trip ~20s). The web/extension caller (Vercel) has a 60s hard limit; a rescue/
+    #                     re-warp card doing 2 extra passes hit 63s. Beyond the budget we return the valid
+    #                     first-pass result (honest capped confidence) instead of timing out entirely.
     # Stability probe (skipped for manual-contour grades — the human already intervened, and the contour's
     # source-pixel coordinates wouldn't survive the resize). Probe runs CONCURRENTLY with the baseline, so
     # the added latency is ~0 on the modal path.
@@ -510,9 +514,17 @@ async def grade_card_endpoint(
                 # the loop contracts. Guards: keep an iterate only if registration accepts on it; iterate
                 # again only if the measured bend DECREASED; hard cap on passes (each is a Modal call).
                 _max_iters = int(os.environ.get("PRINT_REG_REWARP_ITERS", "2"))
+                _budget_s = float(os.environ.get("PRINT_REG_REWARP_BUDGET_S", "33"))
                 _prev_dev = None
                 for _it in range(1, _max_iters + 1):
                     try:
+                        if time.time() - _t0 > _budget_s:
+                            # Out of time budget — a further Modal round trip would risk the caller's 60s
+                            # timeout. Keep the best result so far and flag that refinement was truncated.
+                            _rg0 = (result.get("centering") or {}).get("registration")
+                            if isinstance(_rg0, dict):
+                                _rg0["rewarp_truncated"] = f"time budget {_budget_s:.0f}s"
+                            break
                         _reg = (result.get("centering") or {}).get("registration") or {}
                         _rw = _reg.get("rewarp")                     # failure-path proposal, or…
                         if (_rw is None and _reg.get("accepted") and _reg.get("ref_id")
