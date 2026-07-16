@@ -10,7 +10,7 @@
  * centering + overall + PSA + verdict LIVE (lib/grading/score.ts mirrors the server) and reveals
  * Save (→ /api/grade/corrections).
  */
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { GradeResult, CardIdentity, CardProfile } from '@/lib/grading/types'
 import { type Box, ratiosFromBox, centeringScore, overallScore, psaLabel } from '@/lib/grading/score'
 import { warpBoxToSourceCorners } from '@/lib/grading/homography'
@@ -100,6 +100,22 @@ export function GradeResultCompact({
   // card against its official render (accepted + ref_id), the identity is confirmed; otherwise the profile
   // is a best guess and the catalog card shown may not match the uploaded photo. Gate the profile on it.
   const idConfirmed = result.centering.registration?.accepted === true
+  // Deep-link the profile to the full /analyze page (price chart, PSA-by-grade pricing, tournament meta).
+  // For a VERIFIED card, resolve its ref_id → internal catalog_id for the direct detail page; else fall
+  // back to the analyze search pre-filled with the card name.
+  const [analyzeHref, setAnalyzeHref] = useState<string | null>(null)
+  useEffect(() => {
+    const refId = idConfirmed ? (result.centering.registration?.ref_id ?? null) : null
+    const name = identity?.name ?? null
+    if (!name && !refId) { setAnalyzeHref(null); return }
+    const nameHref = name ? `/analyze?q=${encodeURIComponent(name)}` : null
+    if (!refId) { setAnalyzeHref(nameHref); return }
+    let alive = true
+    fetch(`/api/catalog/resolve?ptcg=${encodeURIComponent(refId)}`)
+      .then((r) => r.json()).catch(() => null)
+      .then((d) => { if (alive) setAnalyzeHref(d?.catalogId ? `/analyze/${d.catalogId}` : nameHref) })
+    return () => { alive = false }
+  }, [idConfirmed, result.centering.registration?.ref_id, identity?.name])
 
   // Live scores: server values until the user edits, then recompute from the dragged boxes.
   const cbLive = outer ? [outer.x1, outer.y1, outer.x2, outer.y2] : cb
@@ -341,7 +357,7 @@ export function GradeResultCompact({
       </div>
 
       <PillarVisualDialog pillar={openPillar} visuals={result.pillar_visuals} centering={result.centering} onClose={() => setOpenPillar(null)} />
-      <CardProfileModal profile={showProfile ? profile ?? null : null} confirmed={idConfirmed} onClose={() => setShowProfile(false)} />
+      <CardProfileModal profile={showProfile ? profile ?? null : null} confirmed={idConfirmed} analyzeHref={analyzeHref} onClose={() => setShowProfile(false)} />
       <DefectZoomGallery zooms={showZooms ? result.pillar_zooms ?? null : null} onClose={() => setShowZooms(false)} />
     </div>
   )
