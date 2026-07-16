@@ -1112,6 +1112,10 @@ def _rescue_outer(card_bgr, ref_bgr):
     bx2, by2 = min(bx2, Ww - 1), min(by2, Hw - 1)
     meta2["cut_box"] = [round(bx1 / Ww, 4), round(by1 / Hw, 4), round(bx2 / Ww, 4), round(by2 / Hw, 4)]
     meta2["outer_corrected"] = True
+    # The register(crop) ctx is CROP-frame — useless for warp-frame defect boxes. The loose fit maps the
+    # render onto the FULL warp, which is exactly the ctx the scratch filter needs → no more 'frame
+    # mismatch' skip on rescued cards (render-verified FP suppression now runs on EVERY anchored path).
+    meta2["_filter_ctx"] = (card_w, ref_w, M)
     try:                                                             # coords are working-scale → probe card_w
         meta2["cut_edge_support"] = _cut_edge_support(card_w, (bx1, by1, bx2, by2))
     except Exception:
@@ -1154,7 +1158,7 @@ def _novel_line_score(card_w, ref_dil, box_px):
     return min(raw / max(1.0 - coverage, 0.15), 1.5)
 
 
-def _filter_surface_boxes(result, cen, card_full, filter_ctx, crop_off=None):
+def _filter_surface_boxes(result, cen, card_full, filter_ctx, crop_off=None, dilate=3):
     """Suppress RF-DETR surface boxes whose 'scratch' line exists in the registered render (printed content,
     not damage). Suppress-only; kept boxes gain render_novel for observability. Non-fatal.
     crop_off = (bx1,by1,bx2,by2) px in FULL-warp coords when the registration ran on a boundary CROP
@@ -1167,7 +1171,7 @@ def _filter_surface_boxes(result, cen, card_full, filter_ctx, crop_off=None):
     Minv = cv2.invertAffineTransform(M)
     ref_on = cv2.warpAffine(ref_w, Minv, (card_w.shape[1], card_w.shape[0]))
     ref_dil = cv2.dilate(cv2.Canny(cv2.cvtColor(ref_on, cv2.COLOR_BGR2GRAY), 40, 120),
-                         np.ones((3, 3), np.uint8))
+                         np.ones((dilate, dilate), np.uint8))
     H, W = card_full.shape[:2]
     if crop_off is not None:
         bx1, by1, _bx2, by2 = crop_off
@@ -1558,12 +1562,14 @@ def apply_to_result(result, identity):
             # outer boundary so the UI's green rect hugs the actual card. content_region is already
             # mapped into the same (original-warp) coordinates.
             result["_card_boundary"] = list(meta["cut_box"])
-            filter_ctx = None                                        # crop-frame ctx ≠ warp-frame boxes → skip
-            cen["registration"]["scratch_filter"] = {"skipped": "outer-corrected (frame mismatch)"}
         if SCRATCH_FILTER and filter_ctx is not None:
             try:
                 _filter_surface_boxes(result, cen, card_full if cb_off is not None else card,
-                                      filter_ctx, crop_off=cb_off)
+                                      filter_ctx, crop_off=cb_off,
+                                      # rescue fits carry extra alignment slop (loose-fit extrapolation,
+                                      # ~1.6px resid) — widen the render-edge band so real art lines don't
+                                      # leak past as 'novel' (card_035 tail: 0.31 vs thr 0.30)
+                                      dilate=7 if meta.get("outer_corrected") else 3)
             except Exception as e:                                   # filter is optional polish — never fatal
                 cen["registration"]["scratch_filter"] = {"error": type(e).__name__}
         # Accepted → the registered read replaces the selector's. Score ladder stays byte-compatible.
