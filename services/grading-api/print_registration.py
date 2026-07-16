@@ -1126,13 +1126,23 @@ def _novel_line_score(card_w, ref_dil, box_px):
     the dilated render edges blanket most of a patch, which would otherwise eat a real scratch).
     Validated: content-line FPs ≤0.24, real/synthetic scratches ≥0.32 (scratch_filter_proto)."""
     x1, y1, x2, y2 = [int(v) for v in box_px]
+    # Tiny detector boxes (RF-DETR can emit ~10-15px boxes) give the scorer almost no pixels to judge —
+    # expand to a minimum analysis window so a REAL small scratch can still show its line.
+    MIN_WIN = 24
+    if x2 - x1 < MIN_WIN:
+        cx = (x1 + x2) // 2; x1, x2 = cx - MIN_WIN // 2, cx + MIN_WIN // 2
+    if y2 - y1 < MIN_WIN:
+        cy = (y1 + y2) // 2; y1, y2 = cy - MIN_WIN // 2, cy + MIN_WIN // 2
     x1, y1 = max(x1, 0), max(y1, 0)
     x2, y2 = min(x2, card_w.shape[1]), min(y2, card_w.shape[0])
     if x2 - x1 < 4 or y2 - y1 < 4:
-        return None
+        return None                                                 # out of frame — genuinely can't judge
     ours = cv2.Canny(cv2.cvtColor(card_w[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY), 60, 140)
     if int((ours > 0).sum()) < 20:
-        return None                                                 # too little structure to judge
+        # A scratch claim asserts a bright LINE exists here; if even our own edge detector finds no line
+        # structure, the claim is unsupported → score 0 (suppressed). Previously None (kept) — that leaked
+        # tiny low-conf art/noise boxes past the filter (card_035: 15x10px box, conf 0.34, on the tail art).
+        return 0.0
     ref_e = ref_dil[y1:y2, x1:x2]
     coverage = float((ref_e > 0).mean())
     novel = cv2.dilate(((ours > 0) & (ref_e == 0)).astype(np.uint8), np.ones((3, 3), np.uint8))
