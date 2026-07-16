@@ -176,6 +176,32 @@ export default function GradePage() {
     }
   }
 
+  // Persist the last grade so leaving (e.g. to the full analysis) and coming Back RESTORES it — the grade
+  // is otherwise ephemeral state and re-grading costs a slow GPU call. sessionStorage survives same-origin
+  // navigation; ~5MB quota, so we drop the heaviest optional field (pillar_zooms) and fail soft.
+  useEffect(() => {
+    if (!result) return
+    try {
+      const slim: GradeResult = { ...result, pillar_zooms: undefined }
+      sessionStorage.setItem('lastGrade', JSON.stringify({ result: slim, profile }))
+    } catch { /* quota exceeded — skip persistence, non-fatal */ }
+  }, [result, profile])
+
+  // Restore on mount (Back navigation) if we have nothing loaded yet.
+  useEffect(() => {
+    if (result) return
+    try {
+      const raw = sessionStorage.getItem('lastGrade')
+      if (!raw) return
+      const saved = JSON.parse(raw) as { result?: GradeResult; profile?: CardProfile | null }
+      if (saved?.result) {
+        setResult(saved.result)
+        setProfile(saved.profile ?? null)
+      }
+    } catch { /* ignore malformed */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Paste-to-grade: ⌘V a screenshot or copied image anywhere on the page.
   useEffect(() => {
     function onPaste(e: ClipboardEvent) {
@@ -201,6 +227,7 @@ export default function GradePage() {
     setProfile(null)
     setError(null)
     setShowOriginal(false)
+    try { sessionStorage.removeItem('lastGrade') } catch { /* ignore */ }
     if (inputRef.current) inputRef.current.value = ''
   }
 
