@@ -28,7 +28,7 @@ export async function POST(req: Request) {
   if (file.size > 10 * 1024 * 1024) return NextResponse.json({ error: 'Image must be under 10MB.' }, { status: 400 })
 
   const fields: Record<string, string> = {}
-  for (const k of ['ask', 'shipping', 'title']) {
+  for (const k of ['ask', 'shipping', 'title', 'ident_name', 'ident_set', 'ident_number']) {
     const v = formData.get(k)
     if (typeof v === 'string' && v) fields[k] = v
   }

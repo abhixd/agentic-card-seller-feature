@@ -89,7 +89,8 @@ export default function GradePage() {
           thumb_b64: null,
         })
       }
-      void identifyCard(f, !!ref?.name)   // comps (+ fallback identity if not registered); non-blocking
+      // Pass the VERIFIED identity so comps look up the right card (and vision isn't re-run to disagree).
+      void identifyCard(f, ref?.name ? { name: String(ref.name), set: ref.set as string | undefined, number: ref.number as string | undefined, image: ref.image as string | undefined } : null)
     } catch (err) {
       // The grading GPU container scales to zero when idle; the first grade after a lull cold-starts it
       // (~40s to load SAM3) and can exceed the 60s serverless limit → a non-JSON timeout page. We do NOT
@@ -132,18 +133,34 @@ export default function GradePage() {
 
   // /grade returns the grade fast (CV); identity needs a Claude vision read, so fetch it from /scout
   // separately and let the profile (and the verdict's dollar figures) fill in once it resolves.
-  async function identifyCard(f: File, haveVerifiedIdentity = false) {
+  async function identifyCard(
+    f: File,
+    verified: { name: string; set?: string; number?: string; image?: string } | null = null,
+  ) {
     setProfileLoading(true)
     try {
       const fd = new FormData()
       fd.append('image', f)
+      if (verified) {
+        // Look up comps for the VERIFIED card (skips the unreliable vision re-guess on the backend).
+        fd.append('ident_name', verified.name)
+        if (verified.set) fd.append('ident_set', verified.set)
+        if (verified.number) fd.append('ident_number', verified.number)
+      }
       // light=1 → identity + comps ONLY (no grade): fast enough not to time out on hard cards.
       const res = await fetch('/api/scout?light=1', { method: 'POST', body: fd })
       const data = await res.json().catch(() => null)
       if (res.ok) {
-        if (haveVerifiedIdentity) {
-          // Registration already gave us the authoritative card — keep it, just attach market comps.
-          setProfile((p) => p ? { ...p, comps: data?.comps_detail ?? p.comps } : p)
+        if (verified) {
+          // Keep the authoritative identity + verified image; attach market comps for the SAME card.
+          setProfile((p) => {
+            if (!p) return p
+            const merged = data?.comps_detail ?? p.comps
+            const withImg = verified.image
+              ? { ...merged, card: { ...(merged?.card ?? {}), imageCdnUrl: verified.image } }
+              : merged
+            return { ...p, comps: withImg }
+          })
         } else if (data?.identity?.name) {
           setProfile({
             identity: { ...data.identity, rarity: data.comps_detail?.card?.rarity ?? null },

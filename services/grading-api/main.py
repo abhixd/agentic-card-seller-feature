@@ -642,6 +642,9 @@ async def scout_card(
     ask:      float = Form(0.0),     # asking price (optional → enables buy/pass against the max-bid)
     shipping: float = Form(0.0),
     title:    str   = Form(""),      # optional identity override; else Claude vision-ID
+    ident_name:   str = Form(""),    # light-mode: caller already VERIFIED the card (registration ref_card)
+    ident_set:    str = Form(""),    # → look up comps for THIS card and skip the (unreliable) vision read
+    ident_number: str = Form(""),
     light:    int   = 0,             # query: identity + comps ONLY (no grade) — the grade page's profile
 ):
     """Sourcing scout, one card: identify → grade → economics. Compact result for the buy/pass worklist.
@@ -655,9 +658,14 @@ async def scout_card(
         raise HTTPException(status_code=400, detail=f"Image decode error: {e}")
 
     loop = asyncio.get_event_loop()
-    # ── identify (vision) unless a title was supplied ──
+    # ── identify: caller-verified identity (light mode) > title override > Claude vision-ID ──
     identity = {"title": title} if title else {}
-    if not title:
+    if light and ident_name:
+        # The grade already VERIFIED this card via registration — use it directly (correct comps, no vision
+        # re-guess that could disagree with what we anchored).
+        identity = {"name": ident_name, "set": ident_set or None, "number": ident_number or None,
+                    "title": ident_name, "confidence": 1.0}
+    elif not title:
         try:
             import identify as _identify
             identity = await loop.run_in_executor(None, _identify.identify_card, img_bgr, api_key)
