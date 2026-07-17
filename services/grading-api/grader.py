@@ -497,6 +497,14 @@ def mask_background_to_contour(warped: np.ndarray, cw, fill=(0, 0, 0)):
     hull = cv2.convexHull(poly)                 # bridge stand/finger occlusion notches
     mask = np.zeros((h, w), np.uint8)
     cv2.fillPoly(mask, [hull], 255)
+    # Dilate outward: a convex hull cannot dent inward, but its CHORDS undercut outward curvature — on
+    # bowed/worn cards the true edge bulges past the straight chord mid-side, and the un-dilated mask was
+    # measured eating 2-5px of real card edge there (worst: a worn card's top edge on 54% of its length —
+    # exactly the whitening evidence the edge pillar needs). ≤5px of extra background at the boundary is
+    # benign next to evidence destruction. MASK_DILATE_PX=0 restores the old behavior.
+    dil = int(os.environ.get("MASK_DILATE_PX", "4"))
+    if dil > 0:
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dil + 1, 2 * dil + 1)))
     out = warped.copy()
     out[mask == 0] = fill
     return out
