@@ -1150,12 +1150,30 @@ def _novel_line_score(card_w, ref_dil, box_px):
     ref_e = ref_dil[y1:y2, x1:x2]
     coverage = float((ref_e > 0).mean())
     novel = cv2.dilate(((ours > 0) & (ref_e == 0)).astype(np.uint8), np.ones((3, 3), np.uint8))
-    ncomp, _, stats, _ = cv2.connectedComponentsWithStats(novel, 8)
+    ncomp, labels, stats, _ = cv2.connectedComponentsWithStats(novel, 8)
     if ncomp <= 1:
         return 0.0
-    diags = [np.hypot(stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]) for i in range(1, ncomp)]
-    raw = float(max(diags) / max(np.hypot(x2 - x1, y2 - y1), 1.0))
-    return min(raw / max(1.0 - coverage, 0.15), 1.5)
+    # The chance-correction /(1-coverage) exists to rescue a real scratch LINE partially masked by busy
+    # art. A compact BLOB residue (blur/JPEG noise around printed shapes on soft warps) doesn't assert a
+    # line, yet at coverage ~0.6+ the correction inflated it 2-3x past the threshold (nc004 Gastly: raw
+    # 0.2 blobs scored 0.5-1.1). Gate the amplification on line-ness: per component, amplify only when
+    # its pixel cloud is elongated (PCA aspect >= 2); blobs score their raw extent uncorrected.
+    bd = max(np.hypot(x2 - x1, y2 - y1), 1.0)
+    best = 0.0
+    for i in range(1, ncomp):
+        raw = float(np.hypot(stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT])) / bd
+        if raw <= best:                                              # can't beat current best even amplified? cheap skip
+            if raw / max(1.0 - coverage, 0.15) <= best:
+                continue
+        pts = np.stack(np.where(labels == i)[::-1], 1).astype(np.float32)
+        elong = 1.0
+        if len(pts) >= 5:
+            pts -= pts.mean(0)
+            ev = np.linalg.eigvalsh(np.cov(pts.T))
+            elong = float(np.sqrt(max(ev[1], 1e-6) / max(ev[0], 1e-6)))
+        score = min(raw / max(1.0 - coverage, 0.15), 1.5) if elong >= 2.0 else raw
+        best = max(best, score)
+    return best
 
 
 def _filter_surface_boxes(result, cen, card_full, filter_ctx, crop_off=None, dilate=3):
@@ -1179,16 +1197,46 @@ def _filter_surface_boxes(result, cen, card_full, filter_ctx, crop_off=None, dil
     else:
         bx1 = by1 = 0
         sc = card_w.shape[0] / H
-    kept, suppressed = [], 0
+    boxes_px = []
     for b in boxes:
+        x, y, w, h = b["box"]
+        boxes_px.append(((x * W - bx1) * sc, (y * H - by1) * sc,
+                         ((x + w) * W - bx1) * sc, ((y + h) * H - by1) * sc))
+    # Card-level NULL calibration: on soft/low-res warps the blur+JPEG noise around printed content
+    # scores well above the fixed threshold EVERYWHERE on the card, not just in detector boxes (nc004
+    # Gastly: null p90 0.73 vs threshold 0.30 → 10 content FPs survived). Score a deterministic grid of
+    # non-box windows to measure this card's intrinsic noise floor and raise the keep bar to it. Sharp
+    # cards have null ≈ 0-0.2 → bar stays at SCRATCH_NOVEL_THR (behavior unchanged = no recall loss
+    # there); the 0.55 cap keeps strong real scratches (validated ≥0.8 on soft warps) always above it.
+    thr = SCRATCH_NOVEL_THR
+    null_p90 = None
+    try:
+        Hc, Wc = card_w.shape[:2]
+        win = 36
+        gx0, gx1 = int(0.08 * Wc), int(0.92 * Wc) - win
+        gy0, gy1 = int(0.08 * Hc), int(0.70 * Hc) - win
+        nulls = []
+        for gy in range(gy0, gy1, max((gy1 - gy0) // 7, 1)):
+            for gx in range(gx0, gx1, max((gx1 - gx0) // 7, 1)):
+                nb = (gx, gy, gx + win, gy + win)
+                if any(not (nb[2] < p[0] - 6 or nb[0] > p[2] + 6 or nb[3] < p[1] - 6 or nb[1] > p[3] + 6)
+                       for p in boxes_px):
+                    continue                                         # never let a real scratch raise its own bar
+                s = _novel_line_score(card_w, ref_dil, nb)
+                if s is not None:
+                    nulls.append(s)
+        if len(nulls) >= 8:
+            null_p90 = float(np.percentile(nulls, 90))
+            thr = max(SCRATCH_NOVEL_THR, min(null_p90 + 0.02, 0.55))
+    except Exception:
+        pass
+    kept, suppressed = [], 0
+    for b, px in zip(boxes, boxes_px):
         try:
-            x, y, w, h = b["box"]
-            score = _novel_line_score(card_w, ref_dil,
-                                      ((x * W - bx1) * sc, (y * H - by1) * sc,
-                                       ((x + w) * W - bx1) * sc, ((y + h) * H - by1) * sc))
+            score = _novel_line_score(card_w, ref_dil, px)
         except Exception:
             score = None
-        if score is not None and score < SCRATCH_NOVEL_THR:
+        if score is not None and score < thr:
             suppressed += 1                                          # the line exists in the print → content
             continue
         if score is not None:
@@ -1196,7 +1244,8 @@ def _filter_surface_boxes(result, cen, card_full, filter_ctx, crop_off=None, dil
         kept.append(b)
     result["defect_boxes"]["surface"] = kept
     cen["registration"]["scratch_filter"] = {"checked": len(boxes), "suppressed": suppressed,
-                                             "threshold": SCRATCH_NOVEL_THR}
+                                             "threshold": round(thr, 2),
+                                             "null_p90": None if null_p90 is None else round(null_p90, 2)}
 
 
 def _redraw_centering_viz(result, cen):
