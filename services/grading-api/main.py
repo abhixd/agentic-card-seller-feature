@@ -536,19 +536,26 @@ async def grade_card_endpoint(
                             _d = _preg.diagnose_result(result, _reg["ref_id"])
                             if _d is not None:
                                 _rw = {"corners_frac": _d[0], "dev_px": _d[1], "ref_id": _reg["ref_id"]}
+                        def _rw_note(msg):
+                            _r0 = (result.get("centering") or {}).get("registration")
+                            if isinstance(_r0, dict):
+                                _r0["rewarp_outcome"] = msg
                         if _rw is None:
                             break                                    # converged or undiagnosable
                         if _prev_dev is not None and _rw["dev_px"] >= _prev_dev:
+                            _rw_note(f"stopped: dev {_rw['dev_px']} not improving")
                             break                                    # not improving — keep best
                         src_corners = _preg.map_warp_frac_to_source(
                             result, _rw["corners_frac"],
                             clamp_quad_px=6 if _rw.get("tilt") else None)
                         if not src_corners:
+                            _rw_note("map/clamp abstained (degenerate corner geometry)")
                             break
                         import remote_grade as _rg
                         result2 = await loop.run_in_executor(
                             None, lambda: _rg.grade_contour(img_bgr, src_corners, bool(zoom), raw_bytes=raw_front))
                         if not isinstance(result2, dict) or result2.get("error"):
+                            _rw_note("contour re-grade failed")
                             break
                         _bb = _preg.quad_boundary_in_warp(result2, src_corners)
                         if _bb:                                      # mark the corrected quad inside the padded
@@ -557,6 +564,7 @@ async def grade_card_endpoint(
                         _preg.apply_to_result(result2, ident)
                         reg2 = (result2.get("centering") or {}).get("registration") or {}
                         if not reg2.get("accepted"):
+                            _rw_note(f"re-registration failed on the re-warp: {reg2.get('reason')}")
                             if _rw.get("ecc") is not None:
                                 # ECC-origin proposal: SIFT can't verify on haze — verify by ECC
                                 # IMPROVEMENT instead. Geometry-only adoption: the selector re-read the
@@ -579,6 +587,7 @@ async def grade_card_endpoint(
                             # (verify-by-improvement; audit lesson: rewarping verified reads churns noise).
                             _tv = _preg.tilt_in_display(result2, _rw.get("ref_id"))
                             if _tv is None or _tv >= _rw["dev_px"] * 0.75:
+                                _rw_note(f"verify failed: after {_tv} vs bar {round(_rw['dev_px'] * 0.75, 1)}")
                                 break                                # not straighter — keep the original
                             reg2["rewarped"] = {"dev_px": _rw["dev_px"], "ref_id": _rw.get("ref_id"),
                                                 "iter": _it, "tilt": True, "tilt_after": _tv}

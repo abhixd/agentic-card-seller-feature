@@ -789,22 +789,36 @@ def map_warp_frac_to_source(result, corners_frac, clamp_quad_px=None):
     src = pts[:, :2] / pts[:, 2:3]
     qr = result.get("_quad_raw")
     if clamp_quad_px and qr and len(qr) == 4:
+        # Clamp by translating SIDE LINES, not projecting corners: per proposed side, measure its max
+        # outward excess beyond the matching original side line and translate the whole side inward by
+        # the excess; corners are re-intersections of adjacent (direction-preserved) lines. This keeps
+        # the tilt correction AND stays structurally convex — the earlier per-corner projection could
+        # cross corners on rotated proposals and aborted the whole re-warp (prod run-2 silent break).
         q = np.float32(qr)
         ctr = q.mean(0)
-        for _pass in range(3):                                       # halfplane projections interact mildly
-            for i in range(4):
-                a, b = q[i], q[(i + 1) % 4]
-                e = b - a
-                n = np.float32([e[1], -e[0]])
-                n /= (np.linalg.norm(n) + 1e-9)
-                if np.dot(ctr - a, n) > 0:                           # ensure n points OUTWARD
-                    n = -n
-                for k in range(4):
-                    d = float(np.dot(src[k] - a, n))
-                    if d > clamp_quad_px:
-                        src[k] = src[k] - (d - clamp_quad_px) * n
-        if not cv2.isContourConvex(src.astype(np.float32)):
-            return None                                              # clamp broke geometry → abstain
+        lines = []                                                   # (point_on_line, direction) per side
+        for i in range(4):
+            a, b = q[i], q[(i + 1) % 4]
+            e = b - a
+            n = np.float32([e[1], -e[0]])
+            n /= (np.linalg.norm(n) + 1e-9)
+            if np.dot(ctr - a, n) > 0:
+                n = -n                                               # outward normal of the ORIGINAL side
+            p1, p2 = src[i], src[(i + 1) % 4]                        # matching proposed side
+            excess = max(float(np.dot(p1 - a, n)), float(np.dot(p2 - a, n))) - clamp_quad_px
+            shift = -excess * n if excess > 0 else np.float32([0, 0])
+            lines.append((p1 + shift, p2 - p1))
+        newc = []
+        for i in range(4):
+            (pA, dA), (pB, dB) = lines[(i - 1) % 4], lines[i]        # corner i = prev side ∩ this side
+            Mm = np.float32([[dA[0], -dB[0]], [dA[1], -dB[1]]])
+            if abs(float(np.linalg.det(Mm))) < 1e-6:
+                return None
+            t = np.linalg.solve(Mm, (pB - pA).astype(np.float32))
+            newc.append(pA + t[0] * dA)
+        src = np.float32(newc)
+        if not cv2.isContourConvex((src * 4.0).astype(np.float32)):
+            return None                                              # degenerate geometry → abstain
     a1 = cv2.contourArea(np.float32(quad))
     a2 = cv2.contourArea(src.astype(np.float32))
     if not (0.7 * a1 <= a2 <= 1.4 * a1) or not cv2.isContourConvex(src.astype(np.float32)):
