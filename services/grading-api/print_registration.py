@@ -982,6 +982,67 @@ def _gray_zone_recover(card_bgr, ref_bgr):
     return meta2, None
 
 
+def _frame_snap_on_card(card_w, cr, cut, band_frac=0.04, guard_frac=0.012, absent_only=False,
+                        allowed_sides=("L", "T", "R", "B")):
+    """Confirm/correct the mapped print-frame box against the CARD's own pixels: per side, snap to the
+    NEAREST coherent full-span line within ±band_frac (proximity prior). The render-side frame walk can
+    lock onto the wrong line on busy full-art renders (sc204: walked y-inset 0.017 at the physical-band
+    edge vs true silver frame ~0.03) — the card's photometric frame is the authority when they disagree.
+    guard_frac: a candidate must sit at least this far INSIDE the cut box on its side — the print frame
+    is physically never at the die edge (nominal insets ≥1.6%), which stops the snap from latching onto
+    the card's own outer edge.
+    absent_only (direct-accept mode): a side may move ONLY when the mapped position itself has NO card-
+    side line (±2px all below threshold) — a photometrically CONFIRMED mapping always wins over nearby
+    stronger lines (card_030: the copyright baseline outshines the true frame 11px away; without this
+    gate the snap hijacked a verified-good read). Returns (new_cr, fsnap) or None if no side moved."""
+    Hw, Ww = card_w.shape[:2]
+    cx1, cy1, cx2, cy2 = cut
+    gxf, gyf = _grad_mags(card_w)
+    fpx = {"L": cr["x1"] * Ww, "T": cr["y1"] * Hw, "R": cr["x2"] * Ww, "B": cr["y2"] * Hw}
+    fthr = float(os.environ.get("PRINT_REG_FRAME_SNAP_PROM", "2.5"))
+    gx = guard_frac * (cx2 - cx1)
+    gy = guard_frac * (cy2 - cy1)
+    inner = {"L": (cx1 + gx, (cx1 + cx2) / 2), "R": ((cx1 + cx2) / 2, cx2 - gx),
+             "T": (cy1 + gy, (cy1 + cy2) / 2), "B": ((cy1 + cy2) / 2, cy2 - gy)}
+    fsnap = {}
+    for side in ("L", "T", "R", "B"):
+        if side not in allowed_sides:
+            continue
+        horiz = side in ("T", "B")
+        mag = gyf if horiz else gxf
+        lo2, hi2 = (0, Ww) if horiz else (0, Hw)
+        lim = Hw if horiz else Ww
+        band = int(band_frac * (Hw if horiz else Ww))
+        base = fpx[side]
+        if absent_only:
+            present = False
+            for d0 in (-2, -1, 0, 1, 2):
+                pp0 = int(round(base + d0))
+                if 2 <= pp0 < lim - 2 and _line_prominence(mag, pp0, lo2, hi2, horiz, Hw, Ww) >= fthr:
+                    present = True
+                    break
+            if present:
+                continue                                             # mapping confirmed on the card → keep
+        best, bestd = None, None
+        for d in range(-band, band + 1):
+            pp = int(round(base + d))
+            if not (2 <= pp < lim - 2):
+                continue
+            if not (inner[side][0] <= pp <= inner[side][1]):
+                continue
+            r_ = _line_prominence(mag, pp, lo2, hi2, horiz, Hw, Ww)
+            if r_ >= fthr and (bestd is None or abs(d) < bestd):
+                best, bestd = pp, abs(d)
+        if best is not None and bestd > 2:
+            fsnap[side] = int(round(best - base))
+            fpx[side] = float(best)
+    if not fsnap:
+        return None
+    new_cr = {"x1": round(fpx["L"] / Ww, 4), "y1": round(fpx["T"] / Hw, 4),
+              "x2": round(fpx["R"] / Ww, 4), "y2": round(fpx["B"] / Hw, 4)}
+    return new_cr, fsnap
+
+
 def _rescue_outer(card_bgr, ref_bgr, gates=(30, None, 0.012)):
     """Full rescue: the RENDER spans exactly die-cut to die-cut, so its own image corners mapped through
     the fitted transform ARE the die-cut estimate — directly, at the registration's ~px precision. (Earlier
@@ -1034,36 +1095,12 @@ def _rescue_outer(card_bgr, ref_bgr, gates=(30, None, 0.012)):
     # FRAME snap: the placeholder render misplaces the FRAME line too — its gray-band inner edge sits at a
     # different content-relative depth than the physical etch boundary (card_035: mapped frame ~13px deep).
     # The physical frame is a strong full-span line on the card, so snap each mapped frame edge to the
-    # NEAREST coherent line within ±2% (proximity prior — title/art edges can be stronger but are farther);
-    # no qualifying line → keep the mapped position.
+    # NEAREST coherent line within the band (proximity prior — title/art edges can be stronger but are
+    # farther); no qualifying line → keep the mapped position.
     try:
-        gxf, gyf = _grad_mags(card_w)
-        crf = meta2["content_region"]
-        fpx = {"L": crf["x1"] * Ww, "T": crf["y1"] * Hw, "R": crf["x2"] * Ww, "B": crf["y2"] * Hw}
-        fsnap = {}
-        fthr = float(os.environ.get("PRINT_REG_FRAME_SNAP_PROM", "2.5"))
-        for side in ("L", "T", "R", "B"):
-            horiz = side in ("T", "B")
-            mag = gyf if horiz else gxf
-            lo2, hi2 = (0, Ww) if horiz else (0, Hw)
-            lim = Hw if horiz else Ww
-            band = int(0.04 * (Hw if horiz else Ww))                 # placeholder offsets reach ~3% (card_035: 30px)
-            base = fpx[side]
-            best, bestd = None, None
-            for d in range(-band, band + 1):
-                pp = int(round(base + d))
-                if not (2 <= pp < lim - 2):
-                    continue
-                r_ = _line_prominence(mag, pp, lo2, hi2, horiz, Hw, Ww)
-                if r_ >= fthr and (bestd is None or abs(d) < bestd):
-                    best, bestd = pp, abs(d)
-            if best is not None and bestd > 2:
-                fsnap[side] = int(round(best - base))
-                fpx[side] = float(best)
-        if fsnap:
-            meta2["frame_snap"] = fsnap
-            meta2["content_region"] = {"x1": round(fpx["L"] / Ww, 4), "y1": round(fpx["T"] / Hw, 4),
-                                       "x2": round(fpx["R"] / Ww, 4), "y2": round(fpx["B"] / Hw, 4)}
+        fs = _frame_snap_on_card(card_w, meta2["content_region"], cut=(0, 0, Ww, Hw))
+        if fs is not None:
+            meta2["content_region"], meta2["frame_snap"] = fs
     except Exception:
         pass
     # Photometric snap: pokemontcg renders depict SIR/etched borders as a flat gray PLACEHOLDER whose
@@ -1638,6 +1675,43 @@ def apply_to_result(result, identity):
                     meta["outer_tightened"] = moved                  # px moved per side (working scale)
                     result["_card_boundary"] = [round(tcut["L"] / cw, 4), round(tcut["T"] / ch, 4),
                                                 round((tcut["R"] + 1) / cw, 4), round((tcut["B"] + 1) / ch, 4)]
+        if filter_ctx is not None and cb_off is None and not meta.get("outer_corrected") \
+                and not meta.get("frame_snap"):
+            # Card-side FRAME confirmation on DIRECT accepts (the rescue path already snaps): the
+            # render-side frame walk can lock onto the wrong line on busy full-art renders (sc204:
+            # y-inset walked to 0.017 vs true silver frame ~0.03 → displayed inner border floated above
+            # the print frame). Same confirm-else-keep rule as the outer datum: snap each mapped frame
+            # side to the card's own nearest coherent line; an already-correct mapping moves ≤2px and
+            # stays byte-identical. Read recomputed against the (possibly tightened) cut when it moves.
+            try:
+                # DEGENERATE-WALK gate: only an axis whose render-side walk jammed against its physical
+                # band boundary (±0.002) is eligible — that is the walk-latched-wrong signature (sc204:
+                # y=0.017 at floor 0.016). A healthy mid-band walk with an absent card line is a FULL-ART
+                # frame that is legitimately invisible — snapping there hijacks interior structure
+                # (card_030's ex-rule box, eyeball-falsified).
+                fi = meta.get("frame_insets") or {}
+                eligible = []
+                if fi.get("x") is not None and (fi["x"] <= 0.024 or fi["x"] >= 0.053):
+                    eligible += ["L", "R"]
+                if fi.get("y") is not None and (fi["y"] <= 0.018 or fi["y"] >= 0.038):
+                    eligible += ["T", "B"]
+                cw_, ch_ = filter_ctx[0].shape[1], filter_ctx[0].shape[0]
+                cb_now = result.get("_card_boundary") or [0.0, 0.0, 1.0, 1.0]
+                cut_px = (cb_now[0] * cw_, cb_now[1] * ch_, cb_now[2] * cw_, cb_now[3] * ch_)
+                fs = None
+                if eligible:
+                    fs = _frame_snap_on_card(filter_ctx[0], meta["content_region"], cut=cut_px,
+                                             absent_only=True, allowed_sides=tuple(eligible))
+                if fs is not None:
+                    new_cr, fsnap = fs
+                    L, R = new_cr["x1"] * cw_ - cut_px[0], cut_px[2] - new_cr["x2"] * cw_
+                    T, B = new_cr["y1"] * ch_ - cut_px[1], cut_px[3] - new_cr["y2"] * ch_
+                    if min(L, R, T, B) > 0:
+                        meta["content_region"], meta["frame_snap"] = new_cr, fsnap
+                        meta["lr"] = f"{round(L / (L + R) * 100)}/{round(R / (L + R) * 100)}"
+                        meta["tb"] = f"{round(T / (T + B) * 100)}/{round(B / (T + B) * 100)}"
+            except Exception:
+                pass
         cen["registration"] = {k: v for k, v in meta.items() if k != "content_region"}
         if meta.get("ref_id"):
             try:                                                    # the VERIFIED catalog card (RAG+register)
