@@ -1719,12 +1719,19 @@ def apply_to_result(result, identity):
             meta["boundary_registered"] = True
             bx1, by1, bx2, by2 = cb_off
             cr = meta.get("content_region")
-            if cr:
+            if cr:                                                   # crop fractions → FULL-warp coords
                 meta["content_region"] = {
                     "x1": round((bx1 + cr["x1"] * (bx2 - bx1)) / Wf, 4),
                     "y1": round((by1 + cr["y1"] * (by2 - by1)) / Hf, 4),
                     "x2": round((bx1 + cr["x2"] * (bx2 - bx1)) / Wf, 4),
                     "y2": round((by1 + cr["y2"] * (by2 - by1)) / Hf, 4)}
+            # FALSIFIED ALTERNATIVES (do not re-derive — both eyeball-tested on card_025 and rejected):
+            # (1) photometric CUT snap latched the SLEEVE LIP (stronger line than the card's dark edge,
+            #     moved the boundary OUTWARD) — the exact failure that killed the geometric de-sleeve
+            #     project; (2) absent-only FRAME snap on this path grabbed arbitrary ART lines — full-art
+            #     borderless cards have no physical frame to confirm (the card_030 hijack). The cut box
+            #     and frame therefore stand as registered; residual sleeve slack is FLAGGED via the
+            #     boundary-ambiguity confidence cap below, never geometrically "fixed".
             try:
                 meta["cut_edge_support"] = _cut_edge_support(card_full, cb_off)
             except Exception:
@@ -1784,24 +1791,30 @@ def apply_to_result(result, identity):
                         meta["tb"] = f"{round(T / (T + B) * 100)}/{round(B / (T + B) * 100)}"
             except Exception:
                 pass
-        if filter_ctx is not None and cb_off is None and not result.get("_rewarped"):
-            # TILT-IN-WARP diagnosis on direct accepts: the fit's mapped die line should hug the display
-            # frame; a card ROTATED inside a sleeve/case-aligned warp maps outside it at the corners
-            # (card_025: 0.6° tilt → TL 15px out; any axis-aligned crop must cut card corners). Propose
-            # a re-warp to the card's own corners; the executor adopts only on verified tilt IMPROVEMENT,
-            # so clean cards (tilt ≤4px measured across the sentinel set) never churn. Overhang WITHOUT
-            # tilt is deliberately not a trigger — that is a boundary offset, fixable without a re-grade.
+        if filter_ctx is not None and not result.get("_rewarped"):
+            # TILT-IN-WARP diagnosis on direct accepts AND boundary-crop registrations: the fit's mapped
+            # die line should hug its frame; a card ROTATED inside a sleeve/case-aligned warp maps outside
+            # it at the corners (card_025: 0.6° tilt → TL 15px out; any axis-aligned crop must cut card
+            # corners). Propose a re-warp to the card's own corners; the executor adopts only on verified
+            # IMPROVEMENT, so clean cards (tilt ≤4px across the sentinel set) never churn. Running on the
+            # cb_off path too is what lets the executor ITERATE: a first tilt re-warp built from the old
+            # warp's fit can leave residual slack (card_025: 10px sleeve inside the left edge, out 8.8px
+            # still above bar) — the fresh crop fit re-proposes in FULL-warp coords and iter 2 converges.
             try:
                 tilt, out, frac = _tilt_from_ctx(filter_ctx)
                 meta["tilt_in_warp"] = {"tilt_px": round(tilt, 1), "max_out": round(out, 1)}
-                # Second trigger: overhang ≥8px on a NON-crop-bypass grade. On direct accepts the display
-                # carries no ring (cb crop consumed it), so die-line-outside-frame means the warp CUT OFF
-                # card pixels — unrecoverable by any boundary move, but the source photo has them (seg
-                # jitter re-measured card_025 at tilt 4.9 / out 17.2: same missing corner, sub-threshold
-                # tilt). Crop-bypass inputs are excluded — there the photo itself lacks the pixels and a
-                # re-warp can only fail its verify. Sentinels: max_out ≤6.6 (sc204), card_025 ≥17.
+                # Second trigger: overhang ≥8px on a NON-crop-bypass grade. The display/crop carries no
+                # ring, so die-line-outside-frame means the warp CUT OFF card pixels — unrecoverable by
+                # any boundary move, but the source photo has them (seg jitter re-measured card_025 at
+                # tilt 4.9 / out 17.2: same missing corner, sub-threshold tilt). Crop-bypass inputs are
+                # excluded — there the photo itself lacks the pixels and a re-warp can only fail its
+                # verify. Sentinels: max_out ≤6.6 (sc204), card_025 ≥17.
                 cut_off = out >= 8.0 and not result.get("_cropped")
-                if (REWARP and (tilt >= 6.0 or cut_off) and not meta.get("rewarp")
+                # Proposal only on DIRECT accepts (cb_off None). On boundary-crop registrations the fit's
+                # die line is the WRONG authority for another re-warp — dark-border cards bias it into the
+                # sleeve (card_025: -17px left; eyeball-falsified) and a fit-based verify would bless its
+                # own bias. There the residual is handled by the photometric boundary snap above instead.
+                if (REWARP and cb_off is None and (tilt >= 6.0 or cut_off) and not meta.get("rewarp")
                         and cv2.isContourConvex(np.float32(frac))):
                     meta["rewarp"] = {"corners_frac": frac, "dev_px": round(max(tilt, out), 1),
                                       "ref_id": meta.get("ref_id"), "tilt": True}
@@ -1862,6 +1875,15 @@ def apply_to_result(result, identity):
             confirmable = sup_min >= float(os.environ.get("PRINT_REG_SUPPORT_THR", "0.4"))
             cap = float(os.environ.get("PRINT_REG_BREG_CONF", "0.85")) if confirmable \
                 else float(os.environ.get("PRINT_REG_BREG_CONF_LOW", "0.6"))
+            tw = meta.get("tilt_in_warp") or {}
+            if (tw.get("max_out") or 0) >= 8.0:
+                # BOUNDARY AMBIGUITY (sleeved cards): the crop fit claims the card extends past the
+                # registered boundary while per-side support can be saturated by the SLEEVE LIP — the two
+                # authorities disagree and neither can be trusted to move the line (de-sleeve doctrine:
+                # flag, never geometrically correct). Honest cap, mirrors the rescue-LOW tier.
+                cap = min(cap, 0.5)
+                cen["registration"]["boundary_ambiguity"] = \
+                    f"fit claims +{tw['max_out']}px past boundary (sleeve slack?)"
             reg_conf = min(reg_conf, cap)
         g_geom = ((result.get("_rect_check") or {}).get("g_geom"))
         if meta.get("boundary_registered"):
