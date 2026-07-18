@@ -1836,11 +1836,17 @@ def apply_to_result(result, identity):
                 # Proposal only on DIRECT accepts (cb_off None). On boundary-crop registrations the fit's
                 # die line is the WRONG authority for another re-warp — dark-border cards bias it into the
                 # sleeve (card_025: -17px left; eyeball-falsified) and a fit-based verify would bless its
-                # own bias. There the residual is handled by the photometric boundary snap above instead.
-                if (REWARP and cb_off is None and (tilt >= 6.0 or cut_off) and not meta.get("rewarp")
-                        and cv2.isContourConvex(np.float32(frac))):
-                    meta["rewarp"] = {"corners_frac": frac, "dev_px": round(max(tilt, out), 1),
-                                      "ref_id": meta.get("ref_id"), "tilt": True}
+                # own bias.
+                if (tilt >= 6.0 or cut_off) and cb_off is None and not meta.get("rewarp"):
+                    # Convexity checked at PIXEL scale — fraction-scale float coords are numerically
+                    # fragile in isContourConvex. Any skip is RECORDED: a defect this size failing to
+                    # propose must be visible in Scan details, never silent.
+                    convex = cv2.isContourConvex(np.float32([[fx * 1000, fy * 1000] for fx, fy in frac]))
+                    if REWARP and convex:
+                        meta["rewarp"] = {"corners_frac": frac, "dev_px": round(max(tilt, out), 1),
+                                          "ref_id": meta.get("ref_id"), "tilt": True}
+                    else:
+                        meta["tilt_in_warp"]["skip"] = "rewarp-flag-off" if not REWARP else "non-convex"
             except Exception:
                 pass
         cen["registration"] = {k: v for k, v in meta.items() if k != "content_region"}
