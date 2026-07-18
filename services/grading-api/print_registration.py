@@ -764,10 +764,15 @@ def quad_boundary_in_warp(result, src_corners):
         return None
 
 
-def map_warp_frac_to_source(result, corners_frac):
+def map_warp_frac_to_source(result, corners_frac, clamp_quad_px=None):
     """Corrected corners (warp-fraction coords) → SOURCE-photo pixels, through the inverse of the
     quad→rect perspective used to build the warp. Sanity: area within [0.7, 1.4]× the original quad,
-    convex, corners clipped to ±5% of the source bounds. Returns [[x,y],...] or None."""
+    convex, corners clipped to ±5% of the source bounds. Returns [[x,y],...] or None.
+    clamp_quad_px: for TILT-origin proposals only — the fit's die line is the tilt authority but a
+    BIASED edge authority on dark borders (card_025: −17px into the sleeve, while SAM3's contour sat on
+    the card). Clamp the proposed corners into the ORIGINAL SAM3 quad (_quad_raw) dilated by this many
+    px: tilt corrects within the contour's envelope, but no side may move past what SAM3 actually saw.
+    Failure-path proposals stay unclamped — there SAM3's quad IS the broken thing being fixed (ex_1)."""
     import base64
     quad = result.get("_quad_padded")
     wj = result.get("_warped_jpeg_b64")
@@ -782,6 +787,24 @@ def map_warp_frac_to_source(result, corners_frac):
     if np.any(np.abs(pts[:, 2]) < 1e-6):
         return None
     src = pts[:, :2] / pts[:, 2:3]
+    qr = result.get("_quad_raw")
+    if clamp_quad_px and qr and len(qr) == 4:
+        q = np.float32(qr)
+        ctr = q.mean(0)
+        for _pass in range(3):                                       # halfplane projections interact mildly
+            for i in range(4):
+                a, b = q[i], q[(i + 1) % 4]
+                e = b - a
+                n = np.float32([e[1], -e[0]])
+                n /= (np.linalg.norm(n) + 1e-9)
+                if np.dot(ctr - a, n) > 0:                           # ensure n points OUTWARD
+                    n = -n
+                for k in range(4):
+                    d = float(np.dot(src[k] - a, n))
+                    if d > clamp_quad_px:
+                        src[k] = src[k] - (d - clamp_quad_px) * n
+        if not cv2.isContourConvex(src.astype(np.float32)):
+            return None                                              # clamp broke geometry → abstain
     a1 = cv2.contourArea(np.float32(quad))
     a2 = cv2.contourArea(src.astype(np.float32))
     if not (0.7 * a1 <= a2 <= 1.4 * a1) or not cv2.isContourConvex(src.astype(np.float32)):

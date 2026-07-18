@@ -540,7 +540,9 @@ async def grade_card_endpoint(
                             break                                    # converged or undiagnosable
                         if _prev_dev is not None and _rw["dev_px"] >= _prev_dev:
                             break                                    # not improving — keep best
-                        src_corners = _preg.map_warp_frac_to_source(result, _rw["corners_frac"])
+                        src_corners = _preg.map_warp_frac_to_source(
+                            result, _rw["corners_frac"],
+                            clamp_quad_px=6 if _rw.get("tilt") else None)
                         if not src_corners:
                             break
                         import remote_grade as _rg
