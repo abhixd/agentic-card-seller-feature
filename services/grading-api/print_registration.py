@@ -969,7 +969,7 @@ def _gray_zone_recover(card_bgr, ref_bgr):
     return meta2, None
 
 
-def _rescue_outer(card_bgr, ref_bgr):
+def _rescue_outer(card_bgr, ref_bgr, gates=(30, None, 0.012)):
     """Full rescue: the RENDER spans exactly die-cut to die-cut, so its own image corners mapped through
     the fitted transform ARE the die-cut estimate — directly, at the registration's ~px precision. (Earlier
     photometric band-searches failed one by one on a dark-sparkle-border card in a dark-sparkle case: the
@@ -998,7 +998,7 @@ def _rescue_outer(card_bgr, ref_bgr):
     # and honestly fails the scale verify). The re-registration then verifies the fit itself: if M really
     # mapped the die line, this registers at scale ≈ 1.000 with near-zero offset; if M was off, it can't.
     crop = cv2.warpAffine(card_w, M, (RW, RH))
-    meta2 = register(crop, ref_bgr, gates=(30, MAX_RESID, 0.012))
+    meta2 = register(crop, ref_bgr, gates=(gates[0], gates[1] if gates[1] is not None else MAX_RESID, gates[2]))
     if not meta2.get("accepted"):
         return None
     # Margin sanity from the RE-REGISTERED frame: each print→cut margin must be plausible vs nominal.
@@ -1384,7 +1384,8 @@ def apply_to_result(result, identity):
                     if (m["inliers"] >= 40 and (m.get("resid_px") or 9) <= MAX_RESID
                             and MAX_SCALE_DEV < abs((m.get("scale") or 1) - 1.0) <= _RESCUE_MAX_DEV):
                         scale_rejects.append((m["inliers"], cid, ref,      # scale-ONLY reject: rescue candidate
-                                              abs((m.get("scale") or 1) - 1.0)))  # if big enough, else demote-only
+                                              abs((m.get("scale") or 1) - 1.0),   # if big enough, else demote-only
+                                              m.get("resid_px"), m.get("scale")))
                     if (m["inliers"] >= 25 and (m.get("resid_px") or 9) <= MAX_RESID
                             and abs((m.get("scale") or 0) - 1.0) <= _RESCUE_MAX_DEV):
                         weak_fits.append((m["inliers"], cid, ref))         # real artwork match → rewarp-diagnosable
@@ -1423,7 +1424,8 @@ def apply_to_result(result, identity):
             # the read's confidence is support-gated regardless.
             try:
                 if scale_rejects:
-                    _, cidb, refb, _devb = max(scale_rejects)
+                    _tb = max(scale_rejects)
+                    cidb, refb = _tb[1], _tb[2]
                 else:
                     _, cidb, refb = max(weak_fits)
                 lfb = _fit_loose(card, refb)
@@ -1468,7 +1470,8 @@ def apply_to_result(result, identity):
             # toploader ring) — try the outer-anchor rescue with the best-fitting candidate. Acceptance is
             # the full-gate re-registration on the crop. Sub-threshold scale excess (a slightly loose warp)
             # deliberately does NOT rescue: the selector read stands and confidence is demoted below.
-            _, cid, ref, _dev = max(rescueable)
+            _t = max(rescueable)
+            cid, ref = _t[1], _t[2]
             r = _rescue_outer(card, ref)
             if r is not None:
                 meta = r
@@ -1477,13 +1480,34 @@ def apply_to_result(result, identity):
                 tried.append(f"{cid}:outer-rescued(sc→{meta.get('scale')})")
         if meta is None and TIGHTEN and scale_rejects and not rescueable and cb_off is None:
             # GRAY ZONE (scale excess 1-3%): anchored tightening + crop + full-gate re-registration.
-            _, cid, ref, _dev = max(scale_rejects)
+            _t = max(scale_rejects)
+            cid, ref = _t[1], _t[2]
             r, gray_diag = _gray_zone_recover(card, ref)
             if r is not None:
                 meta = r
                 meta["ref_id"] = cid
                 mark_winner(identity, cid)
                 tried.append(f"{cid}:gray-zone-tightened(sc→{meta.get('scale')})")
+        if meta is None and OUTER_RESCUE and cb_off is None and scale_rejects and not rescueable \
+                and os.environ.get("PRINT_REG_SMALLDEV", "1").strip().lower() not in ("0", "false", "no", "off"):
+            # STRONG-FIT SMALL-DEV RESCUE (slab/sleeve recess lip: crop 1-3% larger than the card).
+            # A dense low-residual fit measures scale to ~0.2%, so a 1-3% excess on such a fit is real
+            # geometry, not estimation noise — the sparse-fit noise class that motivated the 3% floor
+            # (card_006's 1.48% misfire) stays excluded by the inlier/resid bar. Direction must be
+            # crop-larger (scale > 1); the cut-off direction has no pixels to recover. Verify is TIGHTER
+            # than the big-ring rescue (dense re-fit, near-unit scale) and the read stays support-gated.
+            strong = [t for t in scale_rejects
+                      if t[0] >= 150 and (t[4] or 9) <= 1.6
+                      and t[5] is not None and 0.0 < t[5] - 1.0 <= _RESCUE_MIN_DEV]
+            if strong:
+                _t = max(strong)
+                cid, ref = _t[1], _t[2]
+                r = _rescue_outer(card, ref, gates=(60, None, 0.008))
+                if r is not None:
+                    meta = r
+                    meta["ref_id"] = cid
+                    mark_winner(identity, cid)
+                    tried.append(f"{cid}:smalldev-rescued(sc→{meta.get('scale')})")
         if meta is None:
             cen["registration"] = {"accepted": False, "reason": "no candidate registered", "tried": tried}
             if scale_rejects:
