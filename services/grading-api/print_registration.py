@@ -1038,6 +1038,32 @@ def _frame_snap_on_card(card_w, cr, cut, band_frac=0.04, guard_frac=0.012, absen
             fpx[side] = float(best)
     if not fsnap:
         return None
+    # SYMMETRIC COMPLETION: the mapped frame's per-axis error is COUPLED — both sides inherit the same
+    # wrong walk inset, while the frame CENTER comes from the fit and survives (symmetric error cancels).
+    # When one side of an axis snapped and its partner didn't, the partner's true line is predicted by
+    # reflecting about the original mapped center; a coherent line there may be too soft for the full
+    # threshold (sc204's bottom frame: art fades into silver, prom 1.8 vs bar 2.5) yet the ±4px prior
+    # makes the weak likelihood decisive. Verify-or-keep: no line ≥1.5 near the prediction → no move.
+    orig = {"L": cr["x1"] * Ww, "T": cr["y1"] * Hw, "R": cr["x2"] * Ww, "B": cr["y2"] * Hw}
+    for a, b in (("T", "B"), ("B", "T"), ("L", "R"), ("R", "L")):
+        if a not in fsnap or b in fsnap or b not in allowed_sides:
+            continue
+        horiz = b in ("T", "B")
+        mag = gyf if horiz else gxf
+        lo2, hi2 = (0, Ww) if horiz else (0, Hw)
+        lim = Hw if horiz else Ww
+        pred = (orig[a] + orig[b]) - fpx[a]
+        best, bestr = None, 0.0
+        for d in range(-4, 5):
+            pp = int(round(pred + d))
+            if not (2 <= pp < lim - 2) or not (inner[b][0] <= pp <= inner[b][1]):
+                continue
+            r_ = _line_prominence(mag, pp, lo2, hi2, horiz, Hw, Ww)
+            if r_ >= 1.5 and r_ > bestr:
+                best, bestr = pp, r_
+        if best is not None and abs(best - orig[b]) > 2:
+            fsnap[b] = int(round(best - orig[b]))
+            fpx[b] = float(best)
     new_cr = {"x1": round(fpx["L"] / Ww, 4), "y1": round(fpx["T"] / Hw, 4),
               "x2": round(fpx["R"] / Ww, 4), "y2": round(fpx["B"] / Hw, 4)}
     return new_cr, fsnap
