@@ -862,25 +862,33 @@ def _cut_edge_support(card_bgr, box_px):
             "L": score(gx, x1, y1, y2, False), "R": score(gx, x2, y1, y2, False)}
 
 
-def _tighten_outer(card, refw, M):
+def _tighten_outer(card, refw, M, insets=None):
     """Anchored per-side outer tightening (sleeve overhang over a dark border). Operates on the accepted
     registration's working-scale ctx. A side moves INWARD only when ALL hold: the current warp edge has no
     coherent line (prominence < _TIGHTEN_EP_MAX — we never override real photometric evidence), a strong
     line (≥ _TIGHTEN_PP_MIN) exists inside the anchored miscut band but OUTSIDE the known print-frame
     position (frame can't be latched — the anchors locate it exactly), and the resulting print→cut margin
-    stays in [0.35, 1.8]×nominal. Returns (cut{L,T,R,B} px, moved{side: px}, frame{L,T,R,B} px) or None."""
+    stays in [0.35, 1.8]×the frame margin. Frame + margins use the DETECTED per-axis render insets —
+    the same datum the read is computed against; validating against NOMINAL while reading against
+    DETECTED let a full-art card (detected y-inset 1.7% vs nominal ~3.6%) accept a line 3px from the
+    real frame → 86/14 (sc204 Seismitoad). `insets` = (ix, iy) from register()'s frame_insets, detected
+    at NATIVE render res (working-scale detection fails — the frame is a 2-3px band); when absent, fall
+    back to NOMINAL. Returns (cut{L,T,R,B} px, moved{side: px}, frame{L,T,R,B} px) or None."""
     H, W = card.shape[:2]
     RW, RH = refw.shape[1], refw.shape[0]
     Minv = cv2.invertAffineTransform(M)
     corners = np.float32([[0, 0], [RW, 0], [RW, RH], [0, RH]]) @ Minv[:, :2].T + Minv[:, 2]
     anch = {"L": float(corners[:, 0].min()), "T": float(corners[:, 1].min()),
             "R": float(corners[:, 0].max()), "B": float(corners[:, 1].max())}
-    ins = NOMINAL_INSET
-    fpx = np.float32([[RW * ins, RH * ins], [RW * (1 - ins), RH * ins],
-                      [RW * (1 - ins), RH * (1 - ins)], [RW * ins, RH * (1 - ins)]]) @ Minv[:, :2].T + Minv[:, 2]
+    ix = iy = NOMINAL_INSET
+    if insets and insets[0] and insets[1]:
+        ix, iy = float(insets[0]), float(insets[1])
+    fpx = np.float32([[RW * ix, RH * iy], [RW * (1 - ix), RH * iy],
+                      [RW * (1 - ix), RH * (1 - iy)], [RW * ix, RH * (1 - iy)]]) @ Minv[:, :2].T + Minv[:, 2]
     fr = {"L": float(fpx[:, 0].min()), "T": float(fpx[:, 1].min()),
           "R": float(fpx[:, 0].max()), "B": float(fpx[:, 1].max())}
-    m_nom = ins / (1 - 2 * ins) * (anch["R"] - anch["L"])
+    m_nom_x = ix / (1 - 2 * ix) * (anch["R"] - anch["L"])            # per-axis frame→cut margin (px)
+    m_nom_y = iy / (1 - 2 * iy) * (anch["B"] - anch["T"])
     gx, gy = _grad_mags(card)
     cut = {"L": 0.0, "T": 0.0, "R": float(W - 1), "B": float(H - 1)}
     moved = {}
@@ -889,6 +897,7 @@ def _tighten_outer(card, refw, M):
         mag = gy if horiz else gx
         lo, hi = (0, W) if horiz else (0, H)
         lim = H if horiz else W
+        m_nom = m_nom_y if horiz else m_nom_x
         edge = int(round(cut[side]))
         if _line_prominence(mag, edge, lo, hi, horiz, H, W) >= _TIGHTEN_EP_MAX:
             continue                                                 # the warp edge IS a line — trust it
@@ -942,7 +951,11 @@ def _gray_zone_recover(card_bgr, ref_bgr):
             "R": Ww0 - 1 - float(mc0[:, 0].max()), "B": Hw0 - 1 - float(mc0[:, 1].max())}
     parts = [f"{s} {'cut-off' if v < -3 else 'slop'} ~{abs(round(v))}px" for s, v in over.items() if abs(v) > 3]
     diag = ("anchors: " + ", ".join(parts)) if parts else None
-    t = _tighten_outer(card_w, ref_w, M)
+    try:
+        nat_ins = _render_frame_insets(ref_bgr)                      # native-res detection (working-scale fails)
+    except Exception:
+        nat_ins = None
+    t = _tighten_outer(card_w, ref_w, M, insets=nat_ins)
     if t is None:
         return None, diag                                            # no side had absent-edge + strong-line
     cut, moved, _fr = t
@@ -1609,7 +1622,8 @@ def apply_to_result(result, identity):
                 meta["cut_edge_support"] = None
         if TIGHTEN and not meta.get("outer_corrected") and filter_ctx is not None:
             try:
-                t = _tighten_outer(*filter_ctx)
+                fi = meta.get("frame_insets") or {}
+                t = _tighten_outer(*filter_ctx, insets=(fi.get("x"), fi.get("y")))
             except Exception:
                 t = None
             if t is not None:
