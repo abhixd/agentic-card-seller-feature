@@ -571,7 +571,17 @@ async def grade_card_endpoint(
                                     _c2["confidence"] = round(min(_cur2 if _cur2 is not None else 1.0, 0.5), 3)
                                     result = result2
                             break                                    # verify-or-discard: keep best
-                        reg2["rewarped"] = {"dev_px": _rw["dev_px"], "ref_id": _rw.get("ref_id"), "iter": _it}
+                        if _rw.get("tilt"):
+                            # Tilt-origin proposal came from an ACCEPTED read — replacing it demands
+                            # proof the re-warp actually straightened the card, not just re-registered
+                            # (verify-by-improvement; audit lesson: rewarping verified reads churns noise).
+                            _tv = _preg.tilt_in_display(result2, _rw.get("ref_id"))
+                            if _tv is None or _tv >= _rw["dev_px"] * 0.75:
+                                break                                # not straighter — keep the original
+                            reg2["rewarped"] = {"dev_px": _rw["dev_px"], "ref_id": _rw.get("ref_id"),
+                                                "iter": _it, "tilt": True, "tilt_after": _tv}
+                        else:
+                            reg2["rewarped"] = {"dev_px": _rw["dev_px"], "ref_id": _rw.get("ref_id"), "iter": _it}
                         result2["_rewarped"] = True
                         result = result2
                         _prev_dev = _rw["dev_px"]

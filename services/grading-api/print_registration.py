@@ -596,6 +596,52 @@ def _diagnose_rewarp(card_bgr, ref_bgr):
             round(dev, 1), int(inl.sum()))
 
 
+def _tilt_from_ctx(filter_ctx):
+    """Mapped-die-line tilt signature from an accepted similarity fit's ctx. Returns
+    (tilt_px, max_out_px, corners_frac) at working scale. tilt = max spread between the two ends
+    of each side pair — a ROTATED card inside a sleeve/case-aligned warp (card_025: 0.6° → 11px)
+    that no axis-aligned crop can contain without cutting corners. Clean straight warps: ≤4px."""
+    card_w, ref_w, M = filter_ctx
+    CW, CH = card_w.shape[1], card_w.shape[0]
+    Minv = cv2.invertAffineTransform(M)
+    RW, RH = ref_w.shape[1], ref_w.shape[0]
+    c = np.float32([[0, 0], [RW, 0], [RW, RH], [0, RH]]) @ Minv[:, :2].T + Minv[:, 2]
+    xs, ys = c[:, 0], c[:, 1]
+    tilt = max(abs(xs[0] - xs[3]), abs(xs[1] - xs[2]), abs(ys[0] - ys[1]), abs(ys[2] - ys[3]))
+    out = max(max(0 - x, x - CW, 0 - y, y - CH, 0) for x, y in c)
+    frac = [[round(float(x) / CW, 4), round(float(y) / CH, 4)] for x, y in c]
+    return float(tilt), float(out), frac
+
+
+def tilt_in_display(result, cid):
+    """Re-measure the tilt signature on a grade RESULT's display warp (cropped to _card_boundary when
+    set — contour-path re-warps carry a padding ring that would scale-reject the full frame). Used by
+    the re-warp executor to verify a tilt-origin re-warp actually STRAIGHTENED the card. None = can't
+    judge (registration failed on the crop)."""
+    try:
+        import base64
+        wj = result.get("_warped_jpeg_b64")
+        if not wj:
+            return None
+        ref, _err = _fetch_render(cid)
+        if ref is None:
+            return None
+        card = cv2.imdecode(np.frombuffer(base64.b64decode(wj), np.uint8), cv2.IMREAD_COLOR)
+        if card is None:
+            return None
+        cb = result.get("_card_boundary")
+        if cb and (cb[0] > 0.005 or cb[1] > 0.005 or cb[2] < 0.995 or cb[3] < 0.995):
+            H, W = card.shape[:2]
+            card = card[int(cb[1] * H):int(cb[3] * H), int(cb[0] * W):int(cb[2] * W)]
+        m = register(card, ref)
+        if not m.get("accepted"):
+            return None
+        tilt, _out, _frac = _tilt_from_ctx(m.pop("_filter_ctx"))
+        return round(tilt, 1)
+    except Exception:
+        return None
+
+
 def diagnose_result(result, cid):
     """Residual-bend diagnosis on a grade RESULT (possibly already re-warped): decode its display warp,
     crop to _card_boundary when meaningful (contour-path warps carry a padding ring; rescued results mark
@@ -1736,6 +1782,22 @@ def apply_to_result(result, identity):
                         meta["content_region"], meta["frame_snap"] = new_cr, fsnap
                         meta["lr"] = f"{round(L / (L + R) * 100)}/{round(R / (L + R) * 100)}"
                         meta["tb"] = f"{round(T / (T + B) * 100)}/{round(B / (T + B) * 100)}"
+            except Exception:
+                pass
+        if filter_ctx is not None and cb_off is None and not result.get("_rewarped"):
+            # TILT-IN-WARP diagnosis on direct accepts: the fit's mapped die line should hug the display
+            # frame; a card ROTATED inside a sleeve/case-aligned warp maps outside it at the corners
+            # (card_025: 0.6° tilt → TL 15px out; any axis-aligned crop must cut card corners). Propose
+            # a re-warp to the card's own corners; the executor adopts only on verified tilt IMPROVEMENT,
+            # so clean cards (tilt ≤4px measured across the sentinel set) never churn. Overhang WITHOUT
+            # tilt is deliberately not a trigger — that is a boundary offset, fixable without a re-grade.
+            try:
+                tilt, out, frac = _tilt_from_ctx(filter_ctx)
+                meta["tilt_in_warp"] = {"tilt_px": round(tilt, 1), "max_out": round(out, 1)}
+                if (REWARP and tilt >= 6.0 and not meta.get("rewarp")
+                        and cv2.isContourConvex(np.float32(frac))):
+                    meta["rewarp"] = {"corners_frac": frac, "dev_px": round(tilt, 1),
+                                      "ref_id": meta.get("ref_id"), "tilt": True}
             except Exception:
                 pass
         cen["registration"] = {k: v for k, v in meta.items() if k != "content_region"}
