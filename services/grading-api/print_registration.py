@@ -636,8 +636,8 @@ def tilt_in_display(result, cid):
         m = register(card, ref)
         if not m.get("accepted"):
             return None
-        tilt, _out, _frac = _tilt_from_ctx(m.pop("_filter_ctx"))
-        return round(tilt, 1)
+        tilt, out, _frac = _tilt_from_ctx(m.pop("_filter_ctx"))
+        return round(max(tilt, out), 1)                              # same metric as the proposal's dev_px
     except Exception:
         return None
 
@@ -1794,9 +1794,16 @@ def apply_to_result(result, identity):
             try:
                 tilt, out, frac = _tilt_from_ctx(filter_ctx)
                 meta["tilt_in_warp"] = {"tilt_px": round(tilt, 1), "max_out": round(out, 1)}
-                if (REWARP and tilt >= 6.0 and not meta.get("rewarp")
+                # Second trigger: overhang ≥8px on a NON-crop-bypass grade. On direct accepts the display
+                # carries no ring (cb crop consumed it), so die-line-outside-frame means the warp CUT OFF
+                # card pixels — unrecoverable by any boundary move, but the source photo has them (seg
+                # jitter re-measured card_025 at tilt 4.9 / out 17.2: same missing corner, sub-threshold
+                # tilt). Crop-bypass inputs are excluded — there the photo itself lacks the pixels and a
+                # re-warp can only fail its verify. Sentinels: max_out ≤6.6 (sc204), card_025 ≥17.
+                cut_off = out >= 8.0 and not result.get("_cropped")
+                if (REWARP and (tilt >= 6.0 or cut_off) and not meta.get("rewarp")
                         and cv2.isContourConvex(np.float32(frac))):
-                    meta["rewarp"] = {"corners_frac": frac, "dev_px": round(tilt, 1),
+                    meta["rewarp"] = {"corners_frac": frac, "dev_px": round(max(tilt, out), 1),
                                       "ref_id": meta.get("ref_id"), "tilt": True}
             except Exception:
                 pass
